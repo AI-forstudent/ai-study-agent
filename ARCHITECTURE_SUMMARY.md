@@ -1,38 +1,53 @@
-🎯 חזון הפרויקט
-מערכת AI Study Partner – פלטפורמה חכמה ללמידה ממסמכים (PDFs). המערכת מאפשרת למשתמשים להעלות חומרי לימוד, לנהל שיחות צ'אט (Threads) מבוססות הקשר על אזורים ספציפיים במסמך, ולפצל שיחות (Forking) ממש כמו ב-Git, כדי לחקור נושאים לעומק בלי לאבד את ההקשר המקורי.
+🏗️ AI Study Partner - System Architecture & Infrastructure
+1. Project Vision & Core Mechanics
+AI Study Partner is an intelligent, RAG-based (Retrieval-Augmented Generation) educational platform. It allows users to upload PDF documents, processes them into semantically searchable chunks, and enables context-aware chat interactions (Threads) directly linked to specific document areas.
+A standout feature of the system is "Thread Forking"—a Git-like branching mechanism that allows users to fork a conversation from any specific message, enabling deep dives into sub-topics without losing the context of the original learning thread.
 
-🏗️ ארכיטקטורה כללית (Monorepo)
-הפרויקט מחולק לשתי סביבות נפרדות לחלוטין שמדברות אחת עם השנייה:
+2. High-Level Architecture (Monorepo)
+The project is structured as a Monorepo, ensuring clear separation of concerns between the client and the server while maintaining a unified repository for version control.
 
-Frontend (ai-study-client): אפליקציית React מבוססת Vite, עם TypeScript, TailwindCSS לניהול עיצוב, ו-Zustand לניהול מצב (State).
+Frontend (/ai-study-client): * Framework: React built with Vite for optimal development speed and modern HMR.
 
-Backend (backend): שרת חכם מבוסס Python (FastAPI), שמטפל בלוגיקה, עיבוד מסמכים (RAG), קריאות מודל השפה, וניהול מסד הנתונים.
+Language: TypeScript for type safety and predictable data structures.
 
-🛠️ כלים וטכנולוגיות שרכשנו והטמענו
-Docker & Docker Compose:
+Styling: TailwindCSS for utility-first, responsive UI design.
 
-ניתוק תלויות בסביבה המקומית על ידי הרצת מסד הנתונים בתוך קונטיינר (Container).
+State Management: Zustand (planned) for lightweight, predictable global state.
 
-הבנה עמוקה של ניהול Volumes (לשמירת מידע גם כשהשרת נופל) וניהול Ports (למשל הפניית פורט 5433).
+Backend (/backend): * Framework: FastAPI (Python) for high-performance, asynchronous REST API endpoints.
 
-Best Practice: ניהול משתני סביבה מאובטחים ויציבים ברמת ה-docker-compose.yml לעומת קבצי .env.
+AI/RAG Logic: Integrates LLMs and embedding models to process and retrieve document contexts.
 
-מסד נתונים (PostgreSQL + pgvector):
+3. Infrastructure & Containerization
+The local development environment is containerized to guarantee consistency and eliminate "it works on my machine" issues.
 
-הקמת מסד נתונים וקטורי לאחסון חתיכות טקסט (Chunks) וחיפוש סמנטי באמצעות Embeddings.
+Docker & Docker Compose: The database runs exclusively within a Docker container.
 
-חיבור ושליטה במסד הנתונים ישירות מתוך VS Code באמצעות תוסף SQLTools (במקום כלים חיצוניים מסורבלים).
+Database Engine: PostgreSQL via the official pgvector/pgvector:pg16 image, enabling native vector storage for embeddings.
 
-ניהול מיגרציות (Alembic & SQLAlchemy):
+Volume Management: Persistent named volumes (pgdata) are mapped to ensure data survives container restarts.
 
-במקום למחוק טבלאות בכל שינוי, למדנו לעבוד עם Alembic ("ה-Git של מסדי הנתונים").
+Security & Env Management: Database credentials (User, Password, DB Name) are strictly decoupled. Infrastructure configurations are defined directly in docker-compose.yml, while Python application secrets are managed via a localized .env file within the backend directory.
 
-פתרון בעיות ארכיטקטוניות מתקדמות: * פתרון תלות מעגלית (Circular Dependency - הביצה והתרנגולת) ב-Foreign Keys בעזרת use_alter=True.
+4. Database Design & ORM
+ORM: SQLAlchemy handles the Object-Relational Mapping.
 
-שילוב פקודות SQL ישירות בתוך מיגרציות (כמו op.execute('CREATE EXTENSION vector;')) כדי להדליק תוספים ברמת מסד הנתונים.
+Vector Storage: The chunks table utilizes a Vector(768) data type to store text embeddings for semantic similarity search.
 
-הכרת הצורך בייבוא ספריות חיצוניות (כמו pgvector.sqlalchemy) בתוך קבצי המיגרציה.
+Resolving Circular Dependencies: The DB schema includes a bidirectional relationship between Thread and Message (for the forking feature). This architectural challenge (the "chicken-and-egg" problem) was resolved seamlessly using SQLAlchemy's use_alter=True on the Foreign Key definition, allowing the schema to build securely in logical stages.
 
-REST API & Status Codes:
+5. Migrations & Schema Evolution (Alembic)
+Database state and schema evolutions are strictly managed using Alembic, functioning as the "Git for the database."
 
-הבנה נכונה של תקשורת שרת-לקוח: החזרת קוד 200 OK עם רשימה ריקה [] במקום לזרוק שגיאות 404 Not Fou
+Automated Migrations: Replaced dynamic runtime table creation (Base.metadata.create_all) with trackable, deterministic migration scripts.
+
+Raw SQL Injection: Customized Alembic migration scripts to inject raw SQL during the upgrade process. Notably, op.execute('CREATE EXTENSION IF NOT EXISTS vector;') is executed dynamically before table creation to ensure PostgreSQL recognizes vector types.
+
+Dependency Management: Ensured custom data types (e.g., pgvector.sqlalchemy) are explicitly imported at the head of Alembic version files to prevent runtime scope errors.
+
+6. API Design & Best Practices
+The backend adheres to strict RESTful API standards:
+
+Predictable Status Codes: When a client requests a collection (e.g., retrieving threads for a newly uploaded document), the API correctly returns 200 OK with an empty array [], reserving 404 Not Found strictly for cases where the parent resource (the document itself) does not exist. This prevents false positive errors in the Frontend client.
+
+Live Monitoring: Development database monitoring is integrated directly into the IDE using the VS Code SQLTools extension, streamlining the workflow without requiring bulky external DBMS software.
