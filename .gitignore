@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# --- Custom settings for AI Study Partner ---
+
+# Ignore uploaded PDF files
+uploads/
+!uploads/.keep
+
+# Environment variables (Passwords, API Keys)
+.env
+
+# OS generated files
+desktop.ini
+
+# Temporary SQL files
+*.session.sql
+
+# Editor directories
+.vscode/
