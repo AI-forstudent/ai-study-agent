@@ -70,6 +70,20 @@ def upload_document(
     # 3. יצירת סיכום
     root_summary = services.generate_document_summary(full_text_for_summary)
     
+    # חילוץ הטקסט תוך שמירה על העיצוב (Markdown) וסינון מידע לא רלוונטי
+    if isinstance(root_summary, list):
+        extracted_texts = []
+        for item in root_summary:
+            # אנחנו מושכים אך ורק בלוקים מסוג 'text' ומתעלמים ממידע בינארי (הג'יבריש)
+            if isinstance(item, dict) and item.get('type') == 'text':
+                # שולפים את הטקסט המדויק עם כל הניואנסים (כוכביות, הדגשות וכו')
+                extracted_texts.append(item.get('text', ''))
+                
+        # מחברים את כל הבלוקים עם רווח של ירידת שורה כפולה כדי לשמור על קריאות
+        root_summary = "\n\n".join(extracted_texts)
+        
+    elif not isinstance(root_summary, str):
+        root_summary = str(root_summary)
     # 4. שמירת המסמך ב-DB
     new_doc = models.Document(
         title=file.filename,
