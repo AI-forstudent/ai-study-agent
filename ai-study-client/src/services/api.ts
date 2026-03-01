@@ -21,7 +21,11 @@ export const api = {
   sendMessage: (threadId: number, content: string) => 
     axios.post(`${API_URL}/threads/${threadId}/messages/`, { content }),
     
-  shutdown: () => axios.post(`${API_URL}/system/shutdown`)
+  shutdown: () => axios.post(`${API_URL}/system/shutdown`),
+
+// הוסף את זה מתחת לפונקציות האחרות של השיחות:
+  forkThread: (threadId: number, messageId: number) => 
+    axios.post(`${API_URL}/threads/${threadId}/fork/?message_id=${messageId}`),
 };
 
 export default API_URL;

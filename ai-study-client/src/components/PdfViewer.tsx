@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Document, Page } from 'react-pdf';
-import { MessageSquare, Plus, Loader2 } from 'lucide-react';
+import { MessageSquare, Plus, Loader2, Sparkles, HelpCircle, BookOpen, Lightbulb } from 'lucide-react';
 import type { Thread } from '../types';
 
 interface PdfViewerProps {
@@ -30,6 +30,20 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   pdfContainerRef,
   handleTextSelection
 }) => {
+
+  const analyzedIntent = useMemo(() => {
+    if (!textSelection?.text) return 'general';
+    const text = textSelection.text.trim();
+    if (text.includes('?')) return 'question';
+    if (text.split(' ').length <= 4) return 'concept'; 
+    return 'general';
+  }, [textSelection]);
+
+  const handleSmartAction = (promptType: string) => {
+    console.log("Smart Action Clicked:", promptType);
+    handleQuickAction('chat'); 
+  };
+
   return (
     <div 
       ref={pdfContainerRef} 
@@ -38,7 +52,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     >
       <div className="relative inline-block min-w-full">
         <Document
-          file={file} // הקסם: שימוש בקובץ המקומי. טוען את ה-PDF באפס זמן!
+          file={file} 
           className="flex flex-col items-center gap-6"
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={(error) => console.error("שגיאה בטעינת PDF:", error)}
@@ -55,7 +69,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           ))}
         </Document>
         
-        {/* הצגת בועות של שיחות קיימות */}
         {threads.map((thread) => (
           <button
             key={thread.id}
@@ -81,33 +94,76 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           </button>
         ))}
 
-        {/* תפריט פעולות מהירות */}
+        {/* תפריט פעולות דו-שכבתי מיושר ואחיד */}
         {textSelection && (
           <div
             style={{
               position: 'absolute', 
               left: textSelection.x,
-              top: textSelection.y,
+              top: textSelection.y - 10,
               transform: 'translate(-50%, -100%)', 
               zIndex: 100 
             }}
-            className="bg-slate-900 text-white rounded-lg shadow-2xl flex items-center overflow-hidden animate-in fade-in zoom-in duration-200 border border-slate-700 divide-x divide-slate-700 divide-x-reverse"
+            className="flex flex-col gap-1.5 animate-in fade-in zoom-in duration-200"
           >
-            <button onClick={() => handleQuickAction('translate')} disabled={isCreatingThread} className="p-2 hover:bg-slate-700 flex flex-col items-center gap-1 min-w-[60px]">
-              <span className="text-lg">文</span>
-              <span className="text-[10px] font-bold">תרגם</span>
-            </button>
-            <button onClick={() => handleQuickAction('explain')} disabled={isCreatingThread} className="p-2 hover:bg-slate-700 flex flex-col items-center gap-1 min-w-[60px]">
-              <span className="text-lg">💡</span>
-              <span className="text-[10px] font-bold">הסבר</span>
-            </button>
-            <button onClick={() => handleQuickAction('quiz')} disabled={isCreatingThread} className="p-2 hover:bg-slate-700 flex flex-col items-center gap-1 min-w-[60px]">
-              <span className="text-lg">❓</span>
-              <span className="text-[10px] font-bold">בחן אותי</span>
-            </button>
-            <button onClick={() => handleQuickAction('chat')} disabled={isCreatingThread} className="p-3 bg-blue-600 hover:bg-blue-700">
-              {isCreatingThread ? <Loader2 className="w-4 h-4 animate-spin"/> : <Plus className="w-5 h-5" />}
-            </button>
+            {/* שכבה עליונה: חכמה (Smart AI) - סגול */}
+            <div className="bg-purple-600 text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-purple-500 text-xs font-medium">
+              <div className="bg-purple-700 px-2 py-2 flex items-center justify-center">
+                <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+              </div>
+              
+              {analyzedIntent === 'question' && (
+                <>
+                  <button onClick={() => handleSmartAction('hint')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
+                    <Lightbulb className="w-3.5 h-3.5"/> תן לי רמז
+                  </button>
+                  <div className="w-px h-4 bg-purple-400/50"></div>
+                  <button onClick={() => handleSmartAction('step-by-step')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
+                    <HelpCircle className="w-3.5 h-3.5"/> פתרון מודרך
+                  </button>
+                </>
+              )}
+
+              {analyzedIntent === 'concept' && (
+                <>
+                  <button onClick={() => handleSmartAction('define')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5"/> הגדר מושג
+                  </button>
+                  <div className="w-px h-4 bg-purple-400/50"></div>
+                  <button onClick={() => handleSmartAction('example')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
+                    <Lightbulb className="w-3.5 h-3.5"/> תן דוגמה
+                  </button>
+                </>
+              )}
+
+              {analyzedIntent === 'general' && (
+                <button onClick={() => handleSmartAction('summarize')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5 w-full justify-center">
+                  <Sparkles className="w-3.5 h-3.5"/> סכם פסקה זו
+                </button>
+              )}
+            </div>
+
+            {/* שכבה תחתונה: דיפולטיבית (Default Actions) - אפור כהה */}
+            <div className="bg-slate-800 text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-slate-700 text-xs font-medium">
+              <button onClick={() => handleQuickAction('translate')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
+                <span className="text-sm leading-none">文</span> תרגם
+              </button>
+              <div className="w-px h-4 bg-slate-600"></div>
+              
+              <button onClick={() => handleQuickAction('explain')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
+                <span className="text-sm leading-none">💡</span> הסבר
+              </button>
+              <div className="w-px h-4 bg-slate-600"></div>
+              
+              <button onClick={() => handleQuickAction('quiz')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
+                <span className="text-sm leading-none">❓</span> בחן אותי
+              </button>
+              
+              {/* כפתור פתיחת שיחה מודגש */}
+              <button onClick={() => handleQuickAction('chat')} disabled={isCreatingThread} className="px-3 py-2 bg-blue-600 hover:bg-blue-500 transition-colors flex items-center gap-1.5 border-r border-blue-500">
+                {isCreatingThread ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Plus className="w-3.5 h-3.5" />} צ'אט
+              </button>
+            </div>
           </div>
         )}
       </div>

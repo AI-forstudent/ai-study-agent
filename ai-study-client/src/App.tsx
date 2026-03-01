@@ -31,6 +31,7 @@ function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [systemStatus, setSystemStatus] = useState({ healthy: true, error: null as string | null });
+  const [pendingForkMsgId, setPendingForkMsgId] = useState<number | null>(null);
 
   const { textSelection, activeThread, setTextSelection, setActiveThread } = useAppStore();
   const pdfContainerRef = useRef<HTMLDivElement>(null);
@@ -141,6 +142,16 @@ function App() {
     handleCreateThread(prompt);
   };
 
+// הפונקציה הזו עכשיו *רק* מעדכנת סטייט ב-UI, בלי לדבר עם ה-API! (הערכה עצלה)
+  const handleForkMessage = (messageId: number) => {
+    if (pendingForkMsgId === messageId) {
+      setPendingForkMsgId(null); // כיבוי: אם המשתמש התחרט
+    } else {
+      setPendingForkMsgId(messageId); // הדלקה: סימון ההודעה שממנה נרצה לפצל
+    }
+  };
+
+  // הפונקציה הזו עושה עכשיו את העבודה הכפולה רק ברגע השליחה
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || !activeThread) return;
     const userMsgContent = inputMessage;
@@ -148,11 +159,25 @@ function App() {
     setIsSending(true);
 
     try {
+      let targetThread = activeThread;
+
+      // --- חיתוך הפיצול העצל (Lazy Forking) ---
+      // בודקים אם המשתמש סימן שהוא רוצה לפצל לפני שהוא שלח את ההודעה
+      if (pendingForkMsgId) {
+        const forkResponse = await api.forkThread(activeThread.id, pendingForkMsgId);
+        targetThread = forkResponse.data;
+        
+        // מוסיפים את הענף החדש למערך, ועוברים אליו
+        setThreads(prev => [...prev, targetThread]);
+        setPendingForkMsgId(null); // מאפסים את כפתור הפיצול
+      }
+
+      // שליחת ההודעה האמיתית (לענף המקורי או לחדש שנוצר הרגע)
       const optimisticMsg: Message = { id: Date.now(), role: 'user', content: userMsgContent };
-      const updatedThread = { ...activeThread, messages: [...(activeThread.messages || []), optimisticMsg] };
+      const updatedThread = { ...targetThread, messages: [...(targetThread.messages || []), optimisticMsg] };
       setActiveThread(updatedThread);
       
-      const response = await api.sendMessage(activeThread.id, userMsgContent + " (ענה בעברית, תשובה קצרה עד 7 שורות, השתמש בבולטים)");
+      const response = await api.sendMessage(targetThread.id, userMsgContent);
       const finalThread = { ...updatedThread, messages: [...updatedThread.messages, response.data] };
       
       setActiveThread(finalThread);
@@ -196,14 +221,16 @@ function App() {
               pdfContainerRef={pdfContainerRef}
               handleTextSelection={handleTextSelection} 
             />
-            <ChatPanel 
-              activeThread={activeThread} 
-              threads={threads} 
+            <ChatPanel
+              activeThread={activeThread}
+              threads={threads}
               setActiveThread={setActiveThread}
-              inputMessage={inputMessage} 
+              inputMessage={inputMessage}
               setInputMessage={setInputMessage}
-              handleSendMessage={handleSendMessage} 
+              handleSendMessage={handleSendMessage}
               isSending={isSending}
+              onForkMessage={handleForkMessage} 
+              pendingForkMsgId={pendingForkMsgId}
             />
           </div>
         )}

@@ -1,15 +1,21 @@
 import os
 from dotenv import load_dotenv
 import pdfplumber
+import models
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-
+from sqlalchemy import select, literal, or_ , cast, null, Integer
+from sqlalchemy.orm import Session, aliased
+from typing import List, Optional
 # --- Imports for Providers ---
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 
 load_dotenv()
+# שורת דיבאג זמנית - מדפיסה רק את ההתחלה של המפתח כדי לראות מה באמת נטען
+api_key = os.getenv("GOOGLE_API_KEY")
+print(f"🔍 DEBUG: API Key loaded starts with: {api_key[:10] if api_key else 'None'}")
 
 def check_llm_connection():
     """מבצע בדיקה יזומה מול הספק הנבחר כדי לראות שהכל תקין"""
@@ -178,8 +184,126 @@ def get_chat_response_for_thread(history: list, selected_text: str, root_summary
     try:
         response = llm.invoke(prompt)
         content = response.content
+        
+        # טיפול בחילוץ טקסט נקי במידה והמודל מחזיר רשימה של בלוקים (כמו שקרה בתמונה)
+        if isinstance(content, list):
+            extracted_texts = []
+            for item in content:
+                if isinstance(item, dict) and 'text' in item:
+                    extracted_texts.append(item['text'])
+                elif isinstance(item, str):
+                    extracted_texts.append(item)
+            return "\n\n".join(extracted_texts)
+            
         return content if isinstance(content, str) else str(content)
         
     except Exception as e:
         print(f"❌ Error chat: {e}")
         return "מצטער, הייתה שגיאה ביצירת התשובה."
+
+def get_thread_history_python(thread_id: int, db: Session, max_depth: int) -> Optional[List[models.Message]]:
+    """
+    סורק את היסטוריית השיחה באמצעות Python.
+    מחזיר את רשימת ההודעות, או None אם העץ עמוק מדי (ואז נעבור ל-SQL).
+    """
+    history = []
+    current_thread_id = thread_id
+    limit_message_id = None  # בשיחה הנוכחית (הילד) אין הגבלה, אנחנו רוצים את כל ההודעות
+    depth = 0
+    
+    while current_thread_id:
+        # 1. בדיקת סף העומק
+        if depth > max_depth:
+            print(f"🌲 Tree is too deep (depth > {max_depth}). Switching to SQL!")
+            return None # מחזירים None כדי לאותת לנתב ההיברידי לעבור ל-SQL
+            
+        # 2. שליפת השרשור הנוכחי
+        current_thread = db.query(models.Thread).filter(models.Thread.id == current_thread_id).first()
+        if not current_thread:
+            break
+            
+        # 3. בניית השאילתה להודעות של השרשור הזה
+        query = db.query(models.Message).filter(models.Message.thread_id == current_thread_id)
+        
+        # אם אנחנו באבא, אנחנו מגבילים את השליפה עד לנקודת הפיצול
+        if limit_message_id is not None:
+            query = query.filter(models.Message.id <= limit_message_id)
+            
+        # שולפים את ההודעות בסדר עולה (מהישן לחדש)
+        messages = query.order_by(models.Message.id.asc()).all()
+        
+        # 4. מחברים את ההודעות לתחילת ההיסטוריה (כי אנחנו הולכים אחורה)
+        history = messages + history
+        
+        # 5. מכינים את הקפיצה לאבא הבא
+        limit_message_id = current_thread.forked_from_message_id
+        current_thread_id = current_thread.parent_thread_id
+        depth += 1
+        
+    return history
+
+def get_full_thread_history(thread_id: int, db: Session, max_depth: int = 3) -> List[models.Message]:
+    """
+    הנתב ההיברידי: מנסה קודם עם פייתון, ואם העץ עמוק מדי, עובר ל-SQL.
+    """
+    # שלב 3 - מנסים את מנגנון הפייתון
+    history = get_thread_history_python(thread_id, db, max_depth)
+    
+    # שלב 4 - הפולבאק ל-SQL (נממש בשלב הבא!)
+    if history is None:
+        print("🚀 Executing Recursive SQL CTE for deep thread history...")
+        # התיקון כאן: מוודאים שאנחנו באמת קוראים לפונקציית ה-SQL ושומרים את התוצאה
+        history = get_thread_history_sql(thread_id, db)
+        
+    return history        
+
+def get_thread_history_sql(thread_id: int, db: Session) -> List[models.Message]:
+    """
+    סורק את היסטוריית השיחה באמצעות CTE רקורסיבי בגישת SQLAlchemy 2.0 טהורה.
+    """
+    
+    # 1. Base Case
+    base_query = (
+        select(
+            models.Thread.id.label("current_thread_id"),
+            models.Thread.parent_thread_id,
+            models.Thread.forked_from_message_id,
+            # התיקון: כפיית טיפוס Integer על ה-Null ברמת ה-DB!
+            cast(null(), Integer).label("limit_msg_id") 
+        )
+        .where(models.Thread.id == thread_id)
+        .cte(name="thread_path", recursive=True)
+    )
+
+    # 2. Recursive Step
+    t_alias = aliased(models.Thread)
+    
+    recursive_query = (
+        select(
+            t_alias.id,
+            t_alias.parent_thread_id,
+            t_alias.forked_from_message_id,
+            base_query.c.forked_from_message_id 
+        )
+        .join(base_query, t_alias.id == base_query.c.parent_thread_id)
+    )
+
+    # 3. חיבור (UNION ALL)
+    recursive_cte = base_query.union_all(recursive_query)
+
+    # 4. Final Query
+    stmt = (
+        select(models.Message)
+        .join(recursive_cte, models.Message.thread_id == recursive_cte.c.current_thread_id)
+        .where(
+            or_(
+                recursive_cte.c.limit_msg_id.is_(None), 
+                models.Message.id <= recursive_cte.c.limit_msg_id 
+            )
+        )
+        .order_by(models.Message.id.asc())
+    )
+
+    messages = db.execute(stmt).scalars().all()
+    
+    return list(messages)

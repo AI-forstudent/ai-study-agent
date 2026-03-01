@@ -44,6 +44,8 @@ class ThreadResponse(ThreadBase):
     id: int
     document_id: int
     created_at: datetime
+    parent_thread_id: Optional[int] = None
+    forked_from_message_id: Optional[int] = None
     messages: List[MessageResponse] = [] # מחזיר את כל ההודעות בבועה
     class Config:
         from_attributes = True

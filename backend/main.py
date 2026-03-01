@@ -136,10 +136,12 @@ def upload_document(
 
 @app.get("/documents/{document_id}/threads/", response_model=List[schemas.ThreadResponse])
 def get_document_threads(document_id: int, db: Session = Depends(get_db)):
-    # שולפים ממסד הנתונים את כל השיחות ששייכות למסמך הספציפי הזה
     threads = db.query(models.Thread).filter(models.Thread.document_id == document_id).all()
     
-    # מחזירים אותן ללקוח (אם אין, SQLAlchemy יחזיר רשימה ריקה וזה מושלם)
+    # הזרקת ההיסטוריה ההיברידית לכל שיחה!
+    for thread in threads:
+        thread.messages = services.get_full_thread_history(thread.id, db)
+        
     return threads
 
 @app.post("/threads/", response_model=schemas.ThreadResponse)
@@ -203,6 +205,43 @@ def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Se
     
     # --- שליפת המידע המורחב ---
     doc = db.query(models.Document).filter(models.Document.id == thread.document_id).first()
+    
+    # התיקון: במקום לשלוף רק את ההודעות הפיזיות, משתמשים בנתב שלנו
+    full_history = services.get_full_thread_history(thread_id, db)
+    
+    all_chunks = db.query(models.Chunk).filter(models.Chunk.document_id == thread.document_id).all()
+    page_chunks = db.query(models.Chunk).filter(
+        models.Chunk.document_id == thread.document_id,
+        models.Chunk.page_number == thread.page_number
+    ).all()
+    current_page_text = "\n".join([c.text for c in page_chunks])
+    
+    ai_response = services.get_chat_response_for_thread(
+        history=full_history, # <--- מעבירים ל-LLM את כל העץ!
+        selected_text=thread.selected_text,
+        root_summary=doc.summary,
+        doc_chunks=all_chunks,
+        current_page_text=current_page_text
+    )
+    
+    ai_msg = models.Message(thread_id=thread_id, role="assistant", content=ai_response)
+    db.add(ai_msg)
+    db.commit()
+    db.refresh(ai_msg)
+    return ai_msg
+
+@app.post("/threads/{thread_id}/messages/", response_model=schemas.MessageResponse)
+def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Session = Depends(get_db)):
+    thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+        
+    user_msg = models.Message(thread_id=thread_id, role="user", content=message.content)
+    db.add(user_msg)
+    db.commit()
+    
+    # --- שליפת המידע המורחב ---
+    doc = db.query(models.Document).filter(models.Document.id == thread.document_id).first()
     history = db.query(models.Message).filter(models.Message.thread_id == thread_id).order_by(models.Message.id).all()
     
     all_chunks = db.query(models.Chunk).filter(models.Chunk.document_id == thread.document_id).all()
@@ -226,6 +265,29 @@ def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Se
     db.commit()
     db.refresh(ai_msg)
     return ai_msg
+@app.post("/threads/{thread_id}/fork/", response_model=schemas.ThreadResponse)
+def fork_thread(thread_id: int, message_id: int, db: Session = Depends(get_db)):
+    # 1. מציאת שיחת האב
+    parent_thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
+    if not parent_thread:
+        raise HTTPException(status_code=404, detail="Parent thread not found")
+
+    # 2. יצירת ענף חדש - מצביע נטו (בלי לשכפל שום הודעה!)
+    new_thread = models.Thread(
+        document_id=parent_thread.document_id,
+        page_number=parent_thread.page_number,
+        selected_text=parent_thread.selected_text,
+        coordinates=parent_thread.coordinates,
+        parent_thread_id=parent_thread.id,  # המצביע לאבא
+        forked_from_message_id=message_id   # המצביע לנקודת הפיצול
+    )
+    db.add(new_thread)
+    db.commit()
+    db.refresh(new_thread)
+
+    new_thread.messages = services.get_full_thread_history(new_thread.id, db)
+
+    return new_thread
 
 def kill_server_logic():
     """השרת מכבה את עצמו בלבד"""

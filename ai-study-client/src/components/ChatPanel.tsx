@@ -1,10 +1,67 @@
-import React from 'react';
-import { Send, Bot, User as UserIcon, X, MessageSquare, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import type { Thread } from '../types';
+import remarkGfm from 'remark-gfm';
+import type { Thread, Message } from '../types';
 
+// --- רכיב העץ הרקורסיבי שלנו ---
+const ThreadNode: React.FC<{
+  thread: Thread;
+  allThreads: Thread[];
+  onSelectThread: (thread: Thread) => void;
+  depth?: number;
+}> = ({ thread, allThreads, onSelectThread, depth = 0 }) => {
+  const children = allThreads.filter(t => t.parent_thread_id === thread.id);
+
+  let displayTitle = `📄 "${thread.selected_text}"`; 
+  
+  if (thread.parent_thread_id && thread.forked_from_message_id) {
+    const firstNewMsg = thread.messages?.find(
+      m => m.id > thread.forked_from_message_id! && m.role === 'user'
+    );
+    displayTitle = firstNewMsg ? `🔀 ${firstNewMsg.content}` : `🔀 פיצול חדש מתוך השיחה`;
+  }
+
+  return (
+    <div className="relative">
+      {depth > 0 && (
+        <div className="absolute -right-4 top-6 w-4 h-px bg-slate-300 rounded-full" />
+      )}
+
+      <div
+        onClick={() => onSelectThread(thread)}
+        className={`p-3 bg-white border ${
+          depth === 0 ? 'border-slate-300 shadow-sm mt-4' : 'border-slate-200 mt-2'
+        } rounded-lg hover:border-blue-400 hover:shadow-md cursor-pointer transition-all relative z-10 group`}
+      >
+        <div className="flex gap-2 items-start">
+          <p className="text-slate-700 text-sm line-clamp-2 font-medium group-hover:text-blue-700 transition-colors" dir="auto">
+            {displayTitle}
+          </p>
+        </div>
+      </div>
+
+      {children.length > 0 && (
+        <div className="relative pr-6">
+          <div className="absolute right-2 top-0 bottom-6 w-px bg-slate-300 rounded-full" />
+          {children.map(child => (
+            <ThreadNode
+              key={child.id}
+              thread={child}
+              allThreads={allThreads}
+              onSelectThread={onSelectThread}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- הקומפוננטה המרכזית ---
 interface ChatPanelProps {
   activeThread: Thread | null;
   threads: Thread[];
@@ -13,6 +70,8 @@ interface ChatPanelProps {
   setInputMessage: (msg: string) => void;
   handleSendMessage: () => void;
   isSending: boolean;
+  onForkMessage: (messageId: number) => void;
+  pendingForkMsgId: number | null; // <-- הוספנו את הסטייט החדש
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -22,79 +81,194 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   inputMessage,
   setInputMessage,
   handleSendMessage,
-  isSending
+  isSending,
+  onForkMessage,
+  pendingForkMsgId
 }) => {
-  return (
-    <div className="w-1/3 bg-white rounded-xl shadow-lg border border-slate-200 flex flex-col overflow-hidden h-full max-h-full transition-all">
-      {/* כותרת הפאנל */}
-      <div className="p-4 border-b bg-slate-50 flex justify-between items-center shrink-0">
-        <h2 className="font-bold text-slate-700 flex items-center gap-2">
-          <Bot className="w-5 h-5 text-blue-600"/> 
-          {activeThread ? "השיחה שלי" : "העוזר האישי"}
-        </h2>
-        {activeThread && (
-          <button onClick={() => setActiveThread(null)} className="text-slate-400 hover:text-slate-600">
-            <X className="w-5 h-5"/>
-          </button>
+  const [activeTab, setActiveTab] = useState<'tree' | 'chat'>('tree');
+
+  const handleSelectThread = (thread: Thread) => {
+    setActiveThread(thread);
+    setActiveTab('chat');
+  };
+  
+  const rootThreads = threads.filter(t => !t.parent_thread_id);
+
+  const renderMessage = (msg: Message, allThreads: Thread[], currentThread: Thread, setThread: Function, forkHandler: Function, pendingId: number | null) => (
+    <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm ${
+        msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'
+      }`}>
+        {msg.role === 'user' ? <UserIcon size={16}/> : <Bot size={16}/>}
+      </div>
+      
+      <div className="flex flex-col gap-2 max-w-[85%]">
+        <div className={`p-3.5 text-sm shadow-sm ${
+          msg.role === 'user' 
+            ? 'bg-blue-600 text-white rounded-2xl rounded-tr-none whitespace-pre-wrap' 
+            : 'bg-white border border-slate-200 text-slate-800 rounded-2xl rounded-tl-none prose prose-slate prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0'
+        }`}>
+          <ReactMarkdown 
+            remarkPlugins={[remarkMath, remarkGfm]} 
+            rehypePlugins={[rehypeKatex]}
+            components={{
+              p: ({node, ...props}) => <p dir="auto" {...props} />,
+              li: ({node, ...props}) => <li dir="auto" {...props} />,
+              table: ({node, ...props}) => (
+                <div className="overflow-x-auto my-4">
+                  <table className="border-collapse border border-slate-300 w-full shadow-sm rounded-lg" {...props} />
+                </div>
+              ),
+              th: ({node, ...props}) => (
+                <th dir="auto" className="border border-slate-300 bg-slate-50 p-2 font-bold text-slate-700 text-start" {...props} />
+              ),
+              td: ({node, ...props}) => (
+                <td dir="auto" className="border border-slate-300 p-2 text-slate-600 text-start" {...props} />
+              )
+            }}
+          >
+            {msg.content}
+          </ReactMarkdown>
+        </div>
+
+        {/* כפתור הפיצול המעודכן עם תמיכה בהשהייה */}
+        {msg.role === 'assistant' && (
+          <div className="flex justify-start mr-1">
+            {(() => {
+              const isForkActiveInDB = currentThread.forked_from_message_id === msg.id;
+              const isPendingFork = pendingId === msg.id;
+
+              let btnClass = 'bg-white text-slate-500 border border-slate-200 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 shadow-sm opacity-85 hover:opacity-100';
+              let btnText = 'פצל שיחה (הדלקה)';
+              let btnTitle = 'הדלק פיצול (צור ענף חדש מפה)';
+              let onClickHandler = () => forkHandler(msg.id);
+
+              if (isForkActiveInDB) {
+                btnClass = 'bg-purple-100 text-purple-700 border border-purple-300 shadow-sm ring-2 ring-purple-100/50';
+                btnText = 'פיצול פעיל (כיבוי וחזרה)';
+                btnTitle = 'כבה פיצול (חזור לשיחה המקורית)';
+                onClickHandler = () => {
+                  const parent = allThreads.find(t => t.id === currentThread.parent_thread_id);
+                  if (parent) setThread(parent);
+                };
+              } else if (isPendingFork) {
+                // המצב החדש: ממתין למשתמש שישלח הודעה
+                btnClass = 'bg-amber-100 text-amber-700 border border-amber-300 shadow-sm ring-2 ring-amber-100/50';
+                btnText = 'ממתין לפיצול (לחץ לביטול)';
+                btnTitle = 'בטל פיצול מתוכנן';
+                onClickHandler = () => forkHandler(msg.id);
+              }
+
+              return (
+                <button 
+                  onClick={onClickHandler}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all duration-300 ${btnClass}`}
+                  title={btnTitle}
+                >
+                  <GitBranch size={13} /> 
+                  {btnText}
+                </button>
+              );
+            })()}
+          </div>
         )}
       </div>
+    </div>
+  );
 
-      {!activeThread ? (
-        /* מצב רשימת שיחות קודמות */
-        <div className="flex-1 flex flex-col p-6 overflow-y-auto">
+  return (
+    <div className="w-1/3 bg-white rounded-xl shadow-lg border border-slate-200 flex flex-col overflow-hidden h-full max-h-full transition-all">
+      <div className="flex bg-slate-50 border-b border-slate-200 shrink-0">
+        <button 
+          onClick={() => setActiveTab('tree')}
+          className={`flex-1 py-3.5 flex items-center justify-center gap-2 text-sm font-bold border-b-2 transition-colors ${
+            activeTab === 'tree' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
+          }`}
+        >
+          <Network className="w-4 h-4"/> עץ שיחות
+        </button>
+        <button 
+          onClick={() => setActiveTab('chat')}
+          disabled={!activeThread}
+          className={`flex-1 py-3.5 flex items-center justify-center gap-2 text-sm font-bold border-b-2 transition-colors ${
+            !activeThread ? 'opacity-40 cursor-not-allowed text-slate-400' : 
+            activeTab === 'chat' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4"/> צ'אט פעיל
+        </button>
+      </div>
+
+      {activeTab === 'tree' ? (
+        <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-slate-50/30">
           {threads.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-400 text-center space-y-4">
-              <div className="bg-slate-50 p-6 rounded-full"><MessageSquare className="w-10 h-10 opacity-50"/></div>
-              <p className="text-lg">סמן טקסט ב-PDF כדי להתחיל</p>
+              <div className="bg-slate-50 p-6 rounded-full"><Network className="w-10 h-10 opacity-50"/></div>
+              <p className="text-lg">סמן טקסט ב-PDF כדי לפתוח שיחה ראשונה</p>
             </div>
           ) : (
-            <div className="space-y-3">
-              <p className="text-slate-500 text-sm font-medium mb-2">שיחות קודמות:</p>
-              {threads.map(t => (
-                <div key={t.id} onClick={() => setActiveThread(t)} className="p-3 bg-white border border-slate-200 rounded-lg hover:border-blue-300 cursor-pointer transition-all">
-                  <p className="text-slate-700 text-sm line-clamp-2 font-medium">"{t.selected_text}"</p>
-                </div>
+            <div className="space-y-1">
+              {rootThreads.map(t => (
+                <ThreadNode
+                  key={t.id}
+                  thread={t}
+                  allThreads={threads}
+                  onSelectThread={handleSelectThread}
+                />
               ))}
             </div>
           )}
         </div>
       ) : (
-        /* מצב שיחה פעילה */
         <>
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
-            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-sm text-slate-700 mb-6">
-              <span className="font-bold block text-yellow-700 mb-1">📌 הקשר לשיחה:</span>
-              "{activeThread.selected_text}"
-            </div>
-
-            {activeThread.messages?.map((msg) => (
-              <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                  msg.role === 'user' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'
-                }`}>
-                  {msg.role === 'user' ? <UserIcon size={16}/> : <Bot size={16}/>}
-                </div>
-                <div className={`p-3 rounded-2xl max-w-[85%] text-sm shadow-sm ${
-                  msg.role === 'user' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
-                }`}>
-                  <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
+            {activeThread && (
+              <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-sm text-slate-700 mb-6 shadow-sm">
+                <span className="font-bold block text-yellow-700 mb-1">📌 הקשר לשיחה (סומן בטקסט):</span>
+                "{activeThread.selected_text}"
               </div>
-            ))}
-            
+            )}
+
+            {(() => {
+              const forkId = activeThread?.forked_from_message_id;
+              const historicalMsgs = forkId ? activeThread?.messages?.filter(m => m.id <= forkId) : [];
+              const currentMsgs = forkId ? activeThread?.messages?.filter(m => m.id > forkId) : activeThread?.messages;
+
+              return (
+                <>
+                  {historicalMsgs && historicalMsgs.length > 0 && (
+                    <details className="group mb-6">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-500 bg-slate-200/60 hover:bg-slate-200 px-4 py-2 rounded-full mx-auto w-fit transition-colors flex items-center gap-2">
+                        <span>👀 צפה בהיסטוריית השיחה הקודמת ({historicalMsgs.length} הודעות)</span>
+                        <Network size={14} className="group-open:rotate-180 transition-transform"/>
+                      </summary>
+                      <div className="mt-4 space-y-4 opacity-70 border-r-2 border-slate-300 pr-4 mr-2">
+                         {historicalMsgs.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                      </div>
+                    </details>
+                  )}
+
+                  {currentMsgs?.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                </>
+              );
+            })()}
+
             {isSending && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center"><Bot size={16}/></div>
-                <div className="bg-white border p-3 rounded-2xl text-slate-500 text-sm flex items-center gap-2">
-                  <Loader2 className="w-3 h-3 animate-spin"/> חושב...
+              <div className="flex gap-3 animate-in fade-in duration-300">
+                <div className="w-8 h-8 bg-purple-100 text-purple-300 rounded-full flex items-center justify-center shrink-0 shadow-sm">
+                  <Bot size={16}/>
+                </div>
+                <div className="p-4 rounded-2xl w-full max-w-[85%] bg-white border border-slate-200 rounded-tl-none shadow-sm">
+                  <div className="animate-pulse flex flex-col gap-3">
+                    <div className="h-2.5 bg-slate-200 rounded-full w-3/4"></div>
+                    <div className="h-2.5 bg-slate-200 rounded-full w-full"></div>
+                    <div className="h-2.5 bg-slate-200 rounded-full w-1/2"></div>
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* שדה קלט */}
           <div className="p-4 bg-white border-t flex gap-2 shrink-0">
             <input
               type="text"
@@ -102,9 +276,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               onChange={(e) => setInputMessage(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               placeholder="המשך את השיחה..."
-              className="flex-1 border border-slate-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              className="flex-1 border border-slate-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm shadow-sm"
             />
-            <button onClick={handleSendMessage} disabled={!inputMessage.trim() || isSending} className="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 disabled:opacity-50">
+            <button onClick={handleSendMessage} disabled={!inputMessage.trim() || isSending} className="bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors">
               <Send className="w-5 h-5" />
             </button>
           </div>

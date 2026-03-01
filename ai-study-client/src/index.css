@@ -1,3 +1,17 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* עיצוב סימון הטקסט הכללי באפליקציה (הופך לסגול AI בהיר) */
+::selection {
+  background-color: rgba(147, 51, 234, 0.3); /* צבע סגול תואם לסרגל העליון, עם 30% שקיפות */
+  color: inherit;
+}
+
+/* הגדרה ספציפית וחכמה ל-PDF בלבד */
+.react-pdf__Page__textContent ::selection {
+  /* שמים רקע סגול עדין מאוד שלא יסתיר את הטקסט שמתחת בקנבס */
+  background-color: rgba(168, 85, 247, 0.4); 
+  /* אנחנו מכריחים את הטקסט להישאר שקוף כדי שנראה את המסמך המקורי מתחת לסימון */
+  color: transparent !important; 
+}
