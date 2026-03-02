@@ -6,72 +6,22 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import type { Thread, Message } from '../types';
 
-// --- רכיב העץ הרקורסיבי שלנו ---
-const ThreadNode: React.FC<{
-  thread: Thread;
-  allThreads: Thread[];
-  onSelectThread: (thread: Thread) => void;
-  depth?: number;
-}> = ({ thread, allThreads, onSelectThread, depth = 0 }) => {
-  const children = allThreads.filter(t => t.parent_thread_id === thread.id);
+import { mockThreads } from './mockTreeData';
+import { BreadcrumbTree } from './BreadcrumbTree';
+import { MillerColumnsTree } from './MillerColumnsTree';
+import { NodeGraphTree } from './NodeGraphTree';
 
-  let displayTitle = `📄 "${thread.selected_text}"`; 
-  
-  if (thread.parent_thread_id && thread.forked_from_message_id) {
-    const firstNewMsg = thread.messages?.find(
-      m => m.id > thread.forked_from_message_id! && m.role === 'user'
-    );
-    displayTitle = firstNewMsg ? `🔀 ${firstNewMsg.content}` : `🔀 פיצול חדש מתוך השיחה`;
-  }
-
-  return (
-    <div className="relative">
-      {depth > 0 && (
-        <div className="absolute -right-4 top-6 w-4 h-px bg-slate-300 rounded-full" />
-      )}
-
-      <div
-        onClick={() => onSelectThread(thread)}
-        className={`p-3 bg-white border ${
-          depth === 0 ? 'border-slate-300 shadow-sm mt-4' : 'border-slate-200 mt-2'
-        } rounded-lg hover:border-blue-400 hover:shadow-md cursor-pointer transition-all relative z-10 group`}
-      >
-        <div className="flex gap-2 items-start">
-          <p className="text-slate-700 text-sm line-clamp-2 font-medium group-hover:text-blue-700 transition-colors" dir="auto">
-            {displayTitle}
-          </p>
-        </div>
-      </div>
-
-      {children.length > 0 && (
-        <div className="relative pr-6">
-          <div className="absolute right-2 top-0 bottom-6 w-px bg-slate-300 rounded-full" />
-          {children.map(child => (
-            <ThreadNode
-              key={child.id}
-              thread={child}
-              allThreads={allThreads}
-              onSelectThread={onSelectThread}
-              depth={depth + 1}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// --- הקומפוננטה המרכזית ---
 interface ChatPanelProps {
   activeThread: Thread | null;
-  threads: Thread[];
+  threads: Thread[]; 
   setActiveThread: (thread: Thread | null) => void;
   inputMessage: string;
   setInputMessage: (msg: string) => void;
   handleSendMessage: () => void;
   isSending: boolean;
   onForkMessage: (messageId: number) => void;
-  pendingForkMsgId: number | null; // <-- הוספנו את הסטייט החדש
+  pendingForkMsgId: number | null;
+  treeViewMode: 'miller' | 'breadcrumbs' | 'graph';
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -83,16 +33,21 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   handleSendMessage,
   isSending,
   onForkMessage,
-  pendingForkMsgId
+  pendingForkMsgId,
+  treeViewMode
 }) => {
   const [activeTab, setActiveTab] = useState<'tree' | 'chat'>('tree');
 
+  // פונקציית הניווט בעץ (לא מעבירה לצ'אט!)
   const handleSelectThread = (thread: Thread) => {
+    setActiveThread(thread);
+  };
+
+  // פונקציה חדשה: כניסה ישירה לצ'אט הפעיל
+  const handleEnterChat = (thread: Thread) => {
     setActiveThread(thread);
     setActiveTab('chat');
   };
-  
-  const rootThreads = threads.filter(t => !t.parent_thread_id);
 
   const renderMessage = (msg: Message, allThreads: Thread[], currentThread: Thread, setThread: Function, forkHandler: Function, pendingId: number | null) => (
     <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
@@ -131,7 +86,6 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           </ReactMarkdown>
         </div>
 
-        {/* כפתור הפיצול המעודכן עם תמיכה בהשהייה */}
         {msg.role === 'assistant' && (
           <div className="flex justify-start mr-1">
             {(() => {
@@ -152,7 +106,6 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                   if (parent) setThread(parent);
                 };
               } else if (isPendingFork) {
-                // המצב החדש: ממתין למשתמש שישלח הודעה
                 btnClass = 'bg-amber-100 text-amber-700 border border-amber-300 shadow-sm ring-2 ring-amber-100/50';
                 btnText = 'ממתין לפיצול (לחץ לביטול)';
                 btnTitle = 'בטל פיצול מתוכנן';
@@ -185,7 +138,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             activeTab === 'tree' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
           }`}
         >
-          <Network className="w-4 h-4"/> עץ שיחות
+          <Network className="w-4 h-4"/> עץ שיחות (Mock)
         </button>
         <button 
           onClick={() => setActiveTab('chat')}
@@ -201,23 +154,26 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {activeTab === 'tree' ? (
         <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-slate-50/30">
-          {threads.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 text-center space-y-4">
-              <div className="bg-slate-50 p-6 rounded-full"><Network className="w-10 h-10 opacity-50"/></div>
-              <p className="text-lg">סמן טקסט ב-PDF כדי לפתוח שיחה ראשונה</p>
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {rootThreads.map(t => (
-                <ThreadNode
-                  key={t.id}
-                  thread={t}
-                  allThreads={threads}
-                  onSelectThread={handleSelectThread}
-                />
-              ))}
-            </div>
-          )}
+{/* הנתב החכם שלנו שבוחר את התצוגה לפי בחירת המשתמש */}
+          {(() => {
+            const strategyProps = {
+              threads: mockThreads,
+              activeThread,
+              onSelectThread: handleSelectThread,
+              onEnterChat: handleEnterChat
+            };
+
+            switch (treeViewMode) {
+              case 'breadcrumbs':
+                return <BreadcrumbTree {...strategyProps} />;
+              case 'graph':
+                return <NodeGraphTree {...strategyProps} />;
+              case 'miller':
+              default:
+                return <MillerColumnsTree {...strategyProps} />;
+            }
+          })()}
+
         </div>
       ) : (
         <>
@@ -243,12 +199,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                         <Network size={14} className="group-open:rotate-180 transition-transform"/>
                       </summary>
                       <div className="mt-4 space-y-4 opacity-70 border-r-2 border-slate-300 pr-4 mr-2">
-                         {historicalMsgs.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                         {historicalMsgs.map(msg => renderMessage(msg, mockThreads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
                       </div>
                     </details>
                   )}
 
-                  {currentMsgs?.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                  {currentMsgs?.map(msg => renderMessage(msg, mockThreads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
                 </>
               );
             })()}

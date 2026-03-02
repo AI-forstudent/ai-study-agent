@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FileText, Power } from 'lucide-react'
+import { FileText, Power, Settings} from 'lucide-react'
 import { pdfjs } from 'react-pdf';
 
 // קבצי עיצוב חובה כדי שה-PDF לא ייתקע וכדי שאפשר יהיה לסמן טקסט!
@@ -32,7 +32,7 @@ function App() {
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [systemStatus, setSystemStatus] = useState({ healthy: true, error: null as string | null });
   const [pendingForkMsgId, setPendingForkMsgId] = useState<number | null>(null);
-
+  const [treeViewMode, setTreeViewMode] = useState<'miller' | 'breadcrumbs' | 'graph'>('miller');
   const { textSelection, activeThread, setTextSelection, setActiveThread } = useAppStore();
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const { handleShutdown } = useSystemControl(); 
@@ -55,6 +55,20 @@ function App() {
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
+
+    // === 🛑 מצב פיתוח (DEV MODE) - עקיפת ה-API ===
+    // כשתרצה לחזור לעבוד מול השרת האמיתי, פשוט שנה את זה ל-false
+    const IS_DEV_MODE = true; 
+    
+    if (IS_DEV_MODE) {
+      console.log("🛠️ DEV MODE: Simulating file upload bypass...");
+      setFile(selectedFile); // ה-PDF עדיין יוצג במסך!
+      setDocumentId(999); // מזהה מסמך פיקטיבי
+      setActiveThread(null);
+      setThreads([]); // פה ה-ChatPanel יקח פיקוד עם ה-Mock Data שלנו
+      return; // עוצרים פה! לא ממשיכים לשרת.
+    }
+    // ===============================================
 
     setIsUploading(true);
     setUploadError(null);
@@ -191,16 +205,35 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans" dir="rtl">
-      <header className="bg-white border-b p-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+<header className="bg-white border-b p-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center">
           <div className="bg-blue-600 p-2 rounded-lg ml-3"><FileText className="text-white w-6 h-6" /></div>
           <h1 className="text-xl font-bold text-slate-800">AI Study Partner</h1>
         </div>
-        <button onClick={handleShutdown} className="text-slate-400 hover:text-red-600 p-2 rounded-full transition-all">
-          <Power className="w-6 h-6" />
-        </button>
-      </header>
+        
+        {/* אזור הכפתורים בצד שמאל של ההדר */}
+        <div className="flex items-center gap-4">
+          
+          {/* מתג ההגדרות שלנו! */}
+          <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+            <Settings className="w-4 h-4 text-slate-500" />
+            <span className="text-sm font-semibold text-slate-600">תצוגת עץ:</span>
+            <select 
+              value={treeViewMode}
+              onChange={(e) => setTreeViewMode(e.target.value as 'miller' | 'breadcrumbs' | 'graph')}
+              className="bg-transparent text-sm font-bold text-blue-600 focus:outline-none cursor-pointer pr-1"
+            >
+              <option value="miller">עמודות מילר (מומלץ)</option>
+              <option value="graph">תרשים זרימה גרפי</option>
+              <option value="breadcrumbs">פירורי לחם (קלאסי)</option>
+            </select>
+          </div>
 
+          <button onClick={handleShutdown} className="text-slate-400 hover:text-red-600 p-2 rounded-full transition-all">
+            <Power className="w-6 h-6" />
+          </button>
+        </div>
+      </header>
       <main className="flex-1 flex items-center justify-center p-6 h-[calc(100vh-80px)]">
         {!file && (
           <FileUploadView isUploading={isUploading} uploadError={uploadError} onFileChange={handleFileChange} />
@@ -231,6 +264,7 @@ function App() {
               isSending={isSending}
               onForkMessage={handleForkMessage} 
               pendingForkMsgId={pendingForkMsgId}
+              treeViewMode={treeViewMode}
             />
           </div>
         )}
