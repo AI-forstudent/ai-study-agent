@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import type { Thread, Message } from '../types';
-
 import { mockThreads } from './mockTreeData';
 import { BreadcrumbTree } from './BreadcrumbTree';
 import { MillerColumnsTree } from './MillerColumnsTree';
@@ -22,6 +21,7 @@ interface ChatPanelProps {
   onForkMessage: (messageId: number) => void;
   pendingForkMsgId: number | null;
   treeViewMode: 'miller' | 'breadcrumbs' | 'graph';
+  currentPage: number; // <-- מגיע מ-App כדי לדעת איזה סיכום להציג
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -34,16 +34,23 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   isSending,
   onForkMessage,
   pendingForkMsgId,
-  treeViewMode
+  treeViewMode,
+  currentPage
 }) => {
-  const [activeTab, setActiveTab] = useState<'tree' | 'chat'>('tree');
+  // הוספנו את 'summary' לטאבים האפשריים!
+  const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
 
-  // פונקציית הניווט בעץ (לא מעבירה לצ'אט!)
   const handleSelectThread = (thread: Thread) => {
     setActiveThread(thread);
   };
+  // מאזין חכם: אם נבחרה שיחה אקטיבית חדשה (למשל מלחיצה על מרקר ב-PDF), 
+// תקפוץ אוטומטית לטאב של הצ'אט!
+React.useEffect(() => {
+  if (activeThread) {
+    setActiveTab('chat');
+  }
+}, [activeThread]);
 
-  // פונקציה חדשה: כניסה ישירה לצ'אט הפעיל
   const handleEnterChat = (thread: Thread) => {
     setActiveThread(thread);
     setActiveTab('chat');
@@ -130,57 +137,93 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   );
 
   return (
-    <div className="w-1/3 bg-white rounded-xl shadow-lg border border-slate-200 flex flex-col overflow-hidden h-full max-h-full transition-all">
+    <div className="w-full bg-white rounded-xl shadow-lg border border-slate-200 flex flex-col overflow-hidden h-full max-h-full transition-all">      {/* אזור הטאבים עודכן כדי להכיל 3 כפתורים */}
       <div className="flex bg-slate-50 border-b border-slate-200 shrink-0">
         <button 
           onClick={() => setActiveTab('tree')}
-          className={`flex-1 py-3.5 flex items-center justify-center gap-2 text-sm font-bold border-b-2 transition-colors ${
+          className={`flex-1 py-3.5 flex items-center justify-center gap-1.5 text-xs sm:text-sm font-bold border-b-2 transition-colors ${
             activeTab === 'tree' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
           }`}
         >
-          <Network className="w-4 h-4"/> עץ שיחות (Mock)
+          <Network className="w-4 h-4"/> עץ שיחות
         </button>
         <button 
           onClick={() => setActiveTab('chat')}
           disabled={!activeThread}
-          className={`flex-1 py-3.5 flex items-center justify-center gap-2 text-sm font-bold border-b-2 transition-colors ${
+          className={`flex-1 py-3.5 flex items-center justify-center gap-1.5 text-xs sm:text-sm font-bold border-b-2 transition-colors ${
             !activeThread ? 'opacity-40 cursor-not-allowed text-slate-400' : 
             activeTab === 'chat' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
           }`}
         >
           <MessageSquare className="w-4 h-4"/> צ'אט פעיל
         </button>
+        <button 
+          onClick={() => setActiveTab('summary')}
+          className={`flex-1 py-3.5 flex items-center justify-center gap-1.5 text-xs sm:text-sm font-bold border-b-2 transition-colors ${
+            activeTab === 'summary' ? 'border-purple-600 text-purple-600 bg-white' : 'border-transparent text-slate-500 hover:bg-slate-100'
+          }`}
+        >
+          <FileText className="w-4 h-4"/> סיכום עמוד
+        </button>
       </div>
 
-      {activeTab === 'tree' ? (
+      {/* הרינדור המרכזי לפי הטאב הנבחר */}
+      {activeTab === 'tree' && (
         <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-slate-50/30">
-{/* הנתב החכם שלנו שבוחר את התצוגה לפי בחירת המשתמש */}
           {(() => {
             const strategyProps = {
-              threads: mockThreads,
+              threads,
               activeThread,
               onSelectThread: handleSelectThread,
               onEnterChat: handleEnterChat
             };
 
             switch (treeViewMode) {
-              case 'breadcrumbs':
-                return <BreadcrumbTree {...strategyProps} />;
-              case 'graph':
-                return <NodeGraphTree {...strategyProps} />;
+              case 'breadcrumbs': return <BreadcrumbTree {...strategyProps} />;
+              case 'graph': return <NodeGraphTree {...strategyProps} />;
               case 'miller':
-              default:
-                return <MillerColumnsTree {...strategyProps} />;
+              default: return <MillerColumnsTree {...strategyProps} />;
             }
           })()}
-
         </div>
-      ) : (
+      )}
+
+      {activeTab === 'summary' && (
+        <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-purple-50/30">
+          <div className="bg-white rounded-xl border border-purple-100 shadow-sm p-6 mb-4">
+            <h3 className="text-lg font-bold text-purple-800 mb-2 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-500"/>
+              סיכום עמוד {currentPage}
+            </h3>
+            <p className="text-sm text-slate-500 mb-6">גולל במסמך והסיכום יתעדכן אוטומטית.</p>
+            
+            {/* פה בהמשך נוסיף את הקריאה לשרת לסיכום של העמוד. בינתיים נציג אנימציה יפה */}
+            <div className="space-y-4">
+              <div className="h-4 bg-slate-200 rounded-full w-full animate-pulse"></div>
+              <div className="h-4 bg-slate-200 rounded-full w-5/6 animate-pulse"></div>
+              <div className="h-4 bg-slate-200 rounded-full w-4/6 animate-pulse"></div>
+              <br/>
+              <div className="h-4 bg-slate-200 rounded-full w-full animate-pulse"></div>
+              <div className="h-4 bg-slate-200 rounded-full w-3/4 animate-pulse"></div>
+            </div>
+            
+            <div className="mt-8 text-center">
+              <span className="text-xs font-semibold text-purple-600 bg-purple-100 px-3 py-1 rounded-full">
+                ממתין לחיבור ל-Backend (ג'ימיני)
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'chat' && (
         <>
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
             {activeThread && (
               <div className="bg-yellow-50 border border-yellow-200 p-3 rounded-lg text-sm text-slate-700 mb-6 shadow-sm">
-                <span className="font-bold block text-yellow-700 mb-1">📌 הקשר לשיחה (סומן בטקסט):</span>
+                <span className="font-bold block text-yellow-700 mb-1">
+                  {activeThread.emoji || '📌'} הקשר לשיחה (סומן בטקסט):
+                </span>
                 "{activeThread.selected_text}"
               </div>
             )}
@@ -199,12 +242,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                         <Network size={14} className="group-open:rotate-180 transition-transform"/>
                       </summary>
                       <div className="mt-4 space-y-4 opacity-70 border-r-2 border-slate-300 pr-4 mr-2">
-                         {historicalMsgs.map(msg => renderMessage(msg, mockThreads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                         {historicalMsgs.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
                       </div>
                     </details>
                   )}
 
-                  {currentMsgs?.map(msg => renderMessage(msg, mockThreads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
+                  {currentMsgs?.map(msg => renderMessage(msg, threads, activeThread!, setActiveThread, onForkMessage, pendingForkMsgId))}
                 </>
               );
             })()}

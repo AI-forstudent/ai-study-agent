@@ -15,6 +15,8 @@ export const api = {
   },
   
   getThreads: (docId: number) => axios.get(`${API_URL}/documents/${docId}/threads/`),
+
+  getThread: (threadId: number) => axios.get(`${API_URL}/threads/${threadId}`),
   
   createThread: (payload: any) => axios.post(`${API_URL}/threads/`, payload),
   

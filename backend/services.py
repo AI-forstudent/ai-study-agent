@@ -1,7 +1,9 @@
 import os
+import re
 from dotenv import load_dotenv
 import pdfplumber
 import models
+import requests
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
@@ -39,23 +41,44 @@ def get_smart_model():
     return ChatGoogleGenerativeAI(
         model="gemini-flash-latest",
         temperature=0.3, # need to be implemented to the user interaface  
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        timeout=15,       # מקסימום 15 שניות המתנה
+        max_retries=1     # ניסיון אחד בלבד. נכשל? זורק שגיאה.
     )
 
 def get_fast_model():
     return ChatGoogleGenerativeAI(
         model="gemini-flash-latest",
         temperature=0.5, # need to be implemented to the user interaface  
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        timeout=15,
+        max_retries=1
     )
 
+def ask_gemini(prompt: str, use_smart_model: bool = False) -> str:
+    """
+    צינור התקשורת מול ג'ימיני - ללא פולבאק מקומי!
+    אם ג'ימיני נופל, מחזירים הודעת שגיאה מסודרת למשתמש שמוצגת בצ'אט.
+    """
+    try:
+        llm = get_smart_model() if use_smart_model else get_fast_model()
+        response = llm.invoke(prompt)
+        content = response.content
+        
+        if isinstance(content, list):
+            extracted_texts = [item['text'] for item in content if isinstance(item, dict) and 'text' in item]
+            return "\n\n".join(extracted_texts)
+            
+        return content if isinstance(content, str) else str(content)
+        
+    except Exception as e:
+        print(f"❌ [Gemini API Error]: {e}")
+        return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע. אנא נסה לשלוח את ההודעה שוב בעוד מספר רגעים. 🔄"
+        
 def get_embedding_model():
-
-
-    # פתרון הנדסי: במקום להילחם ב-API של גוגל שמחזיר 404, נעבור למודל מקומי.
-    # המודל הזה (mpnet) מייצר וקטורים בגודל 768, כך שהוא מתאים בדיוק ל-DB שלנו!
-    print("🚀 Bypassing Google API: Using local HuggingFace model (768 dimensions)...")
-    return HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
+    # עברנו למודל רב-לשוני! תומך ב-50 שפות, כולל עברית, ומייצר וקטורים של 768 ממדים
+    print("🚀 Bypassing Google API: Using local HuggingFace Multilingual model (768 dimensions)...")
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
 
 def extract_text_from_pdf(file_path: str):
     print(f"🔍 Starting extraction for: {file_path}")
@@ -84,26 +107,36 @@ def split_text_into_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int
     return text_splitter.split_text(text)
 
 def generate_document_summary(text: str) -> str:
-    print(f"🤖 Generating summary...")
+    print(f"🤖 Generating summary directly with Cloud Model...")
+    limit = 40000
+    safe_text = text[:limit]
+    
+    prompt = f"""
+    You are an expert study assistant. 
+    Generate a comprehensive summary of the following document text.
+    Document Text: 
+    {safe_text}     
+    Summary:
+    """
+    
     try:
+        # קריאה ישירה למודל החכם, ללא הנתב (Orchestrator)
         llm = get_smart_model()
-        limit = 40000
-        safe_text = text[:limit]
-        
-        # need to be implemented to the user settenigs interaface with this as the default option
-        prompt = f"""
-        You are an expert study assistant. 
-        Generate a comprehensive summary of the following document text.
-        Document Text: 
-        {safe_text}     
-        Summary:
-        """
         response = llm.invoke(prompt)
+        
         content = response.content
+        
+        # טיפול במבנה הנתונים שג'ימיני עלול להחזיר
+        if isinstance(content, list):
+            extracted_texts = [item['text'] for item in content if isinstance(item, dict) and 'text' in item]
+            return "\n\n".join(extracted_texts)
+            
         return content if isinstance(content, str) else str(content)
+        
     except Exception as e:
-        print(f"❌ Error summary: {e}")
-        return "Error generating summary."
+        # כאן אנחנו תופסים קריסה של ה-API (למשל אם חרגת ממכסת הבקשות)
+        print(f"❌ [Document Summary] Cloud API Failed: {e}")
+        return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע, ולכן לא ניתן היה לייצר סיכום מלא למסמך. אפשר לנסות להעלות את המסמך שוב מאוחר יותר! 📄"
 
 def find_relevant_chunks(query: str, chunks_data: list, top_k: int = 3):
     # in order to make the search more efficient - needs to imlement the location of the chanks in the page and using it.
@@ -136,31 +169,28 @@ def find_relevant_chunks(query: str, chunks_data: list, top_k: int = 3):
         return []
 
 def get_chat_response_for_thread(history: list, selected_text: str, root_summary: str, doc_chunks: list, current_page_text: str = ""):
-    print(f"💬 Generating chat response...")
-    llm = get_fast_model() # we want to implementv a user intreface option to chose the mode.(default fast)
+    print(f"💬 Generating chat response (Gemini Only)...")
     
     last_user_msg = history[-1].content if history else ""
     
-    # 1. חיפוש חכם (RAG)
+    # חיפוש חכם (RAG)
     search_query = f"{selected_text} {last_user_msg}"
     relevant_context = find_relevant_chunks(search_query, doc_chunks)
     relevant_context_str = "\n---\n".join(relevant_context)
 
-    # 2. הכנת היסטוריה
-    conversation_text = ""
+    # הכנת היסטוריה מלאה לג'ימיני
+    full_conversation = ""
     for msg in history:
-        conversation_text += f"{msg.role}: {msg.content}\n"
-    
-    # in the idial plan we want to save the prompts and the answer in the data base represented by b-tree in order to manage the context.
-    # morover - we will implement the option to merge and "divide/duplicate" the chats - similar to github.
-    # 3. פרומפט (זהה לשני המודלים)
-    prompt = f"""
+        full_conversation += f"{msg.role}: {msg.content}\n"
+        
+    # הפרומפט הראשי והיחיד לג'ימיני
+    cloud_prompt = f"""
     You are a helpful and precise private tutor.
     
     --- DATA SOURCE 1: IMMEDIATE CONTEXT (Full page) ---
     {current_page_text}
     
-    --- DATA SOURCE 2: RELEVANT KNOWLEDGE (From search) ---
+    --- DATA SOURCE 2: RELEVANT KNOWLEDGE ---
     {relevant_context_str}
     
     --- DATA SOURCE 3: GLOBAL SUMMARY ---
@@ -169,37 +199,14 @@ def get_chat_response_for_thread(history: list, selected_text: str, root_summary
     --- USER REQUEST ---
     HIGHLIGHTED TEXT: "{selected_text}"
     CHAT HISTORY:
-    {conversation_text}
+    {full_conversation}
     
-    INSTRUCTIONS:
-    1. Answer in HEBREW (עברית).
-    2. Use "DATA SOURCE 1" to understand tables and context precisely.
-    3. Keep answer SHORT (Max 7 lines). 
-    4. Use **bold** and bullet points (*).
-    
+    INSTRUCTIONS: Answer in HEBREW. Use DATA SOURCE 1 for context. Keep answer SHORT (Max 7 lines).
     Your Answer:
     """
-    # like the default prompt instructurs above we will give the user the abbiltiy to dtermaine his own settings, for each chat/file/query 
-    # not have to be the same dynamic settings
-    try:
-        response = llm.invoke(prompt)
-        content = response.content
-        
-        # טיפול בחילוץ טקסט נקי במידה והמודל מחזיר רשימה של בלוקים (כמו שקרה בתמונה)
-        if isinstance(content, list):
-            extracted_texts = []
-            for item in content:
-                if isinstance(item, dict) and 'text' in item:
-                    extracted_texts.append(item['text'])
-                elif isinstance(item, str):
-                    extracted_texts.append(item)
-            return "\n\n".join(extracted_texts)
-            
-        return content if isinstance(content, str) else str(content)
-        
-    except Exception as e:
-        print(f"❌ Error chat: {e}")
-        return "מצטער, הייתה שגיאה ביצירת התשובה."
+    
+    # קריאה ישירה לצינור של ג'ימיני
+    return ask_gemini(prompt=cloud_prompt, use_smart_model=False)
 
 def get_thread_history_python(thread_id: int, db: Session, max_depth: int) -> Optional[List[models.Message]]:
     """
@@ -307,3 +314,133 @@ def get_thread_history_sql(thread_id: int, db: Session) -> List[models.Message]:
     messages = db.execute(stmt).scalars().all()
     
     return list(messages)
+
+
+def classify_text_to_emoji(text: str) -> str:
+    """
+    מנוע רב-לשוני מורחב לסיווג טקסט (Zero-Shot) והחזרת אימוג'י.
+    תומך בהמון נושאים ברזולוציה גבוהה.
+    """
+    if not text or len(text.strip()) < 3:
+        return "💬"
+        
+    print(f"🧠 Classifying topic for text: '{text[:30]}...'")
+    
+    try:
+        # המילון המורחב! מחולק לקטגוריות כדי שיהיה לך קל לתחזק בעתיד
+        TOPICS_MAP = {
+            # מדעים מדויקים וטבע
+            "mathematics, math formulas, numbers, equations, algebra, geometry, calculus, statistics": "📐",
+            "physics, quantum, mechanics, forces, energy, gravity, electricity, thermodynamics": "⚛️",
+            "chemistry, molecules, atoms, reactions, periodic table, laboratory, elements": "🧪",
+            "biology, DNA, genetics, evolution, cells, living organisms, animals, plants": "🧬",
+            "medicine, health, diseases, human anatomy, brain, virus, treatment, hospital": "🏥",
+            "space, astronomy, universe, planets, stars, galaxies, black holes, NASA": "🌌",
+            
+            # טכנולוגיה ומחשבים
+            "computer science, programming, software code, coding, algorithms, development": "💻",
+            "artificial intelligence, machine learning, neural networks, robots, data science": "🤖",
+            "cybersecurity, hacking, networks, internet, database, servers, cloud computing": "🌐",
+            
+            # מדעי החברה והרוח
+            "history, past events, historical figures, wars, ancient eras, empires, timeline": "📜",
+            "psychology, human mind, behavior, emotions, cognitive, mental health, therapy": "🧠",
+            "philosophy, ethics, logic, meaning of life, existentialism, thinkers": "🤔",
+            "law, legal rules, regulations, court, justice, human rights, constitution": "⚖️",
+            "politics, government, elections, democracy, state, international relations": "🏛️",
+            "economics, business, money, finance, markets, management, investments, trade": "💼",
+            "sociology, culture, society, communities, demographics, social structures": "🤝",
+            
+            # אמנות, תרבות ופנאי
+            "languages, grammar, literature, reading, translation, words, poetry, books": "📚",
+            "music, jazz, classical, instruments, notes, singing, rhythm, melody": "🎵",
+            "art, painting, sculpture, design, colors, creativity, museum": "🎨",
+            "cinema, movies, theater, acting, directing, hollywood, entertainment": "🎬",
+            "cooking, food, recipes, baking, nutrition, diet, culinary, kitchen": "🍳",
+            "sports, football, basketball, olympics, workout, fitness, athletes": "⚽",
+            "geography, maps, countries, earth, climate, weather, nature, environment": "🌍",
+            
+            # כללי ושונות
+            "general question, explanation, study guide, summary, abstract, introduction": "💡",
+            "warning, danger, alert, important note, crucial information, pay attention": "⚠️"
+        }
+        
+        topic_descriptions = list(TOPICS_MAP.keys())
+        emojis = list(TOPICS_MAP.values())
+        
+        embed_model = get_embedding_model()
+        
+        topic_embeddings = embed_model.embed_documents(topic_descriptions)
+        text_embedding = embed_model.embed_query(text)
+        
+        topic_vecs = np.array(topic_embeddings)
+        text_vec = np.array([text_embedding])
+        
+        similarities = cosine_similarity(text_vec, topic_vecs)[0]
+        
+        best_match_idx = np.argmax(similarities)
+        best_score = similarities[best_match_idx]
+        
+        print(f"🎯 Matched Topic: '{topic_descriptions[best_match_idx]}' | Score: {best_score:.2f}")
+        
+        # אם המודל ממש לא בטוח (ציון נמוך), נחזיר בועת צ'אט רגילה
+        if best_score < 0.25:
+            return "💬"
+            
+        return emojis[best_match_idx]
+        
+    except Exception as e:
+        print(f"❌ Error in emoji classification: {e}")
+        return "💬"
+    
+def generate_thread_title_local(prompt_text: str, selected_text: str) -> str:
+    """
+    מנצל את LM Studio כדי לייצר כותרת קצרה בעברית לשיחה.
+    """
+    combined_text = f"טקסט שסומן במסמך: '{selected_text}'\nשאלת המשתמש: '{prompt_text}'"
+    safe_text = combined_text[:400]
+    
+    # === התיקון: פרומפט אגרסיבי יותר ומונחה לעברית תקינה ===
+    system_prompt = """You are an expert summarizer. 
+    Your ONLY job is to generate a short, natural-sounding title in Hebrew (2-5 words) for the conversation.
+    Base the title on the relationship between the marked text and the user's question.
+    Rules:
+    1. Output ONLY the Hebrew title. No English words.
+    2. Do NOT add any explanations, quotes, punctuation, or formatting.
+    3. Use simple, direct, and correct Hebrew phrasing."""
+
+    try:
+        print("🤖 Orchestrator: Requesting title from local Llama-3 server...")
+        
+        response = requests.post(
+            "http://127.0.0.1:1234/v1/chat/completions",
+            json={
+                "model": "local-model",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Create a short Hebrew title for this context:\n{safe_text}"}
+                ],
+                "temperature": 0.2, # הורדנו טמפרטורה כדי שיפסיק "להמציא" מושגים כמו עליונות השגת
+                "max_tokens": 100
+            },
+            timeout=20 
+        )
+        
+        if response.status_code == 200:
+            raw_response = response.json()["choices"][0]["message"]["content"]
+            clean_title = raw_response.replace('"', '').replace("'", "").replace('*', '').strip()
+            
+            words = clean_title.split()
+            if len(words) > 6:
+                clean_title = " ".join(words[:5]) + "..."
+                
+            print(f"✨ Local Orchestrator generated title: {clean_title}")
+            return clean_title
+            
+        else:
+            print(f"⚠️ LM Studio returned status {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"⚠️ Orchestrator bypassed: LM Studio error: {e}")
+        return None

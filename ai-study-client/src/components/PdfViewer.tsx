@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import { Document, Page } from 'react-pdf';
 import { MessageSquare, Plus, Loader2, Sparkles, HelpCircle, BookOpen, Lightbulb } from 'lucide-react';
 import type { Thread } from '../types';
@@ -10,12 +10,18 @@ interface PdfViewerProps {
   threads: Thread[];
   activeThread: Thread | null;
   setActiveThread: (thread: Thread | null) => void;
-  textSelection: { text: string; x: number; y: number } | null;
+  textSelection: { text: string; x: number; y: number; width?: number; height?: number} | null;
   handleQuickAction: (action: 'translate' | 'explain' | 'quiz' | 'chat') => void;
   isCreatingThread: boolean;
   pdfContainerRef: React.RefObject<HTMLDivElement | null>;
   handleTextSelection: () => void;
+  currentPage: number;
+  setCurrentPage: (pageNumber: number) => void;
+  // --- Props חדשים לזום ---
+  scale: number;
+  setScale: React.Dispatch<React.SetStateAction<number>>;
 }
+
 
 const PdfViewer: React.FC<PdfViewerProps> = ({
   file,
@@ -28,7 +34,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   handleQuickAction,
   isCreatingThread,
   pdfContainerRef,
-  handleTextSelection
+  handleTextSelection,
+  currentPage,
+  setCurrentPage,
+  scale,
+  setScale
 }) => {
 
   const analyzedIntent = useMemo(() => {
@@ -40,9 +50,52 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   }, [textSelection]);
 
   const handleSmartAction = (promptType: string) => {
-    console.log("Smart Action Clicked:", promptType);
     handleQuickAction('chat'); 
   };
+
+  // --- הקסם של חיישן הגלילה (Intersection Observer) ---
+  useEffect(() => {
+    const container = pdfContainerRef.current;
+    if (!container || numPages === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio > 0.3) {
+            const pageNum = Number(entry.target.getAttribute('data-page-number'));
+            if (pageNum && pageNum !== currentPage) {
+              setCurrentPage(pageNum);
+            }
+          }
+        });
+      },
+      { root: container, threshold: 0.3 }
+    );
+
+    setTimeout(() => {
+      const pageElements = container.querySelectorAll('.pdf-page-wrapper');
+      pageElements.forEach((el) => observer.observe(el));
+    }, 1000);
+
+    return () => observer.disconnect();
+  }, [numPages, setCurrentPage, pdfContainerRef]);
+
+  // --- עדכון 2: מנגנון הזום (Ctrl + Wheel) ---
+  useEffect(() => {
+    const container = pdfContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault(); 
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        setScale((prev) => Math.min(Math.max(prev + delta, 0.5), 3.0));
+      }
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [pdfContainerRef, setScale]);
 
   return (
     <div 
@@ -50,122 +103,211 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       className="flex-1 bg-slate-200 rounded-xl overflow-y-auto p-4 shadow-inner border border-slate-300 relative"
       onMouseUp={handleTextSelection}
     >
-      <div className="relative inline-block min-w-full">
+      <div className="sticky top-2 right-2 z-50 bg-white/90 backdrop-blur text-xs font-bold text-slate-600 px-3 py-1.5 rounded-full shadow-sm border border-slate-200 w-fit flex gap-2 items-center">
+        <span>עמוד {currentPage} מתוך {numPages || '-'}</span>
+        <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded">{(scale * 100).toFixed(0)}%</span>
+      </div>
+
+      <div className="relative inline-block min-w-full mt-2">
         <Document
-          file={file} 
-          className="flex flex-col items-center gap-6"
-          onLoadSuccess={onDocumentLoadSuccess}
-          onLoadError={(error) => console.error("שגיאה בטעינת PDF:", error)}
-        >
-          {Array.from(new Array(numPages), (_, index) => (
-            <Page 
-              key={`page_${index + 1}`} 
-              pageNumber={index + 1} 
-              className="shadow-xl bg-white mb-4"
-              width={700}
-              renderTextLayer={true} 
-              renderAnnotationLayer={true}
-            />
-          ))}
-        </Document>
-        
-        {threads.map((thread) => (
-          <button
-            key={thread.id}
-            style={{
-              position: 'absolute',
-              left: thread.coordinates?.x || 0,
-              top: thread.coordinates?.y || 0,
-              transform: 'translate(-50%, -100%)', 
-              zIndex: 40
-            }}
-            onClick={(e) => {
-              e.stopPropagation(); 
-              setActiveThread(thread);
-            }}
-            className={`transition-all duration-200 hover:scale-110 shadow-lg rounded-full p-2 border-2 ${
-              activeThread?.id === thread.id 
-                ? "bg-blue-600 border-white text-white z-50 scale-110" 
-                : "bg-white border-blue-600 text-blue-600 hover:bg-blue-50"
-            }`}
-            title={thread.selected_text}
-          >
-            <MessageSquare className="w-4 h-4" />
-          </button>
-        ))}
+  file={file}
+  className="flex flex-col items-center gap-6"
+  onLoadSuccess={onDocumentLoadSuccess}
+>
+  {Array.from(new Array(numPages), (_, index) => {
+    const pageNum = index + 1;
+    // שולפים רק את השיחות ששייכות לעמוד הנוכחי!
+    const pageThreads = threads.filter(t => t.page_number === pageNum);
 
-        {/* תפריט פעולות דו-שכבתי מיושר ואחיד */}
-        {textSelection && (
-          <div
-            style={{
-              position: 'absolute', 
-              left: textSelection.x,
-              top: textSelection.y - 10,
-              transform: 'translate(-50%, -100%)', 
-              zIndex: 100 
-            }}
-            className="flex flex-col gap-1.5 animate-in fade-in zoom-in duration-200"
-          >
-            {/* שכבה עליונה: חכמה (Smart AI) - סגול */}
-            <div className="bg-purple-600 text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-purple-500 text-xs font-medium">
-              <div className="bg-purple-700 px-2 py-2 flex items-center justify-center">
-                <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+    return (
+      <div
+        key={`page_wrapper_${pageNum}`}
+        data-page-number={pageNum}
+        // הוספנו "relative" - זה קריטי! זה אומר למיקומים האבסולוטיים להיות ביחס לעמוד הזה
+        className="pdf-page-wrapper shadow-xl bg-white mb-4 relative"
+      >
+        <Page
+          pageNumber={pageNum}
+          width={700}
+          scale={scale}
+          renderTextLayer={true}
+          renderAnnotationLayer={true}
+        />
+
+        {/* --- רינדור מרקרים סגולים של שיחות קיימות בעמוד הזה --- */}
+        {pageThreads.map((thread) => {
+          const left = thread.coordinates?.x || 0;
+          const top = thread.coordinates?.y || 0;
+          const width = thread.coordinates?.width || 40;
+          const height = thread.coordinates?.height || 16;
+
+          return (
+            <div
+              key={thread.id}
+              style={{
+                position: 'absolute',
+                left: left * scale,
+                top: top * scale,
+                width: width * scale,
+                height: height * scale,
+                zIndex: 40,
+                backgroundColor: activeThread?.id === thread.id ? 'rgba(147, 51, 234, 0.4)' : 'rgba(168, 85, 247, 0.25)',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                borderBottom: activeThread?.id === thread.id ? '2px solid rgb(147, 51, 234)' : 'none'
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveThread(thread);
+              }}
+              className="group transition-colors hover:bg-purple-500/40 mix-blend-multiply"
+            >
+              {/* חלונית Tooltip קטנה שקופצת בריחוף */}
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-50">
+                <div className="bg-slate-800/90 backdrop-blur-sm text-white text-[11px] px-2.5 py-1 rounded-md whitespace-nowrap shadow-lg flex items-center gap-1.5 border border-slate-600/50">
+                  <MessageSquare className="w-3 h-3 text-purple-300" />
+                  לחץ לפתיחת ההתכתבות
+                </div>
+                <div className="w-2 h-2 bg-slate-800/90 border-r border-b border-slate-600/50 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2"></div>
               </div>
-              
-              {analyzedIntent === 'question' && (
-                <>
-                  <button onClick={() => handleSmartAction('hint')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
-                    <Lightbulb className="w-3.5 h-3.5"/> תן לי רמז
-                  </button>
-                  <div className="w-px h-4 bg-purple-400/50"></div>
-                  <button onClick={() => handleSmartAction('step-by-step')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
-                    <HelpCircle className="w-3.5 h-3.5"/> פתרון מודרך
-                  </button>
-                </>
-              )}
+            </div>
+          );
+        })}
 
-              {analyzedIntent === 'concept' && (
-                <>
-                  <button onClick={() => handleSmartAction('define')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
-                    <BookOpen className="w-3.5 h-3.5"/> הגדר מושג
-                  </button>
-                  <div className="w-px h-4 bg-purple-400/50"></div>
-                  <button onClick={() => handleSmartAction('example')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5">
-                    <Lightbulb className="w-3.5 h-3.5"/> תן דוגמה
-                  </button>
-                </>
-              )}
+        {/* --- רינדור של טקסט שנבחר הרגע (והסרגל שלו) רק אם אנחנו בעמוד הנוכחי --- */}
+        {textSelection && currentPage === pageNum && (
+          <>
+            {/* המרקר הזמני שמופיע בזמן הסימון */}
+            <div
+              style={{
+                position: 'absolute',
+                left: textSelection.x * scale,
+                top: textSelection.y * scale,
+                width: (textSelection.width || 0) * scale,
+                height: (textSelection.height || 0) * scale,
+                backgroundColor: 'rgba(147, 51, 234, 0.3)',
+                zIndex: 30,
+                mixBlendMode: 'multiply'
+              }}
+            />
 
-              {analyzedIntent === 'general' && (
-                <button onClick={() => handleSmartAction('summarize')} className="px-3 py-2 hover:bg-purple-500 transition-colors flex items-center gap-1.5 w-full justify-center">
-                  <Sparkles className="w-3.5 h-3.5"/> סכם פסקה זו
+            {/* הסרגל הצף עצמו */}
+            <div
+              style={{
+                position: 'absolute',
+                left: (textSelection.x + ((textSelection.width || 0) / 2)) * scale,
+                top: (textSelection.y * scale) - 15,
+                transform: 'translate(-50%, -100%)',
+                zIndex: 100
+              }}
+              className="flex flex-col gap-1.5 animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-300 drop-shadow-2xl"
+            >
+              {/* סרגל עליון סגול (משתנה דינמית לפי Intent) */}
+              <div className="bg-purple-600/85 backdrop-blur-md text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-purple-400/50 text-xs font-medium min-w-max">
+                <div className="bg-purple-700/80 px-2 py-2 flex items-center justify-center">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+                </div>
+                
+                {analyzedIntent === 'question' && (
+                  <>
+                    <button onClick={() => handleSmartAction('hint')} className="px-3 py-2 hover:bg-purple-500/80 transition-colors flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5"/> תן לי רמז
+                    </button>
+                    <div className="w-px h-4 bg-purple-400/50"></div>
+                    <button onClick={() => handleSmartAction('step-by-step')} className="px-3 py-2 hover:bg-purple-500/80 transition-colors flex items-center gap-1.5">
+                      <HelpCircle className="w-3.5 h-3.5"/> פתרון מודרך
+                    </button>
+                  </>
+                )}
+
+                {analyzedIntent === 'concept' && (
+                  <>
+                    <button onClick={() => handleSmartAction('define')} className="px-3 py-2 hover:bg-purple-500/80 transition-colors flex items-center gap-1.5">
+                      <BookOpen className="w-3.5 h-3.5"/> הגדר מושג
+                    </button>
+                    <div className="w-px h-4 bg-purple-400/50"></div>
+                    <button onClick={() => handleSmartAction('example')} className="px-3 py-2 hover:bg-purple-500/80 transition-colors flex items-center gap-1.5">
+                      <Lightbulb className="w-3.5 h-3.5"/> תן דוגמה
+                    </button>
+                  </>
+                )}
+
+                {analyzedIntent === 'general' && (
+                  <button onClick={() => handleSmartAction('summarize')} className="px-3 py-2 hover:bg-purple-500/80 transition-colors flex items-center gap-1.5 w-full justify-center">
+                    <Sparkles className="w-3.5 h-3.5"/> סכם פסקה זו
+                  </button>
+                )}
+              </div>
+
+              {/* סרגל תחתון שחור (כללי) */}
+              <div className="bg-slate-800/85 backdrop-blur-md text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-slate-700/50 text-xs font-medium min-w-max">
+                <button onClick={() => handleQuickAction('translate')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700/80 transition-colors flex items-center gap-1.5">
+                  <span className="text-sm leading-none">文</span> תרגם
                 </button>
-              )}
+                <div className="w-px h-4 bg-slate-600/80"></div>
+                
+                <button onClick={() => handleQuickAction('explain')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700/80 transition-colors flex items-center gap-1.5">
+                  <span className="text-sm leading-none">💡</span> הסבר
+                </button>
+                <div className="w-px h-4 bg-slate-600/80"></div>
+                
+                <button onClick={() => handleQuickAction('quiz')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700/80 transition-colors flex items-center gap-1.5">
+                  <span className="text-sm leading-none">❓</span> בחן אותי
+                </button>
+                
+                <button onClick={() => handleQuickAction('chat')} disabled={isCreatingThread} className="px-3 py-2 bg-blue-600/90 hover:bg-blue-500/90 transition-colors flex items-center gap-1.5 border-r border-blue-500/50">
+                  {isCreatingThread ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Plus className="w-3.5 h-3.5" />} צ'אט
+                </button>
+              </div>
             </div>
-
-            {/* שכבה תחתונה: דיפולטיבית (Default Actions) - אפור כהה */}
-            <div className="bg-slate-800 text-white rounded-lg shadow-xl flex items-center overflow-hidden border border-slate-700 text-xs font-medium">
-              <button onClick={() => handleQuickAction('translate')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
-                <span className="text-sm leading-none">文</span> תרגם
-              </button>
-              <div className="w-px h-4 bg-slate-600"></div>
-              
-              <button onClick={() => handleQuickAction('explain')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
-                <span className="text-sm leading-none">💡</span> הסבר
-              </button>
-              <div className="w-px h-4 bg-slate-600"></div>
-              
-              <button onClick={() => handleQuickAction('quiz')} disabled={isCreatingThread} className="px-3 py-2 hover:bg-slate-700 transition-colors flex items-center gap-1.5">
-                <span className="text-sm leading-none">❓</span> בחן אותי
-              </button>
-              
-              {/* כפתור פתיחת שיחה מודגש */}
-              <button onClick={() => handleQuickAction('chat')} disabled={isCreatingThread} className="px-3 py-2 bg-blue-600 hover:bg-blue-500 transition-colors flex items-center gap-1.5 border-r border-blue-500">
-                {isCreatingThread ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Plus className="w-3.5 h-3.5" />} צ'אט
-              </button>
-            </div>
-          </div>
+          </>
         )}
+      </div>
+    );
+  })}
+</Document>
+        
+        {threads.map((thread) => {
+          // גיבוי למקרה שיש לך שיחות ישנות בדאטאבייס בלי רוחב וגובה
+          const left = thread.coordinates?.x || 0;
+          const top = thread.coordinates?.y || 0;
+          const width = thread.coordinates?.width || 40; 
+          const height = thread.coordinates?.height || 16;
+
+          return (
+            <div
+              key={thread.id}
+              style={{
+                position: 'absolute',
+                left: left * scale,
+                top: top * scale,
+                width: width * scale,
+                height: height * scale,
+                zIndex: 40,
+                // כאן הקסם: רקע סגול חצי-שקוף שיושב בדיוק על המילה
+                backgroundColor: activeThread?.id === thread.id ? 'rgba(147, 51, 234, 0.4)' : 'rgba(168, 85, 247, 0.25)',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                // הדגשה קטנה לשיחה הפעילה
+                borderBottom: activeThread?.id === thread.id ? '2px solid rgb(147, 51, 234)' : 'none'
+              }}
+              onClick={(e) => {
+                e.stopPropagation(); 
+                setActiveThread(thread);
+              }}
+              className="group transition-colors hover:bg-purple-500/40 mix-blend-multiply"
+            >
+              {/* חלונית צפה שקופצת בריחוף! */}
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-50">
+                <div className="bg-slate-800/90 backdrop-blur-sm text-white text-[11px] px-2.5 py-1 rounded-md whitespace-nowrap shadow-lg flex items-center gap-1.5 border border-slate-600/50">
+                  <MessageSquare className="w-3 h-3 text-purple-300" />
+                  לחץ לפתיחת ההתכתבות
+                </div>
+                <div className="w-2 h-2 bg-slate-800/90 border-r border-b border-slate-600/50 rotate-45 absolute -bottom-1 left-1/2 -translate-x-1/2"></div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

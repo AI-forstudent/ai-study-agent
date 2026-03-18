@@ -51,9 +51,9 @@ export const NodeGraphTree: React.FC<TreeStrategyProps> = ({
         >
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
-              <Network size={14} className={`shrink-0 ${isActive ? 'text-blue-600' : isPath ? 'text-blue-400' : 'text-slate-400'}`} />
+              <span className="shrink-0 text-[16px] leading-none">{thread.emoji || '💬'}</span>
               <span className={`text-sm ${isActive ? 'font-bold text-blue-800' : isPath ? 'font-bold text-slate-700' : 'text-slate-600 font-medium'}`} dir="auto">
-                {thread.selected_text}
+                {thread.title || thread.selected_text}
               </span>
             </div>
             

@@ -4,11 +4,12 @@ import type { Thread } from '../types';
 // 1. הגדרת הממשק: איזה מידע המחסן שלנו יחזיק?
 interface AppState {
   // --- הנתונים (State) ---
-  textSelection: { text: string; x: number; y: number } | null;
+  // הוספנו את ה-width וה-height לכאן:
+  textSelection: { text: string; x: number; y: number; width: number; height: number } | null;
   activeThread: Thread | null;
   
-
-  setTextSelection: (selection: { text: string; x: number; y: number } | null) => void;
+  // צריך לעדכן גם את החתימה של הפונקציה שמקבלת את הנתונים:
+  setTextSelection: (selection: { text: string; x: number; y: number; width: number; height: number } | null) => void;
   setActiveThread: (thread: Thread | null) => void;
   clearSelection: () => void;
 }

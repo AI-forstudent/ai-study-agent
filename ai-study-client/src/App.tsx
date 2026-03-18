@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { FileText, Power, Settings} from 'lucide-react'
 import { pdfjs } from 'react-pdf';
 
-// קבצי עיצוב חובה כדי שה-PDF לא ייתקע וכדי שאפשר יהיה לסמן טקסט!
+// קבצי עיצוב חובה
 import 'katex/dist/katex.min.css'; 
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -24,6 +24,7 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [documentId, setDocumentId] = useState<number | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(1); // הסטייט החדש למעקב עמוד!
   const [threads, setThreads] = useState<Thread[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -35,7 +36,10 @@ function App() {
   const [treeViewMode, setTreeViewMode] = useState<'miller' | 'breadcrumbs' | 'graph'>('miller');
   const { textSelection, activeThread, setTextSelection, setActiveThread } = useAppStore();
   const pdfContainerRef = useRef<HTMLDivElement>(null);
-  const { handleShutdown } = useSystemControl(); 
+  const { handleShutdown } = useSystemControl();
+  const [chatWidth, setChatWidth] = useState(33); // מתחיל ב-33% מהמסך
+  const [isDragging, setIsDragging] = useState(false); 
+  const [scale, setScale] = useState(1.0);
 
   useEffect(() => {
     api.checkHealth()
@@ -56,19 +60,15 @@ function App() {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
 
-    // === 🛑 מצב פיתוח (DEV MODE) - עקיפת ה-API ===
-    // כשתרצה לחזור לעבוד מול השרת האמיתי, פשוט שנה את זה ל-false
-    const IS_DEV_MODE = true; 
+    const IS_DEV_MODE = false; 
     
     if (IS_DEV_MODE) {
-      console.log("🛠️ DEV MODE: Simulating file upload bypass...");
-      setFile(selectedFile); // ה-PDF עדיין יוצג במסך!
-      setDocumentId(999); // מזהה מסמך פיקטיבי
+      setFile(selectedFile); 
+      setDocumentId(999); 
       setActiveThread(null);
-      setThreads([]); // פה ה-ChatPanel יקח פיקוד עם ה-Mock Data שלנו
-      return; // עוצרים פה! לא ממשיכים לשרת.
+      setThreads([]); 
+      return; 
     }
-    // ===============================================
 
     setIsUploading(true);
     setUploadError(null);
@@ -85,68 +85,86 @@ function App() {
     }
   };
 
-  // הנה הפונקציה החסרה שמתריעה כשאתה מסמן טקסט!
   const handleTextSelection = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.toString().trim() === "") {
-        setTextSelection(null); 
-        return; 
-    }
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.toString().trim() === "") {
+          setTextSelection(null);
+          return;
+      }
 
-    const text = selection.toString().trim();
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
+      const text = selection.toString().trim();
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
 
-    if (pdfContainerRef.current) {
-        const containerRect = pdfContainerRef.current.getBoundingClientRect();
-        if (rect.left < containerRect.left) return;
+      // קסם: אנחנו מחפשים למעלה בעץ ה-HTML את העמוד המדויק של ה-PDF!
+      let node = range.commonAncestorContainer as Node | null;
+      let pageElement: HTMLElement | null = null;
+      while (node && node !== document.body) {
+          if ((node as HTMLElement).classList && (node as HTMLElement).classList.contains('react-pdf__Page')) {
+              pageElement = node as HTMLElement;
+              break;
+          }
+          node = node.parentNode;
+      }
 
-        const x = rect.left - containerRect.left + (rect.width / 2);
-        const y = rect.top - containerRect.top + pdfContainerRef.current.scrollTop - 10;
+      // אם איכשהו סימנו טקסט מחוץ ל-PDF (למשל בהדר), נבטל
+      if (!pageElement) {
+          setTextSelection(null);
+          return;
+      }
 
-        setTextSelection({ text, x, y });
-    }
+      // לוקחים את הקואורדינטות של העמוד הספציפי
+      const pageRect = pageElement.getBoundingClientRect();
+
+      // עכשיו מחשבים את המיקום ביחס לפינה של העמוד (ולא של המסך כולו!)
+      const rawLeft = rect.left - pageRect.left;
+      const rawTop = rect.top - pageRect.top;
+
+      setTextSelection({
+          text,
+          x: rawLeft / scale,
+          y: rawTop / scale,
+          width: rect.width / scale,
+          height: rect.height / scale
+      });
   };
 
-  // הנה פונקציית יצירת השיחה שחזרה למקומה
   const handleCreateThread = async (prompt?: string) => {
     if (!documentId || !textSelection) return;
-
     setIsCreatingThread(true);
     try {
       const payload = {
         document_id: documentId,
         selected_text: textSelection.text,
-        page_number: 1, 
-        coordinates: { x: textSelection.x, y: textSelection.y },
+        page_number: currentPage,
+        // התיקון: שומרים קואורדינטות "נקיות" ללא השפעת הזום הנוכחי
+        coordinates: { 
+          x: textSelection.x, 
+          y: textSelection.y,
+          width: (textSelection as any).width,   // <-- הוספנו
+          height: (textSelection as any).height  // <-- הוספנו
+        },
         initial_message: prompt
       };
-
       const response = await api.createThread(payload);
       const newThread = response.data;
       if (!newThread.messages) newThread.messages = [];
-
       setActiveThread(newThread);
       setThreads(prev => [...prev, newThread]);
-      
       setTextSelection(null);
       window.getSelection()?.removeAllRanges();
-
     } catch (error) {
-      console.error("Error creating thread:", error);
       alert("שגיאה ביצירת השיחה");
     } finally {
       setIsCreatingThread(false);
     }
   };
 
-  // פונקציית הפעולות המהירות 
   const handleQuickAction = async (action: 'translate' | 'explain' | 'quiz' | 'chat') => {
     if (action === 'chat') {
         handleCreateThread();
         return;
     }
-
     let prompt = "";
     switch (action) {
         case 'translate': prompt = "תרגם את הטקסט המסומן לעברית בצורה מדויקת וזורמת."; break;
@@ -156,46 +174,70 @@ function App() {
     handleCreateThread(prompt);
   };
 
-// הפונקציה הזו עכשיו *רק* מעדכנת סטייט ב-UI, בלי לדבר עם ה-API! (הערכה עצלה)
   const handleForkMessage = (messageId: number) => {
     if (pendingForkMsgId === messageId) {
-      setPendingForkMsgId(null); // כיבוי: אם המשתמש התחרט
+      setPendingForkMsgId(null); 
     } else {
-      setPendingForkMsgId(messageId); // הדלקה: סימון ההודעה שממנה נרצה לפצל
+      setPendingForkMsgId(messageId); 
     }
   };
 
-  // הפונקציה הזו עושה עכשיו את העבודה הכפולה רק ברגע השליחה
-  const handleSendMessage = async () => {
+const handleSendMessage = async () => {
     if (!inputMessage.trim() || !activeThread) return;
     const userMsgContent = inputMessage;
     setInputMessage("");
     setIsSending(true);
 
+    // === התיקון שלנו: זיהוי חכם של תחילת שיחה או פיצול חדש ===
+    const isFirstMessageInThisThread = pendingForkMsgId !== null || (!activeThread.messages || activeThread.messages.length === 0);
+
     try {
       let targetThread = activeThread;
-
-      // --- חיתוך הפיצול העצל (Lazy Forking) ---
-      // בודקים אם המשתמש סימן שהוא רוצה לפצל לפני שהוא שלח את ההודעה
       if (pendingForkMsgId) {
         const forkResponse = await api.forkThread(activeThread.id, pendingForkMsgId);
         targetThread = forkResponse.data;
-        
-        // מוסיפים את הענף החדש למערך, ועוברים אליו
         setThreads(prev => [...prev, targetThread]);
-        setPendingForkMsgId(null); // מאפסים את כפתור הפיצול
+        setPendingForkMsgId(null); 
       }
 
-      // שליחת ההודעה האמיתית (לענף המקורי או לחדש שנוצר הרגע)
       const optimisticMsg: Message = { id: Date.now(), role: 'user', content: userMsgContent };
       const updatedThread = { ...targetThread, messages: [...(targetThread.messages || []), optimisticMsg] };
       setActiveThread(updatedThread);
       
       const response = await api.sendMessage(targetThread.id, userMsgContent);
-      const finalThread = { ...updatedThread, messages: [...updatedThread.messages, response.data] };
       
-      setActiveThread(finalThread);
-      setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
+      try {
+        const freshThreadRes = await api.getThread(targetThread.id);
+        const finalThread = freshThreadRes.data;
+        setActiveThread(finalThread);
+        setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
+
+        // === התיקון: משתמשים במשתנה החכם שיצרנו במקום לספור הודעות! ===
+        if (isFirstMessageInThisThread) {
+          setTimeout(async () => {
+            try {
+              const lateThreadRes = await api.getThread(targetThread.id);
+              const updatedLateThread = lateThreadRes.data;
+              
+              setThreads(prev => prev.map(t => t.id === updatedLateThread.id ? updatedLateThread : t));
+              
+              const currentActive = useAppStore.getState().activeThread;
+              if (currentActive?.id === updatedLateThread.id) {
+                setActiveThread(updatedLateThread);
+              }
+            } catch (err) {
+              console.error("Failed to fetch late title", err);
+            }
+          }, 4500); 
+        }
+        // ==========================================================
+
+      } catch (refreshError) {
+        const finalThread = { ...updatedThread, messages: [...updatedThread.messages, response.data] };
+        setActiveThread(finalThread);
+        setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
+      }
+      
     } catch (error) {
       alert("לא הצלחתי לשלוח את ההודעה...");
     } finally {
@@ -203,18 +245,35 @@ function App() {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans" dir="rtl">
-<header className="bg-white border-b p-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    
+    // בגלל שאנחנו ב-RTL (הצ'אט משמאל), מיקום העכבר ביחס לרוחב המסך 
+    // נותן לנו בדיוק את האחוז שהצ'אט צריך לתפוס!
+    const newWidthPercent = (e.clientX / window.innerWidth) * 100;
+
+    // מגבילים את ההקטנה/הגדלה כדי שהמשתמש לא "יעלים" את המסך בטעות
+    if (newWidthPercent > 20 && newWidthPercent < 60) {
+      setChatWidth(newWidthPercent);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (isDragging) setIsDragging(false);
+  };
+  
+return (
+    // 1. נועלים את העמוד כולו לגובה ורוחב המסך בדיוק, ומונעים גלילה כללית!
+    <div className="h-screen w-screen overflow-hidden bg-slate-50 flex flex-col font-sans" dir="rtl">
+      
+      {/* 2. נועלים את ההדר למעלה שלא יתכווץ (shrink-0) */}
+      <header className="bg-white border-b p-4 flex items-center justify-between shadow-sm shrink-0 z-10">
         <div className="flex items-center">
           <div className="bg-blue-600 p-2 rounded-lg ml-3"><FileText className="text-white w-6 h-6" /></div>
           <h1 className="text-xl font-bold text-slate-800">AI Study Partner</h1>
         </div>
         
-        {/* אזור הכפתורים בצד שמאל של ההדר */}
         <div className="flex items-center gap-4">
-          
-          {/* מתג ההגדרות שלנו! */}
           <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
             <Settings className="w-4 h-4 text-slate-500" />
             <span className="text-sm font-semibold text-slate-600">תצוגת עץ:</span>
@@ -225,47 +284,80 @@ function App() {
             >
               <option value="miller">עמודות מילר (מומלץ)</option>
               <option value="graph">תרשים זרימה גרפי</option>
-              <option value="breadcrumbs">פירורי לחם (קלאסי)</option>
+              <option value="breadcrumbs">פירורי לחם (glich)</option>
             </select>
           </div>
-
           <button onClick={handleShutdown} className="text-slate-400 hover:text-red-600 p-2 rounded-full transition-all">
             <Power className="w-6 h-6" />
           </button>
         </div>
       </header>
-      <main className="flex-1 flex items-center justify-center p-6 h-[calc(100vh-80px)]">
+
+      {/* 3. אזור התוכן המרכזי מקבל overflow-hidden כדי לא להישפך החוצה */}
+      <main className="flex-1 flex overflow-hidden p-6 relative">
+        
+        {/* במצב שלפני העלאת קובץ (מרכזים את אלמנט ההעלאה) */}
         {!file && (
-          <FileUploadView isUploading={isUploading} uploadError={uploadError} onFileChange={handleFileChange} />
+          <div className="w-full h-full flex items-center justify-center">
+             <FileUploadView isUploading={isUploading} uploadError={uploadError} onFileChange={handleFileChange} />
+          </div>
         )}
 
-        {file && (
-          <div className="flex w-full h-full gap-6">
-            <PdfViewer 
-              file={file} 
-              numPages={numPages}
-              onDocumentLoadSuccess={({numPages}) => setNumPages(numPages)}
-              threads={threads} 
-              activeThread={activeThread} 
-              setActiveThread={setActiveThread}
-              textSelection={textSelection} 
-              handleQuickAction={handleQuickAction} 
-              isCreatingThread={isCreatingThread} 
-              pdfContainerRef={pdfContainerRef}
-              handleTextSelection={handleTextSelection} 
+        {/* במצב שבו קובץ טעון - כאן הקסם קורה */}
+{file && (
+          <div 
+            className="flex w-full h-full overflow-hidden relative"
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp} // עוצר את הגרירה אם העכבר יצא מהמסך
+          >
+            {/* שכבת מגן שקופה: מונעת מה-PDF לבלוע את אירועי העכבר בזמן הגרירה */}
+            {isDragging && <div className="absolute inset-0 z-50 cursor-col-resize" />}
+
+            {/* אזור ה-PDF תופס את שאר המקום שנותר (flex-1) */}
+            <div className="flex-1 h-full flex flex-col overflow-hidden ml-1">
+              <PdfViewer 
+                file={file} 
+                numPages={numPages}
+                onDocumentLoadSuccess={({numPages}) => setNumPages(numPages)}
+                threads={threads} 
+                activeThread={activeThread} 
+                setActiveThread={setActiveThread}
+                textSelection={textSelection} 
+                handleQuickAction={handleQuickAction} 
+                isCreatingThread={isCreatingThread} 
+                pdfContainerRef={pdfContainerRef}
+                handleTextSelection={handleTextSelection} 
+                currentPage={currentPage}          
+                setCurrentPage={setCurrentPage}    
+                scale={scale}      // <-- נוסף
+                setScale={setScale} // <-- נוסף
+              />
+            </div>
+
+            {/* המפריד הנגרר (Divider) - כאן הקסם קורה! */}
+            <div
+              className={`w-2 cursor-col-resize hover:bg-blue-400 transition-colors z-20 flex-shrink-0 mx-3 rounded-full ${isDragging ? 'bg-blue-500' : 'bg-slate-200'}`}
+              onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); }}
+              title="גרור כדי לשנות גודל"
             />
-            <ChatPanel
-              activeThread={activeThread}
-              threads={threads}
-              setActiveThread={setActiveThread}
-              inputMessage={inputMessage}
-              setInputMessage={setInputMessage}
-              handleSendMessage={handleSendMessage}
-              isSending={isSending}
-              onForkMessage={handleForkMessage} 
-              pendingForkMsgId={pendingForkMsgId}
-              treeViewMode={treeViewMode}
-            />
+
+            {/* אזור הצ'אט שמקבל את הרוחב הדינמי שלנו מהסטייט */}
+            <div style={{ width: `${chatWidth}%` }} className="flex-shrink-0 overflow-hidden">
+              <ChatPanel
+                activeThread={activeThread}
+                threads={threads}
+                setActiveThread={setActiveThread}
+                inputMessage={inputMessage}
+                setInputMessage={setInputMessage}
+                handleSendMessage={handleSendMessage}
+                isSending={isSending}
+                onForkMessage={handleForkMessage} 
+                pendingForkMsgId={pendingForkMsgId}
+                treeViewMode={treeViewMode}
+                currentPage={currentPage}          
+              />
+            </div>
           </div>
         )}
       </main>

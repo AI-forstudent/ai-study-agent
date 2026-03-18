@@ -42,9 +42,9 @@ export const BreadcrumbTree: React.FC<TreeStrategyProps> = ({ threads, activeThr
                     ? 'bg-blue-100 text-blue-700 font-bold' 
                     : 'text-slate-600 hover:bg-slate-100'
                 }`}
-                title={crumb.selected_text}
+                title={crumb.title || crumb.selected_text}
               >
-                {crumb.selected_text}
+                {crumb.title || crumb.selected_text}
               </button>
             </React.Fragment>
           ))}
@@ -73,9 +73,9 @@ export const BreadcrumbTree: React.FC<TreeStrategyProps> = ({ threads, activeThr
                   className="flex items-center gap-2 flex-1 overflow-hidden"
                   onClick={() => onSelectThread(option)}
                 >
-                  <GitBranch size={16} className="text-slate-400 group-hover:text-blue-500 transition-colors shrink-0" />
+                  <span className="shrink-0 text-[16px] leading-none">{option.emoji || '💬'}</span>
                   <span className="text-sm text-slate-700 font-medium line-clamp-2" dir="auto">
-                    {option.selected_text}
+                    {option.title || option.selected_text}
                   </span>
                 </div>
 

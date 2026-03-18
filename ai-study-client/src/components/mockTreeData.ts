@@ -6,6 +6,7 @@ export const mockThreads: Thread[] = [
     id: 1,
     selected_text: "[שורש] מודל שפה גדול (LLM) הוא מודל בינה מלאכותית...",
     coordinates: { x: 100, y: 200 },
+    emoji: "💻", // <--- מחשבים!
     messages: [
       { id: 101, role: 'user', content: 'תוכל להסביר לי את הפסקה הזו במילים פשוטות?' },
       { id: 102, role: 'assistant', content: 'בטח! מודל שפה גדול (LLM) הוא כמו מוח וירטואלי שקרא כמעט את כל האינטרנט. הוא מנחש מה המילה הבאה שצריכה להופיע במשפט.' },
@@ -22,6 +23,7 @@ export const mockThreads: Thread[] = [
     forked_from_message_id: 104,
     selected_text: "[פיצול רמה 1] משתמש בסטטיסטיקה והסתברות...",
     coordinates: { x: 120, y: 220 },
+    emoji: "📐", // <--- מתמטיקה!
     messages: [
       { id: 201, role: 'user', content: 'איך בדיוק הסטטיסטיקה הזו עובדת? יש נוסחה?' },
       { id: 202, role: 'assistant', content: 'כן, המודלים משתמשים ברשתות נוירונים, ספציפית בארכיטקטורה שנקראת Transformer. היא מחשבת את "תשומת הלב" (Attention) בין מילים שונות.' },
@@ -36,6 +38,7 @@ export const mockThreads: Thread[] = [
     forked_from_message_id: 106,
     selected_text: "[פיצול רמה 1] הלוצינציות (המצאת עובדות)...",
     coordinates: { x: 130, y: 250 },
+    emoji: "💡", // <--- הסבר כללי
     messages: [
       { id: 301, role: 'user', content: 'למה הוא ממציא עובדות?' },
       { id: 302, role: 'assistant', content: 'כי המטרה העיקרית שלו היא לייצר טקסט ש*נשמע* הגיוני וזורם, גם אם הוא לא מצא מידע מדויק במסד הנתונים שלו. הוא מעדיף לתת תשובה מלאה מאשר להגיד "לא יודע".' }
@@ -48,6 +51,7 @@ export const mockThreads: Thread[] = [
     forked_from_message_id: 202,
     selected_text: "[פיצול רמה 2] ארכיטקטורה שנקראת Transformer",
     coordinates: { x: 140, y: 240 },
+    emoji: "📜", // <--- היסטוריה
     messages: [
       { id: 401, role: 'user', content: 'מי המציא את ה-Transformer הזה?' },
       { id: 402, role: 'assistant', content: 'הוא הוצג לראשונה בשנת 2017 על ידי חוקרים בגוגל במאמר פורץ דרך.' },
@@ -61,5 +65,5 @@ export interface TreeStrategyProps {
   threads: Thread[];
   activeThread: Thread | null;
   onSelectThread: (thread: Thread) => void;
-  onEnterChat: (thread: Thread) => void; // <--- השורה החדשה שהוספנו!
+  onEnterChat: (thread: Thread) => void;
 }

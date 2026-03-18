@@ -35,6 +35,8 @@ class Thread(Base):
     page_number = Column(Integer)
     coordinates = Column(JSONB) 
     selected_text = Column(Text, nullable=True)
+    emoji = Column(String, nullable=True, default="💬")
+    title = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     document = relationship("Document", back_populates="threads")

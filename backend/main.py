@@ -144,57 +144,53 @@ def get_document_threads(document_id: int, db: Session = Depends(get_db)):
         
     return threads
 
+@app.get("/threads/{thread_id}", response_model=schemas.ThreadResponse)
+def get_single_thread(thread_id: int, db: Session = Depends(get_db)):
+    thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    # הזרקת ההיסטוריה ההיברידית בדיוק כמו שעשינו במסמך המלא
+    thread.messages = services.get_full_thread_history(thread.id, db)
+    return thread
+
 @app.post("/threads/", response_model=schemas.ThreadResponse)
 def create_thread(thread_data: schemas.ThreadCreate, db: Session = Depends(get_db)):
+    
+    # === סיווג אימוג'י זמני (מהיר) ===
+    matched_emoji = services.classify_text_to_emoji(thread_data.selected_text or "")
+    
+    # יוצרים שיחה באופן מיידי!
     new_thread = models.Thread(
         document_id=thread_data.document_id,
         page_number=thread_data.page_number,
         selected_text=thread_data.selected_text,
-        coordinates=thread_data.coordinates
+        coordinates=thread_data.coordinates,
+        emoji=matched_emoji,
+        title=None # <--- התיקון: משאירים ריק כדי שהפרונט יציג את הטקסט המסומן כברירת מחדל!
     )
     db.add(new_thread)
     db.commit()
     db.refresh(new_thread)
     
-    if thread_data.initial_message:
-        user_msg = models.Message(
-            thread_id=new_thread.id, role="user", content=thread_data.initial_message
-        )
-        db.add(user_msg)
-        db.commit()
-        
-        # --- שליפת המידע המורחב ---
-        doc = db.query(models.Document).filter(models.Document.id == thread_data.document_id).first()
-        # שליפת כל הצ'אנקים של המסמך (בשביל החיפוש)
-        all_chunks = db.query(models.Chunk).filter(models.Chunk.document_id == thread_data.document_id).all()
-        
-        # שליפת הטקסט המלא של העמוד הספציפי (בשביל הקשר מידי)
-        # (אנחנו מניחים שיש לנו דרך להשיג את זה, הכי פשוט זה לחבר את הצ'אנקים של אותו עמוד)
-        page_chunks = db.query(models.Chunk).filter(
-            models.Chunk.document_id == thread_data.document_id,
-            models.Chunk.page_number == thread_data.page_number
-        ).all()
-        current_page_text = "\n".join([c.text for c in page_chunks])
-
-        ai_response = services.get_chat_response_for_thread(
-            history=[user_msg], 
-            selected_text=new_thread.selected_text,
-            root_summary=doc.summary,
-            doc_chunks=all_chunks,      # <--- חדש: כל המסמך לחיפוש
-            current_page_text=current_page_text # <--- חדש: העמוד הנוכחי לקריאת טבלאות
-        )
-        
-        ai_msg = models.Message(
-            thread_id=new_thread.id, role="assistant", content=ai_response
-        )
-        db.add(ai_msg)
-        db.commit()
-        
-    db.refresh(new_thread)
     return new_thread
 
+def update_thread_title_background(thread_id: int, prompt: str, selected_text: str, db: Session):
+    """משימת רקע שפונה ל-LM Studio ומעדכנת את הכותרת בדאטאבייס"""
+    new_title = services.generate_thread_title_local(prompt, selected_text)
+    if new_title and new_title != "שיחה חדשה":
+        thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
+        if thread:
+            thread.title = new_title
+            db.commit()
+
 @app.post("/threads/{thread_id}/messages/", response_model=schemas.MessageResponse)
-def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Session = Depends(get_db)):
+def add_message_to_thread(
+    thread_id: int, 
+    message: schemas.MessageCreate, 
+    background_tasks: BackgroundTasks, # <--- הזרקנו את מנהל הרקע של FastAPI
+    db: Session = Depends(get_db)
+):
     thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -203,6 +199,24 @@ def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Se
     db.add(user_msg)
     db.commit()
     
+    # === הלוגיקה של ההודעה הראשונה (כותרת + אימוג'י מדויק) ===
+    history_in_db = db.query(models.Message).filter(models.Message.thread_id == thread_id).all()
+    if len(history_in_db) == 1: 
+        # 1. עדכון אימוג'י לפי השאלה + הטקסט (קורה מיד, זה מהיר)
+        context_for_ai = f"{thread.selected_text} | {message.content}"
+        thread.emoji = services.classify_text_to_emoji(context_for_ai)
+        db.commit()
+        
+        # 2. שליחת משימה ל-LM Studio ליצירת כותרת **ברקע** (לא תוקע את המשתמש!)
+        background_tasks.add_task(
+            update_thread_title_background, 
+            thread_id, 
+            message.content, 
+            thread.selected_text, 
+            db
+        )
+    # ==========================================================
+
     # --- שליפת המידע המורחב ---
     doc = db.query(models.Document).filter(models.Document.id == thread.document_id).first()
     
@@ -229,57 +243,20 @@ def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Se
     db.commit()
     db.refresh(ai_msg)
     return ai_msg
-
-@app.post("/threads/{thread_id}/messages/", response_model=schemas.MessageResponse)
-def add_message_to_thread(thread_id: int, message: schemas.MessageCreate, db: Session = Depends(get_db)):
-    thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-        
-    user_msg = models.Message(thread_id=thread_id, role="user", content=message.content)
-    db.add(user_msg)
-    db.commit()
-    
-    # --- שליפת המידע המורחב ---
-    doc = db.query(models.Document).filter(models.Document.id == thread.document_id).first()
-    history = db.query(models.Message).filter(models.Message.thread_id == thread_id).order_by(models.Message.id).all()
-    
-    all_chunks = db.query(models.Chunk).filter(models.Chunk.document_id == thread.document_id).all()
-    
-    page_chunks = db.query(models.Chunk).filter(
-        models.Chunk.document_id == thread.document_id,
-        models.Chunk.page_number == thread.page_number
-    ).all()
-    current_page_text = "\n".join([c.text for c in page_chunks])
-    
-    ai_response = services.get_chat_response_for_thread(
-        history=history,
-        selected_text=thread.selected_text,
-        root_summary=doc.summary,
-        doc_chunks=all_chunks,
-        current_page_text=current_page_text
-    )
-    
-    ai_msg = models.Message(thread_id=thread_id, role="assistant", content=ai_response)
-    db.add(ai_msg)
-    db.commit()
-    db.refresh(ai_msg)
-    return ai_msg
 @app.post("/threads/{thread_id}/fork/", response_model=schemas.ThreadResponse)
 def fork_thread(thread_id: int, message_id: int, db: Session = Depends(get_db)):
-    # 1. מציאת שיחת האב
     parent_thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
     if not parent_thread:
         raise HTTPException(status_code=404, detail="Parent thread not found")
 
-    # 2. יצירת ענף חדש - מצביע נטו (בלי לשכפל שום הודעה!)
     new_thread = models.Thread(
         document_id=parent_thread.document_id,
         page_number=parent_thread.page_number,
         selected_text=parent_thread.selected_text,
         coordinates=parent_thread.coordinates,
-        parent_thread_id=parent_thread.id,  # המצביע לאבא
-        forked_from_message_id=message_id   # המצביע לנקודת הפיצול
+        parent_thread_id=parent_thread.id,  
+        forked_from_message_id=message_id,   
+        emoji=parent_thread.emoji # <--- מורישים את האימוג'י של האבא לענף המפוצל!
     )
     db.add(new_thread)
     db.commit()

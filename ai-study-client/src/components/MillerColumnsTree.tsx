@@ -84,9 +84,9 @@ export const MillerColumnsTree: React.FC<TreeStrategyProps> = ({
                       onClick={() => handleRowClick(thread)}
                     >
                       <div className="flex items-center gap-1.5 overflow-hidden flex-1">
-                        <GitBranch size={12} className={`shrink-0 mt-0.5 ${isLeafActive ? 'text-blue-600' : isPathActive ? 'text-blue-400' : 'text-slate-400'}`} />
+                        <span className="shrink-0 text-[14px] mt-0.5">{thread.emoji || '💬'}</span>
                         <span className={`text-xs line-clamp-2 ${isLeafActive ? 'text-blue-800 font-bold' : isPathActive ? 'text-blue-700 font-medium' : 'text-slate-600 font-medium'}`} dir="auto">
-                          {thread.selected_text}
+                          {thread.title || thread.selected_text}
                         </span>
                       </div>
                       

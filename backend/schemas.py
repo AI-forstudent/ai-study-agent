@@ -34,6 +34,8 @@ class ThreadBase(BaseModel):
     page_number: int
     selected_text: Optional[str] = None
     coordinates: Optional[Any] = None # JSON של מיקום הסימון
+    emoji: Optional[str] = "💬"
+    title: Optional[str] = None
 
 class ThreadCreate(ThreadBase):
     document_id: int
