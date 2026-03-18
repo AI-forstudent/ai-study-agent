@@ -33,7 +33,6 @@ def check_llm_connection():
         print(f"❌ {error_msg}")
         return False, error_msg
 
-
 # --- 1. Factory Functions (המוח שמחליט באיזה מודל להשתמש) ---
 
 def get_smart_model():
@@ -315,7 +314,6 @@ def get_thread_history_sql(thread_id: int, db: Session) -> List[models.Message]:
     
     return list(messages)
 
-
 def classify_text_to_emoji(text: str) -> str:
     """
     מנוע רב-לשוני מורחב לסיווג טקסט (Zero-Shot) והחזרת אימוג'י.
@@ -444,3 +442,38 @@ def generate_thread_title_local(prompt_text: str, selected_text: str) -> str:
     except Exception as e:
         print(f"⚠️ Orchestrator bypassed: LM Studio error: {e}")
         return None
+
+def count_tokens_in_text(text: str) -> int:
+    """
+    מקבל טקסט ומחשב כמה טוקנים הוא שוקל באמצעות המודל.
+    """
+    try:
+        llm = get_smart_model()
+        # הפונקציה המובנית של LangChain לספירת טוקנים במודל הנבחר
+        return llm.get_num_tokens(text)
+    except Exception as e:
+        print(f"⚠️ Token counting failed, using fallback calculation: {e}")
+        # הערכה גסה למקרה שה-API לא זמין רגעית (כ-4 תווים לטוקן)
+        return len(text) // 4 
+
+def generate_specific_page_summary(page_text: str) -> str:
+
+    """
+    פונקציה ייעודית לסיכום עמוד בודד בלבד.
+    """
+    prompt = f"""
+    You are an expert study assistant. 
+    Generate a concise, well-structured, and highly informative summary of the following document page.
+    Highlight key concepts, main arguments, and important terms.
+    
+    CRITICAL: Your response MUST be in HEBREW.
+    
+    Page Text:
+    {page_text}
+    
+    Summary:
+    """
+    # קוראים לג'ימיני עם המודל החכם
+    return ask_gemini(prompt, use_smart_model=True)
+
+

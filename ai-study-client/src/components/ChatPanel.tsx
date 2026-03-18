@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -9,8 +9,10 @@ import { mockThreads } from './mockTreeData';
 import { BreadcrumbTree } from './BreadcrumbTree';
 import { MillerColumnsTree } from './MillerColumnsTree';
 import { NodeGraphTree } from './NodeGraphTree';
+import { api } from '../services/api';
 
 interface ChatPanelProps {
+  documentId: number | null;
   activeThread: Thread | null;
   threads: Thread[]; 
   setActiveThread: (thread: Thread | null) => void;
@@ -25,6 +27,7 @@ interface ChatPanelProps {
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
+  documentId,
   activeThread,
   threads,
   setActiveThread,
@@ -39,6 +42,47 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 }) => {
   // הוספנו את 'summary' לטאבים האפשריים!
   const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
+
+  // --- סטייטים חדשים לסיכום העמוד ---
+  const [pageSummaries, setPageSummaries] = useState<Record<number, string>>({}); // שומר סיכומים בזיכרון לפי מספר עמוד
+  const [isEstimating, setIsEstimating] = useState(false);
+  const [tokenEstimate, setTokenEstimate] = useState<number | null>(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+
+  // מאפס את חלונית האישור כשעוברים עמוד
+  React.useEffect(() => {
+    setTokenEstimate(null);
+  }, [currentPage]);
+
+  const handleEstimateTokens = async () => {
+    if (!documentId) return;
+    setIsEstimating(true);
+    try {
+      // קריאה לבקאנד רק כדי לבדוק כמה זה יעלה (חינמי מג'ימיני)
+      const res = await api.estimatePageSummaryTokens(documentId, currentPage);
+      setTokenEstimate(res.data.tokens);
+    } catch (err) {
+      alert("שגיאה בהערכת טוקנים - ודא שיש טקסט בעמוד הזה.");
+    } finally {
+      setIsEstimating(false);
+    }
+  };
+
+  const handleGenerateSummary = async () => {
+    if (!documentId) return;
+    setIsGeneratingSummary(true);
+    setTokenEstimate(null); // מעלים את חלונית האישור
+    try {
+      // הפקודה האמיתית שעולה כסף
+      const res = await api.createPageSummary(documentId, currentPage);
+      // שומרים את התשובה בזיכרון תחת מספר העמוד הנוכחי
+      setPageSummaries(prev => ({ ...prev, [currentPage]: res.data.summary }));
+    } catch (err) {
+      alert("שגיאה ביצירת הסיכום.");
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
 
   const handleSelectThread = (thread: Thread) => {
     setActiveThread(thread);
@@ -195,23 +239,71 @@ React.useEffect(() => {
               <Sparkles className="w-5 h-5 text-purple-500"/>
               סיכום עמוד {currentPage}
             </h3>
-            <p className="text-sm text-slate-500 mb-6">גולל במסמך והסיכום יתעדכן אוטומטית.</p>
             
-            {/* פה בהמשך נוסיף את הקריאה לשרת לסיכום של העמוד. בינתיים נציג אנימציה יפה */}
-            <div className="space-y-4">
-              <div className="h-4 bg-slate-200 rounded-full w-full animate-pulse"></div>
-              <div className="h-4 bg-slate-200 rounded-full w-5/6 animate-pulse"></div>
-              <div className="h-4 bg-slate-200 rounded-full w-4/6 animate-pulse"></div>
-              <br/>
-              <div className="h-4 bg-slate-200 rounded-full w-full animate-pulse"></div>
-              <div className="h-4 bg-slate-200 rounded-full w-3/4 animate-pulse"></div>
-            </div>
-            
-            <div className="mt-8 text-center">
-              <span className="text-xs font-semibold text-purple-600 bg-purple-100 px-3 py-1 rounded-full">
-                ממתין לחיבור ל-Backend (ג'ימיני)
-              </span>
-            </div>
+            {/* 1. מצב התחלתי: כפתור בקשת סיכום (מביא הערכת טוקנים) */}
+            {!pageSummaries[currentPage] && !isGeneratingSummary && tokenEstimate === null && (
+              <div className="mt-8 text-center">
+                <p className="text-sm text-slate-500 mb-6">עדיין לא נוצר סיכום לעמוד זה. ג'ימיני יכול לנתח אותו עבורך.</p>
+                <button 
+                  onClick={handleEstimateTokens}
+                  disabled={isEstimating}
+                  className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 px-6 rounded-xl flex items-center gap-2 mx-auto transition-colors disabled:opacity-50 shadow-sm"
+                >
+                  {isEstimating ? <Loader2 className="w-5 h-5 animate-spin"/> : <Sparkles className="w-5 h-5"/>}
+                  {isEstimating ? "מחשב עלויות..." : "בקש סיכום עמוד (הערכת עלות)"}
+                </button>
+              </div>
+            )}
+
+            {/* 2. מצב שומר הסף: מציג כמה טוקנים זה עולה ומבקש אישור */}
+            {tokenEstimate !== null && !isGeneratingSummary && !pageSummaries[currentPage] && (
+              <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-5 text-center shadow-sm animate-in fade-in zoom-in-95 duration-200">
+                <p className="text-sm font-bold text-amber-800 mb-2">
+                  ⚠️ הפעולה תדרוש כ-{tokenEstimate} טוקנים מול ה-API של ג'ימיני.
+                </p>
+                <p className="text-xs text-amber-700/80 mb-5">האם ברצונך לאשר את השליחה?</p>
+                <div className="flex gap-3 justify-center">
+                  <button onClick={() => setTokenEstimate(null)} className="text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 px-5 py-2 rounded-lg text-sm font-bold transition-colors">
+                    ביטול
+                  </button>
+                  <button onClick={handleGenerateSummary} className="bg-amber-500 hover:bg-amber-600 text-white px-5 py-2 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center gap-2">
+                    <Sparkles className="w-4 h-4"/> אשר וסכם
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 3. מצב המתנה: מציג אנימציית שלד (Skeleton) בזמן שג'ימיני חושב */}
+            {isGeneratingSummary && (
+              <div className="mt-8 space-y-4">
+                <div className="flex items-center gap-2 text-purple-600 font-bold mb-6">
+                  <Loader2 className="w-5 h-5 animate-spin"/> ג'ימיני כותב סיכום ממוקד...
+                </div>
+                <div className="h-4 bg-purple-100 rounded-full w-full animate-pulse"></div>
+                <div className="h-4 bg-purple-100 rounded-full w-5/6 animate-pulse"></div>
+                <div className="h-4 bg-purple-100 rounded-full w-4/6 animate-pulse"></div>
+              </div>
+            )}
+
+            {/* 4. מצב סיום: מציג את התוצאה עם תמיכה ב-Markdown מלא! */}
+            {pageSummaries[currentPage] && (
+              <div className="mt-6 bg-slate-50 p-4 rounded-xl border border-slate-100 prose prose-purple prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-purple-900 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <ReactMarkdown 
+                  remarkPlugins={[remarkMath, remarkGfm]} 
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
+                    p: ({node, ...props}) => <p dir="auto" {...props} />,
+                    li: ({node, ...props}) => <li dir="auto" {...props} />,
+                    h1: ({node, ...props}) => <h1 dir="auto" className="text-xl font-bold mt-4 mb-2" {...props} />,
+                    h2: ({node, ...props}) => <h2 dir="auto" className="text-lg font-bold mt-3 mb-2" {...props} />,
+                    h3: ({node, ...props}) => <h3 dir="auto" className="text-base font-bold mt-2 mb-1" {...props} />,
+                    strong: ({node, ...props}) => <strong className="text-purple-800 font-bold" {...props} />
+                  }}
+                >
+                  {pageSummaries[currentPage]}
+                </ReactMarkdown>
+              </div>
+            )}
           </div>
         </div>
       )}

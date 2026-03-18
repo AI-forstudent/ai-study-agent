@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FileText, Power, Settings} from 'lucide-react'
+import { FileText, Power, Settings, BookOpen} from 'lucide-react'
 import { pdfjs } from 'react-pdf';
 
 // קבצי עיצוב חובה
@@ -40,6 +40,9 @@ function App() {
   const [chatWidth, setChatWidth] = useState(33); // מתחיל ב-33% מהמסך
   const [isDragging, setIsDragging] = useState(false); 
   const [scale, setScale] = useState(1.0);
+  const [userDocs, setUserDocs] = useState<any[]>([]);
+  const [enableGlobalSummary, setEnableGlobalSummary] = useState(false);
+  
 
   useEffect(() => {
     api.checkHealth()
@@ -48,6 +51,13 @@ function App() {
         healthy: false, 
         error: err.response?.data?.detail || "אין תקשורת עם השרת" 
       }));
+  }, []);
+
+  useEffect(() => {
+    // משיכת רשימת המסמכים של משתמש 1
+    api.getUserDocuments(1)
+      .then(res => setUserDocs(res.data))
+      .catch(err => console.error("Failed to fetch documents:", err));
   }, []);
 
   useEffect(() => {
@@ -73,7 +83,7 @@ function App() {
     setIsUploading(true);
     setUploadError(null);
     try {
-      const response = await api.uploadDocument(selectedFile, 1); 
+      const response = await api.uploadDocument(selectedFile, 1, enableGlobalSummary); // <--- הוספנו את המשתנה לפונקציה
       setDocumentId(response.data.id);
       setFile(selectedFile);
       setActiveThread(null);
@@ -272,6 +282,36 @@ return (
           <div className="bg-blue-600 p-2 rounded-lg ml-3"><FileText className="text-white w-6 h-6" /></div>
           <h1 className="text-xl font-bold text-slate-800">AI Study Partner</h1>
         </div>
+
+        {/* אזור ספריית המסמכים החדש */}
+        <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm ml-4">
+          <BookOpen className="w-4 h-4 text-slate-500" /> {/* אל תשכח לייבא BookOpen מ-lucide-react */}
+          <span className="text-sm font-semibold text-slate-600">המסמכים שלי:</span>
+          <select 
+            className="bg-transparent text-sm font-bold text-blue-600 focus:outline-none cursor-pointer pr-1 w-40 truncate"
+            value={documentId || ""}
+            onChange={(e) => {
+              const selectedId = e.target.value;
+              if (!selectedId) return;
+              
+              const doc = userDocs.find(d => d.id === Number(selectedId));
+              if (doc) {
+                setDocumentId(doc.id);
+                // הקסם: react-pdf יודע לקרוא גם URL מהשרת!
+                // שים לב שצריך להתאים את הפורט (8000) אם השרת שלך רץ על פורט אחר
+                setFile(`http://localhost:8000/${doc.file_path}` as any);
+                setActiveThread(null);
+              }
+            }}
+          >
+            <option value="" disabled>בחר מסמך...</option>
+            {userDocs.map(doc => (
+              <option key={doc.id} value={doc.id}>
+                {doc.title}
+              </option>
+            ))}
+          </select>
+        </div>
         
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
@@ -299,7 +339,13 @@ return (
         {/* במצב שלפני העלאת קובץ (מרכזים את אלמנט ההעלאה) */}
         {!file && (
           <div className="w-full h-full flex items-center justify-center">
-             <FileUploadView isUploading={isUploading} uploadError={uploadError} onFileChange={handleFileChange} />
+             <FileUploadView 
+              isUploading={isUploading} 
+              uploadError={uploadError} 
+              onFileChange={handleFileChange} 
+              enableGlobalSummary={enableGlobalSummary}              // <--- פרופ חדש
+              setEnableGlobalSummary={setEnableGlobalSummary}        // <--- פרופ חדש
+            />
           </div>
         )}
 
@@ -345,6 +391,7 @@ return (
             {/* אזור הצ'אט שמקבל את הרוחב הדינמי שלנו מהסטייט */}
             <div style={{ width: `${chatWidth}%` }} className="flex-shrink-0 overflow-hidden">
               <ChatPanel
+                documentId={documentId}
                 activeThread={activeThread}
                 threads={threads}
                 setActiveThread={setActiveThread}

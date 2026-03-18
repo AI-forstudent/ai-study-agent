@@ -16,14 +16,14 @@ interface PdfViewerProps {
   pdfContainerRef: React.RefObject<HTMLDivElement | null>;
   handleTextSelection: () => void;
   currentPage: number;
-  setCurrentPage: (pageNumber: number) => void;
+  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
   // --- Props חדשים לזום ---
   scale: number;
   setScale: React.Dispatch<React.SetStateAction<number>>;
 }
 
 
-const PdfViewer: React.FC<PdfViewerProps> = ({
+const PdfViewer: React.FC<PdfViewerProps> = ({  
   file,
   numPages,
   onDocumentLoadSuccess,
@@ -53,7 +53,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     handleQuickAction('chat'); 
   };
 
-  // --- הקסם של חיישן הגלילה (Intersection Observer) ---
+// --- הקסם של חיישן הגלילה (Intersection Observer) ---
   useEffect(() => {
     const container = pdfContainerRef.current;
     if (!container || numPages === 0) return;
@@ -61,23 +61,33 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting && entry.intersectionRatio > 0.3) {
+          // ברגע שעמוד חוצה את אמצע המסך, הוא הופך לפעיל
+          if (entry.isIntersecting) {
             const pageNum = Number(entry.target.getAttribute('data-page-number'));
-            if (pageNum && pageNum !== currentPage) {
-              setCurrentPage(pageNum);
+            if (pageNum) {
+              // התיקון הקריטי: מעדכנים סטייט עם Callback כדי למנוע את באג ה-Stale Closure!
+              setCurrentPage(prevPage => prevPage !== pageNum ? pageNum : prevPage);
             }
           }
         });
       },
-      { root: container, threshold: 0.3 }
+      { 
+        root: container, 
+        // הקסם: "קרן לייזר" דמיונית בדיוק באמצע המסך!
+        rootMargin: "-50% 0px -50% 0px", 
+        threshold: 0 
+      }
     );
 
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       const pageElements = container.querySelectorAll('.pdf-page-wrapper');
       pageElements.forEach((el) => observer.observe(el));
     }, 1000);
 
-    return () => observer.disconnect();
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
   }, [numPages, setCurrentPage, pdfContainerRef]);
 
   // --- עדכון 2: מנגנון הזום (Ctrl + Wheel) ---
