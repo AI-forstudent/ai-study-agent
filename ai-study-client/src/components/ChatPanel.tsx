@@ -49,6 +49,25 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const [tokenEstimate, setTokenEstimate] = useState<number | null>(null);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
 
+// משיכת סיכומים קיימים מהדאטאבייס כשהמסמך נטען
+  React.useEffect(() => {
+    if (!documentId) {
+      setPageSummaries({}); // איפוס כשסוגרים מסמך
+      return;
+    }
+
+    api.getDocumentSummaries(documentId)
+      .then(res => {
+        // ממירים את הרשימה שחזרה למילון של {page_number: summary_text}
+        const summariesMap: Record<number, string> = {};
+        res.data.forEach((item: any) => {
+          summariesMap[item.page_number] = item.summary;
+        });
+        setPageSummaries(summariesMap);
+      })
+      .catch(err => console.error("Failed to load existing summaries", err));
+  }, [documentId]);
+
   // מאפס את חלונית האישור כשעוברים עמוד
   React.useEffect(() => {
     setTokenEstimate(null);

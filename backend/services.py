@@ -1,11 +1,5 @@
-import os
-import re
 from dotenv import load_dotenv
-import pdfplumber
-import models
-import requests
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sqlalchemy import select, literal, or_ , cast, null, Integer
 from sqlalchemy.orm import Session, aliased
@@ -13,6 +7,13 @@ from typing import List, Optional
 # --- Imports for Providers ---
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
+import os
+import re
+import pdfplumber
+import models
+import requests
+import numpy as np
+import json
 
 load_dotenv()
 # שורת דיבאג זמנית - מדפיסה רק את ההתחלה של המפתח כדי לראות מה באמת נטען
@@ -73,7 +74,64 @@ def ask_gemini(prompt: str, use_smart_model: bool = False) -> str:
     except Exception as e:
         print(f"❌ [Gemini API Error]: {e}")
         return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע. אנא נסה לשלוח את ההודעה שוב בעוד מספר רגעים. 🔄"
-        
+
+def generate_thread_metadata_background(thread_id: int, prompt_text: str, selected_text: str, db: Session):
+    """
+    משימת רקע מאוחדת ליצירת כותרת ואימוג'י לשיחה.
+    בודקת האם אנחנו בסביבה מקומית או בענן, ופועלת בהתאם.
+    """
+    # קוראים את משתנה הסביבה (ברירת המחדל היא False כדי שבשרת לא ניפול בטעות למודל מקומי)
+    use_local = os.getenv("USE_LOCAL_LLM", "False").lower() in ("true", "1", "t")
+
+    new_title = None
+    new_emoji = None
+
+    if use_local:
+        print("🏠 [Metadata] Using LOCAL models for Title & Emoji...")
+        new_title = generate_thread_title_local(prompt_text, selected_text)
+        new_emoji = classify_text_to_emoji(f"{selected_text} | {prompt_text}")
+    else:
+        print("☁️ [Metadata] Using CLOUD model (Gemini) for Title & Emoji (JSON Mode)...")
+        # אופטימיזציית טוקנים קלאסית: פרומפט קצר, הוראות נוקשות לפורמט פלט
+        cloud_prompt = f"""
+        Analyze the following text from a document and the user's question about it.
+        Selected Text: "{selected_text}"
+        User Question: "{prompt_text}"
+
+        Task:
+        1. Create a short title in HEBREW (2-5 words) summarizing the conversation.
+        2. Choose ONE relevant emoji that represents the topic.
+
+        Respond ONLY with a valid JSON in this exact format, no markdown, no other text:
+        {{"title": "your hebrew title", "emoji": "your emoji"}}
+        """
+        try:
+            # אנחנו משתמשים במודל המהיר והזול כאן, אין צורך במודל היקר למשימה פשוטה
+            response_text = ask_gemini(cloud_prompt, use_smart_model=False)
+            
+            # ניקוי למקרה שג'ימיני החליט לעטוף את התשובה ב-Markdown של קוד
+            clean_json_string = response_text.replace("```json", "").replace("```", "").strip()
+            parsed_data = json.loads(clean_json_string)
+            
+            new_title = parsed_data.get("title")
+            new_emoji = parsed_data.get("emoji")
+            print(f"✨ Cloud Metadata generated: {new_title} {new_emoji}")
+            
+        except Exception as e:
+            print(f"❌ [Metadata] Cloud JSON parsing failed: {e}")
+            # במקרה של שגיאה, אין צורך להקריס כלום, פשוט נשאר עם דיפולט
+            pass
+
+    # שלב העדכון בדאטאבייס בפעולה אחת!
+    if new_title or new_emoji:
+        thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
+        if thread:
+            if new_title and new_title != "שיחה חדשה":
+                thread.title = new_title
+            if new_emoji:
+                thread.emoji = new_emoji
+            db.commit()
+
 def get_embedding_model():
     # עברנו למודל רב-לשוני! תומך ב-50 שפות, כולל עברית, ומייצר וקטורים של 768 ממדים
     print("🚀 Bypassing Google API: Using local HuggingFace Multilingual model (768 dimensions)...")

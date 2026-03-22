@@ -1,43 +1,77 @@
 // src/services/api.ts
 import axios from 'axios';
 
-const API_URL = "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+// 1. יצירת מופע מותאם של Axios כדי שלא נזהם את ההגדרות הגלובליות
+const apiClient = axios.create({
+  baseURL: API_URL,
+});
+
+// 2. Interceptor - "מיירט הבקשות" שמוסיף את הטוקן אוטומטית לפני כל פנייה לשרת
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem('access_token');
+  if (token) {
+    // הוספת הטוקן להדר (Header) בדיוק כמו שה-Backend מצפה לקבל
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+}, (error) => {
+  return Promise.reject(error);
+});
 
 export const api = {
-  checkHealth: () => axios.get(`${API_URL}/health`),
+  // ==========================================
+  // Auth & Users
+  // ==========================================
+  // FastAPI מצפה לקבל את פרטי ההתחברות כ-FormData (username, password)
+  login: (formData: FormData) => apiClient.post('/login/', formData),
+  register: (userData: any) => apiClient.post('/users/', userData),
 
-  estimatePageSummaryTokens: (documentId: number, pageNumber: number) => 
-    axios.get(`${API_URL}/documents/${documentId}/pages/${pageNumber}/estimate-summary`),
-    
-  createPageSummary: (documentId: number, pageNumber: number) => 
-    axios.post(`${API_URL}/documents/${documentId}/pages/${pageNumber}/summary`),
+  // ==========================================
+  // System
+  // ==========================================
+  checkHealth: () => apiClient.get('/health'),
+
+  // ==========================================
+  // Documents
+  // ==========================================
+  // התיקון: אין יותר צורך לשלוח userId! השרת יודע מי אנחנו לפי הטוקן
+  getUserDocuments: () => apiClient.get('/documents/'),
   
-uploadDocument: (file: File, userId: number, generateSummary: boolean = false) => {
+  uploadDocument: (file: File, generateSummary: boolean = false) => {
     const formData = new FormData();
     formData.append('file', file);
-    // שים לב: FormData תמיד שולח טקסט, אז אנחנו ממירים את ה-boolean למחרוזת
     formData.append('generate_summary', generateSummary.toString()); 
     
-    return axios.post(`${API_URL}/documents/?user_id=${userId}`, formData, {
+    return apiClient.post('/documents/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
-  getThreads: (docId: number) => axios.get(`${API_URL}/documents/${docId}/threads/`),
 
-  getThread: (threadId: number) => axios.get(`${API_URL}/threads/${threadId}`),
-
-  getUserDocuments: (userId: number) => axios.get(`${API_URL}/documents/user/${userId}`),
+  estimatePageSummaryTokens: (documentId: number, pageNumber: number) => 
+    apiClient.get(`/documents/${documentId}/pages/${pageNumber}/estimate-summary`),
+    
+  createPageSummary: (documentId: number, pageNumber: number) => 
+    apiClient.post(`/documents/${documentId}/pages/${pageNumber}/summary`),
   
-  createThread: (payload: any) => axios.post(`${API_URL}/threads/`, payload),
+  getDocumentSummaries: (documentId: number) => 
+    apiClient.get(`/documents/${documentId}/summaries`),
+
+  // ==========================================
+  // Threads & Messages
+  // ==========================================
+  getThreads: (docId: number) => apiClient.get(`/documents/${docId}/threads/`),
+  
+  getThread: (threadId: number) => apiClient.get(`/threads/${threadId}`),
+  
+  createThread: (payload: any) => apiClient.post('/threads/', payload),
   
   sendMessage: (threadId: number, content: string) => 
-    axios.post(`${API_URL}/threads/${threadId}/messages/`, { content }),
+    apiClient.post(`/threads/${threadId}/messages/`, { content }),
     
-  shutdown: () => axios.post(`${API_URL}/system/shutdown`),
-
-// הוסף את זה מתחת לפונקציות האחרות של השיחות:
   forkThread: (threadId: number, messageId: number) => 
-    axios.post(`${API_URL}/threads/${threadId}/fork/?message_id=${messageId}`),
+    apiClient.post(`/threads/${threadId}/fork/?message_id=${messageId}`),
 };
 
 export default API_URL;

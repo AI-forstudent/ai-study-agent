@@ -21,10 +21,10 @@ class Document(Base):
     file_path = Column(String)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
     owner = relationship("User", back_populates="documents")
     threads = relationship("Thread", back_populates="document")
     chunks = relationship("Chunk", back_populates="document")
+    page_summaries = relationship("PageSummary", back_populates="document")
 
 class Thread(Base):
     __tablename__ = "threads"
@@ -63,3 +63,13 @@ class Chunk(Base):
     
     embedding = Column(Vector(768)) 
     document = relationship("Document", back_populates="chunks")
+
+class PageSummary(Base):
+    __tablename__ = "page_summaries"
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"))
+    page_number = Column(Integer)
+    summary = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    document = relationship("Document", back_populates="page_summaries")

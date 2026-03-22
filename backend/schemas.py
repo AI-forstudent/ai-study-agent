@@ -66,3 +66,20 @@ class DocumentResponse(DocumentBase):
     created_at: datetime
     class Config:
         from_attributes = True
+
+# --- Page Summary Schemas ---
+class PageSummaryBase(BaseModel):
+    page_number: int
+    summary: str
+
+class PageSummaryCreate(PageSummaryBase):
+    document_id: int
+
+class PageSummaryResponse(PageSummaryBase):
+    id: int
+    document_id: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+

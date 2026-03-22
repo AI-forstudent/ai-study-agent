@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-
 from database import engine, get_db, SessionLocal
-import models, schemas, services
+import models, schemas, services, security, jwt
 
 # ==========================================
 # 1. Lifespan & App Initialization
@@ -62,7 +62,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], 
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],    
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"],
@@ -88,29 +88,81 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    new_user = models.User(email=user.email, password_hash=user.password)
+    # התיקון הקריטי: מצפינים את הסיסמה לפני השמירה!
+    hashed_pw = security.get_password_hash(user.password)
+    new_user = models.User(email=user.email, password_hash=hashed_pw)
+    
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     return new_user
 
+@app.post("/login/")
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # OAuth2PasswordRequestForm משתמש בשדה שנקרא "username", אנחנו נכניס לשם את האימייל
+    user = db.query(models.User).filter(models.User.email == form_data.username).first()
+    
+    # בודקים אם המשתמש קיים ואם הסיסמה תואמת להצפנה
+    if not user or not security.verify_password(form_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="אימייל או סיסמה שגויים")
+    
+    # מייצרים את תעודת הזהות הווירטואלית (Token) עם ה-ID של המשתמש
+    access_token = security.create_access_token(data={"sub": str(user.id)})
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login/")
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="לא ניתן לאמת את המשתמש (הטוקן חסר או פג תוקף)",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        # מפענחים את הטוקן
+        payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
+        print(f"📦 Decoded Payload: {payload}")
+        
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            print("❌ Error: 'sub' (user_id) is missing in payload!")
+            raise credentials_exception
+            
+    except Exception as e:
+        # פה נתפוס את השגיאה האמיתית של ההצפנה!
+        print(f"❌ JWT Decode Error: {str(e)}")
+        raise credentials_exception
+        
+    # שולפים את המשתמש מהדאטאבייס
+    user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+    if user is None:
+        print(f"❌ Error: User with ID {user_id} not found in DB!")
+        raise credentials_exception
+        
+    print(f"✅ Success! User validated: {user.email}")
+    print(f"---------------------------\n")
+    return user
 
 # ==========================================
 # 3. Routes: Documents & Pages
 # ==========================================
 
-@app.get("/documents/user/{user_id}", response_model=List[schemas.DocumentResponse])
-def get_user_documents(user_id: int, db: Session = Depends(get_db)):
+
+@app.get("/documents/", response_model=List[schemas.DocumentResponse])
+def get_user_documents(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # במקום לקבל user_id מהמשתמש (שאפשר לזייף), אנחנו לוקחים אותו ישירות מ"שומר הסף" (current_user.id)
     documents = db.query(models.Document)\
-                  .filter(models.Document.user_id == user_id)\
+                  .filter(models.Document.user_id == current_user.id)\
                   .order_by(models.Document.created_at.desc())\
                   .all()
     return documents
 
 @app.post("/documents/", response_model=schemas.DocumentResponse)
 def upload_document(
-    user_id: int,
     file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
     generate_summary: bool = Form(False),
     db: Session = Depends(get_db)
 ):
@@ -139,9 +191,9 @@ def upload_document(
     new_doc = models.Document(
         title=file.filename,
         file_path=file_location,
-        user_id=user_id,
+        user_id=current_user.id,
         summary=root_summary
-    )
+        )
     db.add(new_doc)
     db.commit()
     db.refresh(new_doc)
@@ -188,8 +240,19 @@ def estimate_page_summary_tokens(document_id: int, page_number: int, db: Session
     return {"tokens": token_count, "page_number": page_number}
 
 
-@app.post("/documents/{document_id}/pages/{page_number}/summary")
+@app.post("/documents/{document_id}/pages/{page_number}/summary", response_model=schemas.PageSummaryResponse)
 def create_page_summary(document_id: int, page_number: int, db: Session = Depends(get_db)):
+    # 1. בדיקה: האם הסיכום כבר קיים במטמון (DB)?
+    existing_summary = db.query(models.PageSummary).filter(
+        models.PageSummary.document_id == document_id,
+        models.PageSummary.page_number == page_number
+    ).first()
+
+    if existing_summary:
+        print(f"♻️ [DB Cache] Returning existing summary for Document {document_id}, Page {page_number}")
+        return existing_summary
+
+    # 2. אם לא קיים, שולפים את הטקסט של העמוד
     page_chunks = db.query(models.Chunk).filter(
         models.Chunk.document_id == document_id,
         models.Chunk.page_number == page_number
@@ -200,11 +263,28 @@ def create_page_summary(document_id: int, page_number: int, db: Session = Depend
         
     page_text = "\n".join([c.text for c in page_chunks])
     
-    print(f"🪙 [Gemini API] Generating summary for Document {document_id}, Page {page_number}...")
+    # 3. קריאה לג'ימיני לייצור סיכום חדש
+    print(f"🪙 [Gemini API] Generating NEW summary for Document {document_id}, Page {page_number}...")
     summary_result = services.generate_specific_page_summary(page_text)
     
-    return {"summary": summary_result}
+    # 4. שמירה בדאטאבייס לפעם הבאה!
+    new_summary = models.PageSummary(
+        document_id=document_id,
+        page_number=page_number,
+        summary=summary_result
+    )
+    db.add(new_summary)
+    db.commit()
+    db.refresh(new_summary)
+    
+    return new_summary
 
+@app.get("/documents/{document_id}/summaries", response_model=List[schemas.PageSummaryResponse])
+def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
+    summaries = db.query(models.PageSummary).filter(
+        models.PageSummary.document_id == document_id
+    ).all()
+    return summaries
 
 # ==========================================
 # 4. Routes: Threads & Messages
@@ -227,27 +307,18 @@ def get_single_thread(thread_id: int, db: Session = Depends(get_db)):
 
 @app.post("/threads/", response_model=schemas.ThreadResponse)
 def create_thread(thread_data: schemas.ThreadCreate, db: Session = Depends(get_db)):
-    matched_emoji = services.classify_text_to_emoji(thread_data.selected_text or "")
     new_thread = models.Thread(
         document_id=thread_data.document_id,
         page_number=thread_data.page_number,
         selected_text=thread_data.selected_text,
         coordinates=thread_data.coordinates,
-        emoji=matched_emoji,
+        emoji="💬",
         title=None 
     )
     db.add(new_thread)
     db.commit()
     db.refresh(new_thread)
     return new_thread
-
-def update_thread_title_background(thread_id: int, prompt: str, selected_text: str, db: Session):
-    new_title = services.generate_thread_title_local(prompt, selected_text)
-    if new_title and new_title != "שיחה חדשה":
-        thread = db.query(models.Thread).filter(models.Thread.id == thread_id).first()
-        if thread:
-            thread.title = new_title
-            db.commit()
 
 @app.post("/threads/{thread_id}/messages/", response_model=schemas.MessageResponse)
 def add_message_to_thread(
@@ -266,12 +337,8 @@ def add_message_to_thread(
     
     history_in_db = db.query(models.Message).filter(models.Message.thread_id == thread_id).all()
     if len(history_in_db) == 1: 
-        context_for_ai = f"{thread.selected_text} | {message.content}"
-        thread.emoji = services.classify_text_to_emoji(context_for_ai)
-        db.commit()
-        
         background_tasks.add_task(
-            update_thread_title_background, 
+            services.generate_thread_metadata_background, 
             thread_id, 
             message.content, 
             thread.selected_text, 
@@ -323,18 +390,3 @@ def fork_thread(thread_id: int, message_id: int, db: Session = Depends(get_db)):
     new_thread.messages = services.get_full_thread_history(new_thread.id, db)
 
     return new_thread
-
-
-# ==========================================
-# 5. System Routes
-# ==========================================
-
-def kill_server_logic():
-    print("💀 Shutting down Backend process...")
-    time.sleep(1) 
-    os.kill(os.getpid(), signal.SIGTERM)
-
-@app.post("/system/shutdown")
-def shutdown_system(background_tasks: BackgroundTasks):
-    background_tasks.add_task(kill_server_logic)
-    return {"message": "System is shutting down..."}
