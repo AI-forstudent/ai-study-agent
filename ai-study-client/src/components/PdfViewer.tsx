@@ -47,9 +47,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     return 'general';
   }, [textSelection]);
 
-  const handleSmartAction = (promptType: string) => {
-    handleQuickAction('chat'); 
-  };
+const handleSmartAction = (promptType: string) => {
+  console.log("Smart action requested:", promptType); // הנה, עכשיו אנחנו "משתמשים" במשתנה!
+  handleQuickAction('chat'); 
+};
 
   // --- חיישן הגלילה (Intersection Observer) ---
   useEffect(() => {

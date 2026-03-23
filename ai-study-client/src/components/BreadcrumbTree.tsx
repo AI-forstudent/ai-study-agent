@@ -1,7 +1,14 @@
 import React from 'react';
-import { ChevronLeft, GitBranch, LayoutList, MessageSquare } from 'lucide-react';
+import { ChevronLeft, LayoutList, MessageSquare } from 'lucide-react';
 import type { Thread } from '../types'; 
-import type { TreeStrategyProps } from './mockTreeData'; 
+
+// הוספנו את ההגדרה במקום לייבא אותה מהקובץ שמחקנו
+interface TreeStrategyProps {
+  threads: Thread[];
+  activeThread: Thread | null;
+  onSelectThread: (thread: Thread) => void;
+  onEnterChat: (thread: Thread) => void;
+}
 
 export const BreadcrumbTree: React.FC<TreeStrategyProps> = ({ threads, activeThread, onSelectThread, onEnterChat }) => {
   const getBreadcrumbs = (current: Thread | null): Thread[] => {

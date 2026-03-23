@@ -1,5 +1,7 @@
 version: '3.8'
+
 services:
+  # === 1. הדאטאבייס ===
   db:
     image: pgvector/pgvector:pg16
     container_name: ai_study_db
@@ -7,11 +9,45 @@ services:
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: app.db
+      POSTGRES_DB: app_db
     ports:
       - "5433:5432"
     volumes:
+      # שומר את המידע של ה-DB כדי שלא יימחק כשהקונטיינר נסגר
       - pgdata:/var/lib/postgresql/data
 
+  # === 2. הבקאנד (FastAPI) ===
+  backend:
+    build:
+      context: ./backend # הנתיב לתיקיית הבקאנד שלך (תשנה אם קוראים לה אחרת)
+      dockerfile: Dockerfile.backend
+    container_name: ai_study_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # שימו לב! הבקאנד פונה לדאטאבייס דרך השם "db" שהגדרנו למעלה
+      - DATABASE_URL=postgresql://user:password@db:5432/app_db
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY} # יימשך מקובץ .env שנגדיר בהמשך
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173
+    volumes:
+      # הגשר שלנו! תיקיית ה-uploads תישמר פיזית על השרת
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      - db
+
+  # === 3. הפרונטאנד (React + Nginx) ===
+  frontend:
+    build:
+      context: ./ai-study-client # הנתיב לתיקיית הפרונטאנד שלך
+      dockerfile: Dockerfile.frontend
+    container_name: ai_study_frontend
+    restart: always
+    ports:
+      - "80:80" # מגיש את האתר על פורט 80 (הפורט הסטנדרטי לאינטרנט)
+    depends_on:
+      - backend
+
+# הכרזה על הווליום של הדאטאבייס
 volumes:
   pgdata:

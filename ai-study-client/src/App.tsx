@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FileText, Power, Settings, BookOpen, LogOut } from 'lucide-react'
+import { FileText, Settings, BookOpen, LogOut } from 'lucide-react'
 import { pdfjs } from 'react-pdf';
 
 // קבצי עיצוב חובה
@@ -11,7 +11,7 @@ import FileUploadView from './components/FileUploadView';
 import ChatPanel from './components/ChatPanel';
 import PdfViewer from './components/PdfViewer';
 import AuthView from './components/AuthView'; // הוספנו את מסך ההתחברות!
-
+import API_URL from './services/api';
 import { api } from './services/api';
 
 import type { Message, Thread } from './types';
@@ -34,7 +34,7 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isCreatingThread, setIsCreatingThread] = useState(false);
-  const [systemStatus, setSystemStatus] = useState({ healthy: true, error: null as string | null });
+  const [,setSystemStatus] = useState({ healthy: true, error: null as string | null });
   const [pendingForkMsgId, setPendingForkMsgId] = useState<number | null>(null);
   const [treeViewMode, setTreeViewMode] = useState<'miller' | 'breadcrumbs' | 'graph'>('miller');
   const { textSelection, activeThread, setTextSelection, setActiveThread } = useAppStore();
@@ -311,7 +311,7 @@ function App() {
               const doc = userDocs.find(d => d.id === Number(selectedId));
               if (doc) {
                 setDocumentId(doc.id);
-                setFile(`http://localhost:8000/${doc.file_path}` as any);
+                setFile(`${API_URL}/${doc.file_path}` as any);
                 setActiveThread(null);
               }
             }}

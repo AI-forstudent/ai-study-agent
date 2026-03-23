@@ -1,7 +1,14 @@
 import React from 'react';
-import { GitBranch, MessageSquare, Network } from 'lucide-react';
+import { MessageSquare } from 'lucide-react';
 import type { Thread } from '../types';
-import type { TreeStrategyProps } from './mockTreeData';
+
+// הוספנו את ההגדרה במקום לייבא אותה
+interface TreeStrategyProps {
+  threads: Thread[];
+  activeThread: Thread | null;
+  onSelectThread: (thread: Thread) => void;
+  onEnterChat: (thread: Thread) => void;
+}
 
 export const NodeGraphTree: React.FC<TreeStrategyProps> = ({ 
   threads, 

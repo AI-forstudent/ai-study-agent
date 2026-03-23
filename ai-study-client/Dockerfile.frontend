@@ -1,0 +1,24 @@
+# === שלב א': בונים את האפליקציה ===
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# העתקת קבצי ניהול חבילות והתקנה
+COPY package.json package-lock.json ./
+RUN npm install
+
+# העתקת כל שאר הקוד והרצת פקודת הבנייה (מייצר את תיקיית dist)
+COPY . .
+RUN npm run build
+
+# === שלב ב': מגישים את האפליקציה ===
+FROM nginx:alpine
+
+# העתקת התוצרים המוכנים משלב א' אל תוך התיקייה ש-Nginx מגיש ממנה
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# השרת יאזין על פורט 80
+EXPOSE 80
+
+# פקודת ההרצה של Nginx
+CMD ["nginx", "-g", "daemon off;"]

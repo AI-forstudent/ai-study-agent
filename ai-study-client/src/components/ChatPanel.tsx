@@ -5,7 +5,6 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import type { Thread, Message } from '../types';
-import { mockThreads } from './mockTreeData';
 import { BreadcrumbTree } from './BreadcrumbTree';
 import { MillerColumnsTree } from './MillerColumnsTree';
 import { NodeGraphTree } from './NodeGraphTree';
