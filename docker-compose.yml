@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   # === 1. הדאטאבייס ===
   db:
     image: pgvector/pgvector:pg16
     container_name: ai_study_db
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -19,10 +17,10 @@ services:
   # === 2. הבקאנד (FastAPI) ===
   backend:
     build:
-      context: ./backend # הנתיב לתיקיית הבקאנד שלך (תשנה אם קוראים לה אחרת)
+      context: ./backend # הנתיב לתיקיית הבקאנד שלך
       dockerfile: Dockerfile.backend
     container_name: ai_study_backend
-    restart: always
+    restart: "on-failure:3" # התיקון שלנו! ינסה 3 פעמים ויוותר כדי לא לחנוק את המחשב
     ports:
       - "8000:8000"
     environment:
@@ -42,7 +40,7 @@ services:
       context: ./ai-study-client # הנתיב לתיקיית הפרונטאנד שלך
       dockerfile: Dockerfile.frontend
     container_name: ai_study_frontend
-    restart: always
+    restart: "on-failure:3" # כנ"ל לפרונטאנד
     ports:
       - "80:80" # מגיש את האתר על פורט 80 (הפורט הסטנדרטי לאינטרנט)
     depends_on:

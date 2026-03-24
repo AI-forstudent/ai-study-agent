@@ -13,6 +13,7 @@ dependencies = [
     "pdfplumber>=0.11.9",
     "pgvector>=0.4.2",
     "psycopg2-binary>=2.9.11",
+    "pyjwt>=2.12.1",
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.22",
     "scikit-learn>=1.8.0",

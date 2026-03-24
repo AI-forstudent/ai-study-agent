@@ -17,6 +17,8 @@ import models, schemas, services, security, jwt
 # 1. Lifespan & App Initialization
 # ==========================================
 
+models.Base.metadata.create_all(bind=engine)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- מה שקורה לפני שהשרת מתחיל לקבל בקשות (Startup) ---
@@ -65,7 +67,7 @@ origins_list = [origin.strip() for origin in allowed_origins_str.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins_list,    
+    allow_origins=["http://localhost", "http://127.0.0.1", "http://localhost:5173", "http://127.0.0.1:5173"],    
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"],
