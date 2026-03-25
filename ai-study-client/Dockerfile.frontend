@@ -13,6 +13,8 @@ RUN npm run build
 
 # === שלב ב': מגישים את האפליקציה ===
 FROM nginx:alpine
+RUN sed -i '/application\/javascript/ s/js;/js mjs;/' /etc/nginx/mime.types
+RUN echo "types { application/javascript mjs; }" > /etc/nginx/conf.d/mjs.conf
 
 # העתקת התוצרים המוכנים משלב א' אל תוך התיקייה ש-Nginx מגיש ממנה
 COPY --from=builder /app/dist /usr/share/nginx/html

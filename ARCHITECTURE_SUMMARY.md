@@ -1,53 +1,73 @@
-🏗️ AI Study Partner - System Architecture & Infrastructure
-1. Project Vision & Core Mechanics
+# 🏗️ AI Study Partner - System Architecture & Infrastructure
+
+## 1. Project Vision & Core Mechanics
 AI Study Partner is an intelligent, RAG-based (Retrieval-Augmented Generation) educational platform. It allows users to upload PDF documents, processes them into semantically searchable chunks, and enables context-aware chat interactions (Threads) directly linked to specific document areas.
 A standout feature of the system is "Thread Forking"—a Git-like branching mechanism that allows users to fork a conversation from any specific message, enabling deep dives into sub-topics without losing the context of the original learning thread.
 
-2. High-Level Architecture (Monorepo)
+## 2. High-Level Architecture (Monorepo)
 The project is structured as a Monorepo, ensuring clear separation of concerns between the client and the server while maintaining a unified repository for version control.
 
-Frontend (/ai-study-client): * Framework: React built with Vite for optimal development speed and modern HMR.
+* **Frontend (/ai-study-client):** * **Framework:** React built with Vite for optimal development speed and modern HMR.
+  * **Language:** TypeScript for type safety and predictable data structures.
+  * **Styling:** TailwindCSS for utility-first, responsive UI design.
+  * **State Management:** Strategy pattern via Render Props for UI variations, preparing for lightweight global state.
 
-Language: TypeScript for type safety and predictable data structures.
+* **Backend (/backend):** * **Framework:** FastAPI (Python) for high-performance, asynchronous REST API endpoints.
+  * **AI/RAG Logic:** Integrates Cloud LLMs (Gemini) and vector embeddings to process and retrieve document contexts efficiently.
 
-Styling: TailwindCSS for utility-first, responsive UI design.
+## 3. Infrastructure & Containerization
+The local development environment and production builds are containerized to guarantee consistency and eliminate "it works on my machine" issues.
 
-State Management: Zustand (planned) for lightweight, predictable global state.
+* **Docker & Docker Compose:** The database, backend, and frontend are orchestrated together.
+* **Database Engine:** PostgreSQL via the official `pgvector/pgvector:pg16` image, enabling native vector storage for embeddings.
+* **Volume Management:** Persistent named volumes (`pgdata`) are mapped to ensure data survives container restarts.
+* **Security & Env Management:** Database credentials and API keys are strictly decoupled using localized `.env` files.
 
-Backend (/backend): * Framework: FastAPI (Python) for high-performance, asynchronous REST API endpoints.
+## 4. Database Design & ORM
+* **ORM:** SQLAlchemy handles the Object-Relational Mapping.
+* **Vector Storage:** The chunks table utilizes a `Vector(768)` data type to store text embeddings for semantic similarity search.
+* **Resolving Circular Dependencies:** The DB schema includes a bidirectional relationship between `Thread` and `Message` (for the forking feature). This architectural challenge was resolved using SQLAlchemy's `use_alter=True` on the Foreign Key definition, allowing the schema to build securely in logical stages.
 
-AI/RAG Logic: Integrates LLMs and embedding models to process and retrieve document contexts.
-
-3. Infrastructure & Containerization
-The local development environment is containerized to guarantee consistency and eliminate "it works on my machine" issues.
-
-Docker & Docker Compose: The database runs exclusively within a Docker container.
-
-Database Engine: PostgreSQL via the official pgvector/pgvector:pg16 image, enabling native vector storage for embeddings.
-
-Volume Management: Persistent named volumes (pgdata) are mapped to ensure data survives container restarts.
-
-Security & Env Management: Database credentials (User, Password, DB Name) are strictly decoupled. Infrastructure configurations are defined directly in docker-compose.yml, while Python application secrets are managed via a localized .env file within the backend directory.
-
-4. Database Design & ORM
-ORM: SQLAlchemy handles the Object-Relational Mapping.
-
-Vector Storage: The chunks table utilizes a Vector(768) data type to store text embeddings for semantic similarity search.
-
-Resolving Circular Dependencies: The DB schema includes a bidirectional relationship between Thread and Message (for the forking feature). This architectural challenge (the "chicken-and-egg" problem) was resolved seamlessly using SQLAlchemy's use_alter=True on the Foreign Key definition, allowing the schema to build securely in logical stages.
-
-5. Migrations & Schema Evolution (Alembic)
+## 5. Migrations & Schema Evolution (Alembic)
 Database state and schema evolutions are strictly managed using Alembic, functioning as the "Git for the database."
+* **Automated Migrations:** Replaced dynamic runtime table creation with trackable, deterministic migration scripts.
+* **Raw SQL Injection:** Customized Alembic migration scripts to inject raw SQL. Notably, `op.execute('CREATE EXTENSION IF NOT EXISTS vector;')` is executed dynamically before table creation.
 
-Automated Migrations: Replaced dynamic runtime table creation (Base.metadata.create_all) with trackable, deterministic migration scripts.
+---
 
-Raw SQL Injection: Customized Alembic migration scripts to inject raw SQL during the upgrade process. Notably, op.execute('CREATE EXTENSION IF NOT EXISTS vector;') is executed dynamically before table creation to ensure PostgreSQL recognizes vector types.
+## 7. Architecture Decision Records (ADRs) & Trade-offs
 
-Dependency Management: Ensured custom data types (e.g., pgvector.sqlalchemy) are explicitly imported at the head of Alembic version files to prevent runtime scope errors.
+This section documents the engineering dilemmas faced during development and the rationale behind the chosen solutions.
 
-6. API Design & Best Practices
-The backend adheres to strict RESTful API standards:
+### ADR 1: Local AI Models vs. Cloud API (LLM)
+* **The Dilemma:** Initially, the system utilized local models via LM Studio and HuggingFace libraries (`langchain-huggingface`) to generate thread titles, emojis, and handle chat completions. 
+* **The Problem:** Running heavy ML libraries (like PyTorch) alongside a FastAPI server within a Docker container on WSL2 led to severe memory bottlenecks and Out-Of-Memory (OOM) crashes on standard machines (limited to 4GB RAM).
+* **The Decision:** **Migrate to Cloud API (Google Gemini).**
+* **Trade-offs:** * *Pros:* Drastically reduced backend memory footprint (enabling cheap VPS deployment), eliminated OOM crashes, lightning-fast container build times (sub 30 seconds).
+  * *Cons:* Vendor lock-in to Google's API, dependency on internet connectivity, and potential rate-limiting. To mitigate rate limits, we implemented DB caching for generated summaries.
 
-Predictable Status Codes: When a client requests a collection (e.g., retrieving threads for a newly uploaded document), the API correctly returns 200 OK with an empty array [], reserving 404 Not Found strictly for cases where the parent resource (the document itself) does not exist. This prevents false positive errors in the Frontend client.
+### ADR 2: The Embeddings Engine
+* **The Dilemma:** How to convert document chunks into vectors for semantic search without exhausting server resources?
+* **Options Considered:**
+  1. **HuggingFace (`sentence-transformers`):** Excellent local control, but pulls massive PyTorch dependencies. Rejected due to RAM constraints.
+  2. **ONNX Runtime:** A lightweight local alternative running on CPU. Good for privacy, but requires maintaining separate models.
+  3. **Cohere API:** A strong cloud alternative, but introduces a second API key and vendor to manage.
+  4. **Google Gemini Embeddings API (`text-embedding-004`):** Generates 768-dimension vectors natively. 
+* **The Decision:** **Google Gemini Embeddings API.**
+* **Trade-offs:** We accepted the reliance on Google's Free Tier quotas. However, Google provides a generous limit for embeddings (up to 1,500 Requests Per Minute). Since LangChain batches chunk processing, we can efficiently process hundreds of PDF pages per minute without hitting the ceiling, resulting in a zero-RAM-cost embedding pipeline.
 
-Live Monitoring: Development database monitoring is integrated directly into the IDE using the VS Code SQLTools extension, streamlining the workflow without requiring bulky external DBMS software.
+### ADR 3: Vector Search Calculation (Scikit-Learn vs. pgvector)
+* **The Dilemma:** How to calculate Cosine Similarity between the user's query and the document chunks.
+* **The Decision:** **Migrate from in-memory processing (`scikit-learn` & `numpy`) to native database execution (`pgvector`).**
+* **Trade-offs:** Pulling thousands of vectors into the Python RAM to calculate similarity using `sklearn` is an anti-pattern for large datasets. By offloading the math to PostgreSQL (`ORDER BY embedding <=> query_vector`), we keep the FastAPI application completely stateless and highly scalable, despite the slight overhead of learning advanced SQLAlchemy syntax for vector queries.
+
+### ADR 4: Cloud Infrastructure & Deployment Provider
+* **The Dilemma:** Choosing a cloud provider to host the production-ready application (FastAPI, React, PostgreSQL) via Docker Compose. The goal is to maximize learning outcomes and align with industry standards while maintaining cost-efficiency.
+* **Options Considered:**
+  1. **DigitalOcean:** Excellent developer experience, straightforward pricing, but less ubiquitous in enterprise environments.
+  2. **AWS (EC2 Free Tier - t2.micro/t3.micro):** The undisputed industry standard for cloud computing. Offers a 1-year free tier but comes with a steep learning curve and a rigid 1GB RAM limit.
+  3. **GCP/Azure:** Strong enterprise alternatives, but AWS provides the most universally recognized baseline for infrastructure skills.
+* **The Decision:** **AWS (Amazon Web Services) - EC2 Instance.**
+* **Trade-offs:** * *Pros:* Direct exposure to industry-standard DevOps tools (IAM, Security Groups, Elastic IPs). High value for resume building and interview discussions.
+  * *Cons:* The 1GB RAM limitation of the free tier poses a risk when running multiple Docker containers (PostgreSQL + API + Nginx).
+  * *Mitigation:* To prevent Out-Of-Memory (OOM

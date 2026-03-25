@@ -6,9 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.18.4",
+    "bcrypt>=4.0.0",         
     "fastapi>=0.128.0",
     "langchain-google-genai>=4.2.0",
-    "langchain-huggingface>=1.2.0",
     "langchain-text-splitters>=1.1.0",
     "pdfplumber>=0.11.9",
     "pgvector>=0.4.2",
@@ -16,8 +16,6 @@ dependencies = [
     "pyjwt>=2.12.1",
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.22",
-    "scikit-learn>=1.8.0",
-    "sentence-transformers>=5.2.3",
     "sqlalchemy>=2.0.46",
     "uvicorn>=0.40.0",
 ]

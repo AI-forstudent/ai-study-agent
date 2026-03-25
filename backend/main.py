@@ -4,7 +4,7 @@ import signal
 from time import time
 from typing import List
 from contextlib import asynccontextmanager
-
+from sqlalchemy import text
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,12 @@ import models, schemas, services, security, jwt
 # 1. Lifespan & App Initialization
 # ==========================================
 
+# קודם כל מדליקים את תוסף הוקטורים בדאטאבייס
+with engine.connect() as connection:
+    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    connection.commit()
+
+# רק עכשיו אפשר לייצר את הטבלאות בבטחה
 models.Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
@@ -363,7 +369,8 @@ def add_message_to_thread(
         history=full_history, 
         selected_text=thread.selected_text,
         root_summary=doc.summary,
-        doc_chunks=all_chunks,
+        document_id=thread.document_id, # שינוי: מעבירים רק ID
+        db=db,                          # שינוי: מעבירים את הסשן
         current_page_text=current_page_text
     )
     

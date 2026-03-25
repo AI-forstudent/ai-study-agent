@@ -1,7 +1,9 @@
 import React, { useMemo, useEffect } from 'react';
-import { Document, Page } from 'react-pdf';
+import { Document, Page, pdfjs } from 'react-pdf';
 import { MessageSquare, Plus, Loader2, Sparkles, HelpCircle, BookOpen, Lightbulb } from 'lucide-react';
 import type { Thread } from '../types';
+
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 interface PdfViewerProps {
   file: File | string;
@@ -116,7 +118,7 @@ const handleSmartAction = (promptType: string) => {
 
       <div className="relative inline-block min-w-full mt-2">
         <Document
-          file={file}
+          file={typeof file === 'string' ? (file.startsWith('http') ? file.replace('127.0.0.1', 'localhost') : `http://localhost:8000/${file}`) : file}
           className="flex flex-col items-center gap-6"
           onLoadSuccess={onDocumentLoadSuccess}
         >
