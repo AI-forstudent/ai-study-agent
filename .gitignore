@@ -29,3 +29,6 @@ desktop.ini
 
 # Editor directories
 .vscode/
+
+# AWS Services key
+*.pem
