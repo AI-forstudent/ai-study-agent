@@ -20,6 +20,12 @@ class Document(Base):
     title = Column(String)
     file_path = Column(String)
     summary = Column(Text, nullable=True)
+    
+    # --- השדות החדשים ---
+    default_persona_id = Column(String, ForeignKey("personas.id"), nullable=True)
+    default_persona = relationship("Persona", back_populates="documents")
+    # -------------------
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     owner = relationship("User", back_populates="documents")
     threads = relationship("Thread", back_populates="document")
@@ -37,8 +43,13 @@ class Thread(Base):
     selected_text = Column(Text, nullable=True)
     emoji = Column(String, nullable=True, default="💬")
     title = Column(String, nullable=True)
+    
+    # --- השדות החדשים ---
+    persona_id = Column(String, ForeignKey("personas.id"), nullable=True)
+    persona = relationship("Persona", back_populates="threads")
+    # -------------------
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     document = relationship("Document", back_populates="threads")
     messages = relationship("Message", back_populates="thread", foreign_keys="[Message.thread_id]")
 
@@ -73,3 +84,16 @@ class PageSummary(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     document = relationship("Document", back_populates="page_summaries")
+
+class Persona(Base):
+    __tablename__ = "personas"
+    
+    # מזהה טקסטואלי כדי שיתאים ל-URL, למשל: "data_engineer"
+    id = Column(String, primary_key=True, index=True) 
+    display_name = Column(String, nullable=False)
+    system_prompt = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # קשרי גומלין
+    documents = relationship("Document", back_populates="default_persona")
+    threads = relationship("Thread", back_populates="persona")

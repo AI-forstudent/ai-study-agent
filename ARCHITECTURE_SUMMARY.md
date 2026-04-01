@@ -61,6 +61,7 @@ This section documents the engineering dilemmas faced during development and the
 * **The Decision:** **Migrate from in-memory processing (`scikit-learn` & `numpy`) to native database execution (`pgvector`).**
 * **Trade-offs:** Pulling thousands of vectors into the Python RAM to calculate similarity using `sklearn` is an anti-pattern for large datasets. By offloading the math to PostgreSQL (`ORDER BY embedding <=> query_vector`), we keep the FastAPI application completely stateless and highly scalable, despite the slight overhead of learning advanced SQLAlchemy syntax for vector queries.
 
+
 ### ADR 4: Cloud Infrastructure & Deployment Provider
 * **The Dilemma:** Choosing a cloud provider to host the production-ready application (FastAPI, React, PostgreSQL) via Docker Compose. The goal is to maximize learning outcomes and align with industry standards while maintaining cost-efficiency.
 * **Options Considered:**
@@ -70,4 +71,50 @@ This section documents the engineering dilemmas faced during development and the
 * **The Decision:** **AWS (Amazon Web Services) - EC2 Instance.**
 * **Trade-offs:** * *Pros:* Direct exposure to industry-standard DevOps tools (IAM, Security Groups, Elastic IPs). High value for resume building and interview discussions.
   * *Cons:* The 1GB RAM limitation of the free tier poses a risk when running multiple Docker containers (PostgreSQL + API + Nginx).
-  * *Mitigation:* To prevent Out-Of-Memory (OOM
+  * *Mitigation:* To prevent Out-Of-Memory (OOM) kills during Docker builds and database operations, we will manually configure a Linux Swap File to offload idle memory pages to the SSD, utilizing OS-level memory management to bypass hardware limitations.
+
+  ## 6. Frontend Architecture & User Experience (UX)
+
+* **UI Tree Variations:** The Thread Forking feature required a flexible UI. We designed three distinct approaches to display the conversation tree (Node Graph, Miller Columns, Breadcrumbs). This was implemented using the **Strategy Pattern** combined with React Render Props, allowing the user to dynamically toggle between views without altering the underlying data structure.
+* **Document Context & Scroll Spy:** To enhance the learning experience, the UI includes a precise "Scroll Spy" mechanism for the PDF viewer, ensuring the chat context is always visually synced with the user's reading position.
+* **State & Route Guarding:** `App.tsx` serves as a strict gatekeeper. Unauthenticated users are isolated to `AuthView.tsx`, preventing unauthorized access to the application state or API endpoints.
+
+## 7. Extended Architecture Decision Records (ADRs)
+
+### ADR 5: LLM Token Cost Management & Latency
+* **The Dilemma:** Generating page-by-page summaries for entire PDF documents upon upload is highly resource-intensive, slow, and rapidly depletes API token quotas.
+* **The Decision:** **Implement a "Gatekeeper" pattern with Lazy Loading and Database Persistence.**
+* **Trade-offs:** * *Pros:* Massive reduction in token consumption and initial load times. Summaries are fetched on-demand (Lazy Loading) with upfront cost estimations and explicit user approval. Furthermore, generated summaries are saved (persisted) in a dedicated PostgreSQL table, meaning returning users access them instantly with zero API cost.
+    * *Cons:* Increased backend complexity, requiring new DB tables and caching logic.
+
+### ADR 6: Authentication & "Showcase" Mode
+* **The Dilemma:** For a portfolio project, requiring strict user registration creates friction for recruiters and reviewers, yet open endpoints expose the system to abuse.
+* **The Decision:** **Frontend-driven Guest/Demo Mode backed by FastAPI JWT.**
+* **Trade-offs:** Instead of complex backend seeding scripts, the frontend attempts to log in a predefined "Demo User". If it doesn't exist, it registers it automatically behind the scenes. This provides a frictionless "One-Click Showcase" experience while keeping the backend endpoints fully secured and guarded by JWT authentication.
+
+### ADR 7: API Call Optimization (Zero-Shot Classification)
+* **The Dilemma:** Generating a title and assigning an appropriate Emoji for each new chat thread initially required multiple, sequential API calls to the LLM, causing noticeable UI delays.
+* **The Decision:** **Unified JSON-formatted prompt mapping.**
+* **Trade-offs:** We transitioned to a single, highly engineered Zero-Shot prompt that forces the Gemini API to return both the title and the emoji in a strictly typed JSON format in one go. This cut API latency in half but required stricter error handling for JSON parsing on the backend.
+
+### ADR 8: Backend Resource Management (Garbage Collection)
+* **The Dilemma:** Users uploading files and deleting threads can leave orphaned PDF files taking up valuable disk space on the AWS server.
+* **The Decision:** **Automated Server-Side Garbage Collector.**
+* **Implementation:** Developed a mechanism alongside a centralized Document Library (to prevent duplicate uploads). The GC routinely cleans up orphaned files that are no longer referenced in the database, ensuring the 8GB AWS storage remains healthy.
+
+### ADR 9: Security, Routing & Web Server (DevOps Phase)
+* **The Dilemma:** How to securely expose the Dockerized application to the public internet on AWS, assign a custom domain, and handle SSL termination without creating conflicts between Docker containers and Let's Encrypt (`certbot`).
+* **The Decision:** **Cloudflare Proxy + Nginx Reverse Proxy with Host-Level Certbot.**
+* **Implementation & Trade-offs:** * *Domain Strategy:* Purchased a pristine `.com` domain and utilized **Defensive Domain Registration** (purchasing the plural variant) to protect the brand and redirect typos.
+    * *SSL Strategy:* Executed Certbot in `standalone` mode on the AWS Host (briefly freeing port 80). The generated SSL certificates were then mapped into the Nginx container using **Read-Only (`ro`) Docker Volumes**.
+    * *Security:* Enabled Cloudflare's **Full (Strict) SSL** and Proxy (Orange Cloud) to shield the actual AWS IP, prevent DDoS attacks, and enforce automatic HTTP to HTTPS redirection (301) via Nginx. This creates an industry-standard, production-grade security pipeline, albeit with a more complex deployment workflow.
+
+---
+
+## 8. Future Roadmap: Phase 2 (AI Agents Marketplace)
+
+**Objective:** Evolve the single-agent learning tool into a role-based educational platform.
+
+* **Architecture (Separation of Concerns):** We will utilize our secondary, defensively registered domain (`ai-study-agents.com`) to build a fast, lightweight Static Site (SSG) acting as a visual catalog/marketplace of "Expert Tutors" (e.g., Data Engineering Mentor, Math Tutor).
+* **The Handshake:** When a user selects a persona from the catalog, they will be seamlessly redirected to the main application engine (`ai-study-agent.com`) via URL Query Parameters (e.g., `?persona=data_engineer`).
+* **Dynamic Context Injection:** The main FastAPI backend will intercept the parameter, retrieve the corresponding deep System Prompt from the database, and initialize the Gemini chat session strictly within the boundaries of that specific professional persona. This keeps the core app engine generic and highly scalable.

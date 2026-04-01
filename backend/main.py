@@ -175,8 +175,21 @@ def upload_document(
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user),
     generate_summary: bool = Form(False),
+    persona_id: str = Form(None), # <-- 1. הוספנו קבלת פרמטר מהטופס
     db: Session = Depends(get_db)
 ):
+    # --- הוספת מנגנון הוולידציה (Edge Case 3) ---
+    if persona_id:
+        persona_exists = db.query(models.Persona).filter(models.Persona.id == persona_id).first()
+        if not persona_exists:
+            # זורקים שגיאה מסודרת שהפרונטאנד יתפוס ויציג את שני הכפתורים
+            raise HTTPException(status_code=404, detail="PERSONA_NOT_FOUND")
+    # ---------------------------------------------
+
+    file_location = f"uploads/{file.filename}"
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
     file_location = f"uploads/{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -203,7 +216,8 @@ def upload_document(
         title=file.filename,
         file_path=file_location,
         user_id=current_user.id,
-        summary=root_summary
+        summary=root_summary,
+        default_persona_id=persona_id # <-- 2. שומרים את הפרסונה במסמך
         )
     db.add(new_doc)
     db.commit()
@@ -297,6 +311,15 @@ def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
     ).all()
     return summaries
 
+@app.get("/personas/", response_model=List[schemas.PersonaResponse])
+def get_all_personas(db: Session = Depends(get_db)):
+    """
+    ראוט חדש עבור הפרונטאנד: מושך את כל הסוכנים הזמינים מהדאטאבייס
+    כדי לאכלס את הרשימה הנפתחת (Dropdown) במסך העלאת המסמך.
+    """
+    personas = db.query(models.Persona).all()
+    return personas
+
 # ==========================================
 # 4. Routes: Threads & Messages
 # ==========================================
@@ -324,7 +347,8 @@ def create_thread(thread_data: schemas.ThreadCreate, db: Session = Depends(get_d
         selected_text=thread_data.selected_text,
         coordinates=thread_data.coordinates,
         emoji="💬",
-        title=None 
+        title=None,
+        persona_id=thread_data.persona_id # <-- שומרים את הפרסונה (אם הועברה)
     )
     db.add(new_thread)
     db.commit()
@@ -371,7 +395,9 @@ def add_message_to_thread(
         root_summary=doc.summary,
         document_id=thread.document_id, # שינוי: מעבירים רק ID
         db=db,                          # שינוי: מעבירים את הסשן
-        current_page_text=current_page_text
+        current_page_text=current_page_text,
+        thread_persona_id=thread.persona_id,
+        doc_persona_id=doc.default_persona_id
     )
     
     ai_msg = models.Message(thread_id=thread_id, role="assistant", content=ai_response)
@@ -393,7 +419,8 @@ def fork_thread(thread_id: int, message_id: int, db: Session = Depends(get_db)):
         coordinates=parent_thread.coordinates,
         parent_thread_id=parent_thread.id,  
         forked_from_message_id=message_id,   
-        emoji=parent_thread.emoji
+        emoji=parent_thread.emoji,
+        persona_id=parent_thread.persona_id # <-- הילד יורש את הסוכן של האבא
     )
     db.add(new_thread)
     db.commit()

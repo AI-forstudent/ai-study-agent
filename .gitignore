@@ -32,3 +32,6 @@ desktop.ini
 
 # AWS Services key
 *.pem
+
+# Google Cloud Services key
+google_credentials.json

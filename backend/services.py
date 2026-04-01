@@ -210,12 +210,21 @@ def find_relevant_chunks(query: str, document_id: int, db: Session, top_k: int =
         print(f"⚠️ Vector search warning: {e}")
         return []
     
-def get_chat_response_for_thread(history: list, selected_text: str, root_summary: str, document_id: int, db: Session, current_page_text: str = ""):
+def get_chat_response_for_thread(
+    history: list, 
+    selected_text: str, 
+    root_summary: str, 
+    document_id: int, 
+    db: Session, 
+    current_page_text: str = "",
+    thread_persona_id: str = None,  # <-- חדש
+    doc_persona_id: str = None      # <-- חדש
+):
     print(f"💬 Generating chat response (Gemini Only)...")
     
     last_user_msg = history[-1].content if history else ""
     
-    # חיפוש חכם (RAG) ישירות מהדאטאבייס!
+    # חיפוש חכם (RAG) ישירות מהדאטאבייס
     search_query = f"{selected_text} {last_user_msg}"
     relevant_context = find_relevant_chunks(search_query, document_id, db)
     relevant_context_str = "\n---\n".join(relevant_context)
@@ -225,9 +234,25 @@ def get_chat_response_for_thread(history: list, selected_text: str, root_summary
     for msg in history:
         full_conversation += f"{msg.role}: {msg.content}\n"
         
+    # --- הזרקת אישיות (Persona Injection) ---
+    # מתחילים עם הדיפולט שלנו:
+    system_prompt = "You are a helpful and precise private tutor."
+    
+    # מחליטים באיזה ID להשתמש (השיחה דורסת את המסמך)
+    active_persona_id = thread_persona_id or doc_persona_id
+    
+    if active_persona_id:
+        print(f"🎭 Injecting Persona ID: {active_persona_id}")
+        persona = db.query(models.Persona).filter(models.Persona.id == active_persona_id).first()
+        if persona and persona.system_prompt:
+            system_prompt = persona.system_prompt
+    else:
+        print("🎭 Using Default Persona (No specific ID found).")
+    # ---------------------------------------
+
     # הפרומפט הראשי והיחיד לג'ימיני
     cloud_prompt = f"""
-    You are a helpful and precise private tutor.
+    {system_prompt}
     
     --- DATA SOURCE 1: IMMEDIATE CONTEXT (Full page) ---
     {current_page_text}

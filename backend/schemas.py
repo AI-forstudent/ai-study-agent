@@ -41,6 +41,7 @@ class ThreadCreate(ThreadBase):
     document_id: int
     # אופציונלי: הודעה ראשונה יחד עם יצירת השרשור
     initial_message: Optional[str] = None 
+    persona_id: Optional[str] = None # <-- התוספת שלנו
 
 class ThreadResponse(ThreadBase):
     id: int
@@ -48,7 +49,8 @@ class ThreadResponse(ThreadBase):
     created_at: datetime
     parent_thread_id: Optional[int] = None
     forked_from_message_id: Optional[int] = None
-    messages: List[MessageResponse] = [] # מחזיר את כל ההודעות בבועה
+    persona_id: Optional[str] = None # התוספת שלנו
+    messages: List[MessageResponse] = [] 
     class Config:
         from_attributes = True
 
@@ -64,6 +66,7 @@ class DocumentResponse(DocumentBase):
     user_id: int
     file_path: str
     created_at: datetime
+    default_persona_id: Optional[str] = None # התוספת שלנו
     class Config:
         from_attributes = True
 
@@ -83,3 +86,12 @@ class PageSummaryResponse(PageSummaryBase):
     class Config:
         from_attributes = True
 
+class PersonaBase(BaseModel):
+    id: str
+    display_name: str
+    system_prompt: str
+
+class PersonaResponse(PersonaBase):
+    created_at: datetime
+    class Config:
+        from_attributes = True
