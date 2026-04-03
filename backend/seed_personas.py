@@ -33,7 +33,7 @@ def seed_db():
     # פותחים חיבור חדש לדאטאבייס
     db: Session = SessionLocal()
     try:
-        print("🌱 Starting to seed personas...")
+        print("[INFO] Starting to seed personas...")
         added_count = 0
         
         for p_data in INITIAL_PERSONAS:
@@ -48,16 +48,16 @@ def seed_db():
                 )
                 db.add(new_persona)
                 added_count += 1
-                print(f"✅ Added persona: {p_data['display_name']} ({p_data['id']})")
+                print(f"[INFO] Added persona: {p_data['display_name']} ({p_data['id']})")
             else:
-                print(f"⏭️ Persona already exists: {p_data['display_name']}, skipping.")
+                print(f"[INFO] Persona already exists: {p_data['display_name']}, skipping.")
         
         # שומרים את כל השינויים במכה אחת
         db.commit()
-        print(f"🎉 Seeding complete! Added {added_count} new personas to the database.")
+        print(f"[INFO] Seeding complete! Added {added_count} new personas to the database.")
         
     except Exception as e:
-        print(f"❌ Error during seeding: {e}")
+        print(f"[ERROR] Error during seeding: {e}")
         db.rollback()
     finally:
         db.close()

@@ -1,0 +1,13 @@
+{
+  "name": "ai-study-partner",
+  "version": "1.0.0",
+  "description": "Monorepo for AI Study Agent",
+  "scripts": {
+    "dev:frontend": "cd ai-study-client && npm run dev",
+    "dev:backend": "cd backend && uv run uvicorn main:app --reload",
+    "dev": "concurrently -c \"cyan.bold,green.bold\" -n \"REACT,FASTAPI\" \"npm run dev:frontend\" \"npm run dev:backend\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

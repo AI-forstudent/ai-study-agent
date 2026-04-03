@@ -55,8 +55,11 @@ export const api = {
   createPageSummary: (documentId: number, pageNumber: number) => 
     apiClient.post(`/documents/${documentId}/pages/${pageNumber}/summary`),
   
-  getDocumentSummaries: (documentId: number) => 
+  getDocumentSummaries: (documentId: number) =>
     apiClient.get(`/documents/${documentId}/summaries`),
+
+  deleteDocument: (documentId: number) =>
+    apiClient.delete(`/documents/${documentId}`),
 
   // ==========================================
   // Threads & Messages

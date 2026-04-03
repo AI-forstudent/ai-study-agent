@@ -13,20 +13,20 @@ import json
 load_dotenv()
 # שורת דיבאג זמנית - מדפיסה רק את ההתחלה של המפתח כדי לראות מה באמת נטען
 api_key = os.getenv("GOOGLE_API_KEY")
-print(f"🔍 DEBUG: API Key loaded starts with: {api_key[:10] if api_key else 'None'}")
+print(f"[DEBUG] API Key loaded starts with: {api_key[:10] if api_key else 'None'}")
 
 def check_llm_connection():
     """מבצע בדיקה יזומה מול הספק הנבחר כדי לראות שהכל תקין"""
     try:
-        print(f"🩺 Testing connection to the model...")
+        print(f"[INFO] Testing connection to the model...")
         # ניסיון לבצע פעולה זולה ומהירה (Embedding למילה אחת)
         embed_model = get_embedding_model()
         embed_model.embed_query("test")
-        print("✅ Connection Healthy!")
+        print("[INFO] Connection Healthy!")
         return True, f"Connected to the model"
     except Exception as e:
         error_msg = f"Connection Failed: {str(e)}"
-        print(f"❌ {error_msg}")
+        print(f"[ERROR] {error_msg}")
         return False, error_msg
 
 # --- 1. Factory Functions (המוח שמחליט באיזה מודל להשתמש) ---
@@ -34,7 +34,7 @@ def check_llm_connection():
 def get_smart_model():
     """מחזיר את המודל החכם (לסיכומים וניתוח מעמיק)"""
     return ChatGoogleGenerativeAI(
-        model="gemini-flash-latest",
+        model="gemini-2.5-flash-lite",
         temperature=0.3, # need to be implemented to the user interaface  
         google_api_key=os.getenv("GOOGLE_API_KEY"),
         timeout=15,       # מקסימום 15 שניות המתנה
@@ -43,7 +43,7 @@ def get_smart_model():
 
 def get_fast_model():
     return ChatGoogleGenerativeAI(
-        model="gemini-flash-latest",
+        model="gemini-2.5-flash-lite",
         temperature=0.5, # need to be implemented to the user interaface  
         google_api_key=os.getenv("GOOGLE_API_KEY"),
         timeout=15,
@@ -67,14 +67,14 @@ def ask_gemini(prompt: str, use_smart_model: bool = False) -> str:
         return content if isinstance(content, str) else str(content)
         
     except Exception as e:
-        print(f"❌ [Gemini API Error]: {e}")
+        print(f"[ERROR] [Gemini API Error]: {e}")
         return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע. אנא נסה לשלוח את ההודעה שוב בעוד מספר רגעים. 🔄"
 
 def generate_thread_metadata_background(thread_id: int, prompt_text: str, selected_text: str, db: Session):
     """
     משימת רקע ליצירת כותרת ואימוג'י לשיחה באמצעות הענן (Gemini JSON Mode).
     """
-    print("☁️ [Metadata] Using CLOUD model (Gemini) for Title & Emoji (JSON Mode)...")
+    print("[Metadata] Using CLOUD model (Gemini) for Title & Emoji (JSON Mode)...")
     
     new_title = None
     new_emoji = None
@@ -103,10 +103,10 @@ def generate_thread_metadata_background(thread_id: int, prompt_text: str, select
         
         new_title = parsed_data.get("title")
         new_emoji = parsed_data.get("emoji")
-        print(f"✨ Cloud Metadata generated: {new_title} {new_emoji}")
+        print(f"[INFO] Cloud Metadata generated: {new_title} {new_emoji}")
         
     except Exception as e:
-        print(f"❌ [Metadata] Cloud JSON parsing failed: {e}")
+        print(f"[ERROR] [Metadata] Cloud JSON parsing failed: {e}")
         pass # במקרה של שגיאה, אין צורך להקריס כלום, פשוט נשאר עם הדיפולט
 
     # שלב העדכון בדאטאבייס בפעולה אחת!
@@ -120,7 +120,7 @@ def generate_thread_metadata_background(thread_id: int, prompt_text: str, select
             db.commit()
             
 def get_embedding_model():
-    print("☁️ Using Google API (gemini-embedding-001 at 768 dimensions)...")
+    print("[INFO] Using Google API (gemini-embedding-001 at 768 dimensions)...")
     return GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001", # המודל החדש והתקין מהצילום מסך שלך!
         google_api_key=os.getenv("GOOGLE_API_KEY"),
@@ -130,7 +130,7 @@ def get_embedding_model():
     )
 
 def extract_text_from_pdf(file_path: str):
-    print(f"🔍 Starting extraction for: {file_path}")
+    print(f"[INFO] Starting extraction for: {file_path}")
     pages_content = []
     try:
         with pdfplumber.open(file_path) as pdf:
@@ -140,10 +140,10 @@ def extract_text_from_pdf(file_path: str):
                 text = page.extract_text()
                 if text:
                     pages_content.append({"page_number": i + 1, "text": text})
-        print(f"✅ Extraction complete! Processed {len(pages_content)} pages.")
+        print(f"[INFO] Extraction complete! Processed {len(pages_content)} pages.")
         return pages_content
     except Exception as e:
-        print(f"❌ Error reading PDF: {e}")
+        print(f"[ERROR] Error reading PDF: {e}")
         return []
 
 def split_text_into_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 200):
@@ -156,7 +156,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int
     return text_splitter.split_text(text)
 
 def generate_document_summary(text: str) -> str:
-    print(f"🤖 Generating summary directly with Cloud Model...")
+    print(f"[INFO] Generating summary directly with Cloud Model...")
     limit = 40000
     safe_text = text[:limit]
     
@@ -184,7 +184,7 @@ def generate_document_summary(text: str) -> str:
         
     except Exception as e:
         # כאן אנחנו תופסים קריסה של ה-API (למשל אם חרגת ממכסת הבקשות)
-        print(f"❌ [Document Summary] Cloud API Failed: {e}")
+        print(f"[ERROR] [Document Summary] Cloud API Failed: {e}")
         return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע, ולכן לא ניתן היה לייצר סיכום מלא למסמך. אפשר לנסות להעלות את המסמך שוב מאוחר יותר! 📄"
 
 def find_relevant_chunks(query: str, document_id: int, db: Session, top_k: int = 3):
@@ -207,7 +207,7 @@ def find_relevant_chunks(query: str, document_id: int, db: Session, top_k: int =
             
         return relevant_texts
     except Exception as e:
-        print(f"⚠️ Vector search warning: {e}")
+        print(f"[WARNING] Vector search warning: {e}")
         return []
     
 def get_chat_response_for_thread(
@@ -220,7 +220,7 @@ def get_chat_response_for_thread(
     thread_persona_id: str = None,  # <-- חדש
     doc_persona_id: str = None      # <-- חדש
 ):
-    print(f"💬 Generating chat response (Gemini Only)...")
+    print(f"[INFO] Generating chat response (Gemini Only)...")
     
     last_user_msg = history[-1].content if history else ""
     
@@ -242,12 +242,12 @@ def get_chat_response_for_thread(
     active_persona_id = thread_persona_id or doc_persona_id
     
     if active_persona_id:
-        print(f"🎭 Injecting Persona ID: {active_persona_id}")
+        print(f"[INFO] Injecting Persona ID: {active_persona_id}")
         persona = db.query(models.Persona).filter(models.Persona.id == active_persona_id).first()
         if persona and persona.system_prompt:
             system_prompt = persona.system_prompt
     else:
-        print("🎭 Using Default Persona (No specific ID found).")
+        print("[INFO] Using Default Persona (No specific ID found).")
     # ---------------------------------------
 
     # הפרומפט הראשי והיחיד לג'ימיני
@@ -288,7 +288,7 @@ def get_thread_history_python(thread_id: int, db: Session, max_depth: int) -> Op
     while current_thread_id:
         # 1. בדיקת סף העומק
         if depth > max_depth:
-            print(f"🌲 Tree is too deep (depth > {max_depth}). Switching to SQL!")
+            print(f"[INFO] Tree is too deep (depth > {max_depth}). Switching to SQL!")
             return None # מחזירים None כדי לאותת לנתב ההיברידי לעבור ל-SQL
             
         # 2. שליפת השרשור הנוכחי
@@ -325,7 +325,7 @@ def get_full_thread_history(thread_id: int, db: Session, max_depth: int = 3) -> 
     
     # שלב 4 - הפולבאק ל-SQL (נממש בשלב הבא!)
     if history is None:
-        print("🚀 Executing Recursive SQL CTE for deep thread history...")
+        print("[INFO] Executing Recursive SQL CTE for deep thread history...")
         # התיקון כאן: מוודאים שאנחנו באמת קוראים לפונקציית ה-SQL ושומרים את התוצאה
         history = get_thread_history_sql(thread_id, db)
         
@@ -391,7 +391,7 @@ def count_tokens_in_text(text: str) -> int:
         # הפונקציה המובנית של LangChain לספירת טוקנים במודל הנבחר
         return llm.get_num_tokens(text)
     except Exception as e:
-        print(f"⚠️ Token counting failed, using fallback calculation: {e}")
+        print(f"[WARNING] Token counting failed, using fallback calculation: {e}")
         # הערכה גסה למקרה שה-API לא זמין רגעית (כ-4 תווים לטוקן)
         return len(text) // 4 
 

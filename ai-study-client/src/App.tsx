@@ -10,7 +10,9 @@ import "react-pdf/dist/Page/TextLayer.css";
 import FileUploadView from './components/FileUploadView';
 import ChatPanel from './components/ChatPanel';
 import PdfViewer from './components/PdfViewer';
-import AuthView from './components/AuthView'; // הוספנו את מסך ההתחברות!
+import AuthView from './components/AuthView';
+import DocumentPicker from './components/DocumentPicker';
+import ConfirmModal from './components/ConfirmModal';
 import API_URL from './services/api';
 import { api } from './services/api';
 
@@ -44,6 +46,8 @@ function App() {
   const [scale, setScale] = useState(1.0);
   const [userDocs, setUserDocs] = useState<any[]>([]);
   const [enableGlobalSummary, setEnableGlobalSummary] = useState(false);
+  const [docToDelete, setDocToDelete] = useState<{ id: number; title: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   useEffect(() => {
     api.checkHealth()
@@ -175,13 +179,41 @@ function App() {
         },
         initial_message: prompt
       };
+      
+      // 1. יצירת השיחה הריקה מול השרת
       const response = await api.createThread(payload);
       const newThread = response.data;
       if (!newThread.messages) newThread.messages = [];
+      
+      // 2. עדכון ה-UI לשיחה החדשה וניקוי הסימון
       setActiveThread(newThread);
       setThreads(prev => [...prev, newThread]);
       setTextSelection(null);
       window.getSelection()?.removeAllRanges();
+
+      // 3. --- התיקון שלנו: אוטומציה של שליחת הפרומפט ---
+      if (prompt) {
+        setIsSending(true);
+        // יצירת הודעה אופטימית למשתמש כדי שיראה מיד מה הוא שאל
+        const optimisticMsg: Message = { id: Date.now(), role: 'user', content: prompt };
+        const updatedThread = { ...newThread, messages: [optimisticMsg] };
+        
+        setActiveThread(updatedThread);
+        setThreads(prev => prev.map(t => t.id === newThread.id ? updatedThread : t));
+
+        try {
+          // שליחת הבקשה לג'ימיני דרך ה-API
+          await api.sendMessage(newThread.id, prompt);
+          // קבלת התשובה הרעננה מהשרת (כולל התשובה של המודל)
+          const freshThreadRes = await api.getThread(newThread.id);
+          setActiveThread(freshThreadRes.data);
+          setThreads(prev => prev.map(t => t.id === newThread.id ? freshThreadRes.data : t));
+        } catch (error) {
+          alert("הייתה שגיאה בשליחת הפרומפט למודל.");
+        } finally {
+          setIsSending(false);
+        }
+      }
     } catch (error) {
       alert("שגיאה ביצירת השיחה");
     } finally {
@@ -191,6 +223,7 @@ function App() {
 
   const handleQuickAction = async (action: 'translate' | 'explain' | 'quiz' | 'chat') => {
     if (action === 'chat') {
+        setActiveThread(null);
         handleCreateThread();
         return;
     }
@@ -200,6 +233,21 @@ function App() {
         case 'explain': prompt = "הסבר את הטקסט המסומן במילים פשוטות (כמו לסטודנט מתחיל)."; break;
         case 'quiz': prompt = "צור שאלת הבנה אחת (אמריקאית) על הטקסט המסומן כדי לבחון אותי."; break;
     }
+    setActiveThread(null);
+    handleCreateThread(prompt);
+  };
+
+  const handleSmartAction = (action: string) => {
+    let prompt = "";
+    switch (action) {
+      case 'hint': prompt = "תן לי רמז קטן שיעזור לי להבין את הטקסט המסומן, בלי לגלות את הפתרון המלא."; break;
+      case 'step-by-step': prompt = "הסבר לי את הפתרון או הרעיון שבטקסט המסומן שלב אחר שלב."; break;
+      case 'define': prompt = "מה ההגדרה המדויקת של המושג המסומן בטקסט?"; break;
+      case 'example': prompt = "תן לי דוגמה פרקטית מחיי היומיום שתעזור לי להבין את הטקסט המסומן."; break;
+      case 'summarize': prompt = "סכם את הפסקה המסומנת במשפט אחד או שניים קצרים."; break;
+    }
+    // פשוט וקל: מאפסים את השיחה הפעילה ויוצרים חדשה!
+    setActiveThread(null);
     handleCreateThread(prompt);
   };
 
@@ -211,10 +259,8 @@ function App() {
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !activeThread) return;
-    const userMsgContent = inputMessage;
-    setInputMessage("");
+  const sendMessageToActiveThread = async (messageContent: string) => {
+    if (!messageContent.trim() || !activeThread) return;
     setIsSending(true);
 
     const isFirstMessageInThisThread = pendingForkMsgId !== null || (!activeThread.messages || activeThread.messages.length === 0);
@@ -225,15 +271,15 @@ function App() {
         const forkResponse = await api.forkThread(activeThread.id, pendingForkMsgId);
         targetThread = forkResponse.data;
         setThreads(prev => [...prev, targetThread]);
-        setPendingForkMsgId(null); 
+        setPendingForkMsgId(null);
       }
 
-      const optimisticMsg: Message = { id: Date.now(), role: 'user', content: userMsgContent };
+      const optimisticMsg: Message = { id: Date.now(), role: 'user', content: messageContent };
       const updatedThread = { ...targetThread, messages: [...(targetThread.messages || []), optimisticMsg] };
       setActiveThread(updatedThread);
-      
-      const response = await api.sendMessage(targetThread.id, userMsgContent);
-      
+
+      const response = await api.sendMessage(targetThread.id, messageContent);
+
       try {
         const freshThreadRes = await api.getThread(targetThread.id);
         const finalThread = freshThreadRes.data;
@@ -245,9 +291,7 @@ function App() {
             try {
               const lateThreadRes = await api.getThread(targetThread.id);
               const updatedLateThread = lateThreadRes.data;
-              
               setThreads(prev => prev.map(t => t.id === updatedLateThread.id ? updatedLateThread : t));
-              
               const currentActive = useAppStore.getState().activeThread;
               if (currentActive?.id === updatedLateThread.id) {
                 setActiveThread(updatedLateThread);
@@ -255,19 +299,46 @@ function App() {
             } catch (err) {
               console.error("Failed to fetch late title", err);
             }
-          }, 4500); 
+          }, 4500);
         }
-
       } catch (refreshError) {
         const finalThread = { ...updatedThread, messages: [...updatedThread.messages, response.data] };
         setActiveThread(finalThread);
         setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
       }
-      
+
     } catch (error) {
       alert("לא הצלחתי לשלוח את ההודעה...");
     } finally {
       setIsSending(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim() || !activeThread) return;
+    const userMsgContent = inputMessage;
+    setInputMessage("");
+    await sendMessageToActiveThread(userMsgContent);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!docToDelete) return;
+    setIsDeleting(true);
+    try {
+      await api.deleteDocument(docToDelete.id);
+      setUserDocs(prev => prev.filter(d => d.id !== docToDelete.id));
+      if (documentId === docToDelete.id) {
+        setDocumentId(null);
+        setFile(null);
+        setActiveThread(null);
+        setThreads([]);
+        setCurrentPage(1);
+      }
+      setDocToDelete(null);
+    } catch (error) {
+      alert("שגיאה במחיקת המסמך. אנא נסה שוב.");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -301,30 +372,19 @@ function App() {
         <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm ml-4">
           <BookOpen className="w-4 h-4 text-slate-500" />
           <span className="text-sm font-semibold text-slate-600">המסמכים שלי:</span>
-          <select 
-            className="bg-transparent text-sm font-bold text-blue-600 focus:outline-none cursor-pointer pr-1 w-40 truncate"
-            value={documentId || ""}
-            onChange={(e) => {
-              const selectedId = e.target.value;
-              if (!selectedId) return;
-              
-              const doc = userDocs.find(d => d.id === Number(selectedId));
-              if (doc) {
-                setDocumentId(doc.id);
-                setFile(`${API_URL}/${doc.file_path}` as any);
-                setActiveThread(null);
-              }
+          <DocumentPicker
+            docs={userDocs}
+            selectedId={documentId}
+            onSelect={(doc) => {
+              const full = userDocs.find(d => d.id === doc.id);
+              setDocumentId(doc.id);
+              setFile(`${API_URL}/${full?.file_path}` as any);
+              setActiveThread(null);
             }}
-          >
-            <option value="" disabled>בחר מסמך...</option>
-            {userDocs.map(doc => (
-              <option key={doc.id} value={doc.id}>
-                {doc.title}
-              </option>
-            ))}
-          </select>
+            onDeleteRequest={(doc) => setDocToDelete(doc)}
+          />
         </div>
-        
+
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
             <Settings className="w-4 h-4 text-slate-500" />
@@ -370,20 +430,21 @@ function App() {
             {isDragging && <div className="absolute inset-0 z-50 cursor-col-resize" />}
 
             <div className="flex-1 h-full flex flex-col overflow-hidden ml-1">
-              <PdfViewer 
-                file={file} 
+              <PdfViewer
+                file={file}
                 numPages={numPages}
                 onDocumentLoadSuccess={({numPages}) => setNumPages(numPages)}
-                threads={threads} 
-                activeThread={activeThread} 
+                threads={threads}
+                activeThread={activeThread}
                 setActiveThread={setActiveThread}
-                textSelection={textSelection} 
-                handleQuickAction={handleQuickAction} 
-                isCreatingThread={isCreatingThread} 
+                textSelection={textSelection}
+                handleQuickAction={handleQuickAction}
+                handleSmartAction={handleSmartAction}
+                isCreatingThread={isCreatingThread}
                 pdfContainerRef={pdfContainerRef}
-                handleTextSelection={handleTextSelection} 
-                currentPage={currentPage}          
-                setCurrentPage={setCurrentPage}    
+                handleTextSelection={handleTextSelection}
+                currentPage={currentPage}
+                setCurrentPage={setCurrentPage}
                 scale={scale}
                 setScale={setScale}
               />
@@ -414,6 +475,14 @@ function App() {
           </div>
         )}
       </main>
+
+      <ConfirmModal
+        isOpen={docToDelete !== null}
+        message="האם אתה בטוח שברצונך למחוק מסמך זה לצמיתות? פעולה זו תמחק גם את כל השיחות המשויכות אליו."
+        isLoading={isDeleting}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDocToDelete(null)}
+      />
     </div>
   )
 }

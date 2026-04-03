@@ -27,7 +27,7 @@ services:
       # שימו לב! הבקאנד פונה לדאטאבייס דרך השם "db" שהגדרנו למעלה
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
       - GOOGLE_API_KEY=${GOOGLE_API_KEY} # יימשך מקובץ .env שנגדיר בהמשך
-      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
     volumes:
       # הגשר שלנו! תיקיית ה-uploads תישמר פיזית על השרת
       - ./backend/uploads:/app/uploads

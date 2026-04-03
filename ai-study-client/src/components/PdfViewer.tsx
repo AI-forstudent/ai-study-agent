@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { MessageSquare, Plus, Loader2, Sparkles, HelpCircle, BookOpen, Lightbulb } from 'lucide-react';
 import type { Thread } from '../types';
@@ -14,6 +14,7 @@ interface PdfViewerProps {
   setActiveThread: (thread: Thread | null) => void;
   textSelection: { text: string; x: number; y: number; width?: number; height?: number} | null;
   handleQuickAction: (action: 'translate' | 'explain' | 'quiz' | 'chat') => void;
+  handleSmartAction: (action: string) => void;
   isCreatingThread: boolean;
   pdfContainerRef: React.RefObject<HTMLDivElement | null>;
   handleTextSelection: () => void;
@@ -32,6 +33,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   setActiveThread,
   textSelection,
   handleQuickAction,
+  handleSmartAction,
   isCreatingThread,
   pdfContainerRef,
   handleTextSelection,
@@ -49,10 +51,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     return 'general';
   }, [textSelection]);
 
-const handleSmartAction = (promptType: string) => {
-  console.log("Smart action requested:", promptType); // הנה, עכשיו אנחנו "משתמשים" במשתנה!
-  handleQuickAction('chat'); 
-};
+  const [isZooming, setIsZooming] = React.useState(false);
 
   // --- חיישן הגלילה (Intersection Observer) ---
   useEffect(() => {
@@ -88,39 +87,66 @@ const handleSmartAction = (promptType: string) => {
     };
   }, [numPages, setCurrentPage, pdfContainerRef]);
 
-  // --- מנגנון הזום (Ctrl + Wheel) ---
+// --- מנגנון הזום המשופר (עם Debouncing למניעת ריצודים) ---
   useEffect(() => {
     const container = pdfContainerRef.current;
     if (!container) return;
 
+    let timeoutId: ReturnType<typeof setTimeout>;
+
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault(); 
+        
+        // מדליקים את מצב "באמצע זום" כדי לכבות את השכבות הכבדות
+        setIsZooming(true);
+
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        setScale((prev) => Math.min(Math.max(prev + delta, 0.5), 3.0));
+        setScale((prev) => Math.min(Math.max(prev + delta, 0.8), 3.0));
+
+        // מאפסים את הטיימר בכל פעם שהגלגלת זזה
+        clearTimeout(timeoutId);
+        
+        // אם עברה חצי שנייה בלי שהעכבר זז - סימן שסיימנו לעשות זום
+        timeoutId = setTimeout(() => {
+          setIsZooming(false);
+        }, 500);
       }
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => container.removeEventListener('wheel', handleWheel);
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+      clearTimeout(timeoutId);
+    };
   }, [pdfContainerRef, setScale]);
 
   return (
-    <div 
-      ref={pdfContainerRef} 
-      className="flex-1 bg-slate-200 rounded-xl overflow-y-auto p-4 shadow-inner border border-slate-300 relative"
-      onMouseUp={handleTextSelection}
-    >
+      <div 
+        ref={pdfContainerRef} 
+        className="flex-1 bg-slate-200 rounded-xl overflow-auto p-4 shadow-inner border border-slate-300 relative"
+        onMouseUp={handleTextSelection}
+      >
       <div className="sticky top-2 right-2 z-50 bg-white/90 backdrop-blur text-xs font-bold text-slate-600 px-3 py-1.5 rounded-full shadow-sm border border-slate-200 w-fit flex gap-2 items-center">
         <span>עמוד {currentPage} מתוך {numPages || '-'}</span>
-        <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded">{(scale * 100).toFixed(0)}%</span>
+        <button 
+          onClick={() => setScale(1.0)} 
+          title="לחץ לאיפוס זום ל-100%"
+          className="bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-0.5 rounded cursor-pointer transition-colors font-bold"
+        >
+          {(scale * 100).toFixed(0)}%
+        </button>
       </div>
 
-      <div className="relative inline-block min-w-full mt-2">
+      <div className="relative flex flex-col items-center mt-2 w-max mx-auto">
         <Document
-          file={typeof file === 'string' ? (file.startsWith('http') ? file.replace('127.0.0.1', 'localhost') : `http://localhost:8000/${file}`) : file}
+          file={file}
           className="flex flex-col items-center gap-6"
           onLoadSuccess={onDocumentLoadSuccess}
+          options={{
+            cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+            cMapPacked: true,
+          }}
         >
           {Array.from(new Array(numPages), (_, index) => {
             const pageNum = index + 1;
@@ -130,14 +156,15 @@ const handleSmartAction = (promptType: string) => {
               <div
                 key={`page_wrapper_${pageNum}`}
                 data-page-number={pageNum}
-                className="pdf-page-wrapper shadow-xl bg-white mb-4 relative"
-              >
+                // הוספנו פה transition-all שיעשה מעבר חלק בשינוי גודל
+                className="pdf-page-wrapper shadow-xl bg-white mb-4 relative transition-all duration-100 ease-out"              >
                 <Page
                   pageNumber={pageNum}
                   width={700}
                   scale={scale}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
+                  renderTextLayer={!isZooming}
+                  renderAnnotationLayer={!isZooming}
+                  loading={null} // <--- הוספנו את זה! מונע את הריצוד והקפיצות של ה"טעינה"
                 />
 
                 {/* --- רינדור מרקרים סגולים של שיחות קיימות בעמוד הזה --- */}

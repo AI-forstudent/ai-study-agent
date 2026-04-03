@@ -28,7 +28,7 @@ models.Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- מה שקורה לפני שהשרת מתחיל לקבל בקשות (Startup) ---
-    print("🔄 [Startup] Running file-system reconciliation...")
+    print("[Startup] Running file-system reconciliation...")
     db = SessionLocal()
     try:
         valid_docs = db.query(models.Document.file_path).all()
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
         
         if not os.path.exists(uploads_dir):
             os.makedirs(uploads_dir)
-            print("📁 Created 'uploads' directory.")
+            print("[INFO] Created 'uploads' directory.")
         else:
             for filename in os.listdir(uploads_dir):
                 full_path = f"{uploads_dir}/{filename}"
@@ -49,12 +49,12 @@ async def lifespan(app: FastAPI):
                         os.remove(full_path)
                         deleted_count += 1
                     except Exception as e:
-                        print(f"⚠️ Failed to delete orphaned file {full_path}: {e}")
+                        print(f"[WARNING] Failed to delete orphaned file {full_path}: {e}")
                         
         if deleted_count > 0:
-            print(f"🧹 [Startup] Cleanup complete: Deleted {deleted_count} orphaned files.")
+            print(f"[Startup] Cleanup complete: Deleted {deleted_count} orphaned files.")
         else:
-            print("✨ [Startup] File-system is perfectly synced with DB.")
+            print("[Startup] File-system is perfectly synced with DB.")
             
     finally:
         db.close()
@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # --- Shutdown ---
-    print("🛑 [Shutdown] Server is shutting down cleanly...")
+    print("[Shutdown] Server is shutting down cleanly...")
 
 # כאן אנחנו מגדירים את ה-APP פעם אחת בלבד!
 app = FastAPI(lifespan=lifespan)
@@ -71,9 +71,10 @@ app = FastAPI(lifespan=lifespan)
 allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 origins_list = [origin.strip() for origin in allowed_origins_str.split(",")]
 
+# תיקון: משתמשים ברשימה הדינמית ולא במערך קשיח!
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost", "http://127.0.0.1", "http://localhost:5173", "http://127.0.0.1:5173"],    
+    allow_origins=origins_list,    
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"],
@@ -134,25 +135,25 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     try:
         # מפענחים את הטוקן
         payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
-        print(f"📦 Decoded Payload: {payload}")
+        print(f"[DEBUG] Decoded Payload: {payload}")
         
         user_id: str = payload.get("sub")
         if user_id is None:
-            print("❌ Error: 'sub' (user_id) is missing in payload!")
+            print("[ERROR] 'sub' (user_id) is missing in payload!")
             raise credentials_exception
             
     except Exception as e:
         # פה נתפוס את השגיאה האמיתית של ההצפנה!
-        print(f"❌ JWT Decode Error: {str(e)}")
+        print(f"[ERROR] JWT Decode Error: {str(e)}")
         raise credentials_exception
         
     # שולפים את המשתמש מהדאטאבייס
     user = db.query(models.User).filter(models.User.id == int(user_id)).first()
     if user is None:
-        print(f"❌ Error: User with ID {user_id} not found in DB!")
+        print(f"[ERROR] User with ID {user_id} not found in DB!")
         raise credentials_exception
         
-    print(f"✅ Success! User validated: {user.email}")
+    print(f"[AUTH] User validated: {user.email}")
     print(f"---------------------------\n")
     return user
 
@@ -199,7 +200,7 @@ def upload_document(
     
     root_summary = None
     if generate_summary:
-        print("🚀 [Token Alert] Generating FULL document summary via Gemini...")
+        print("[Token Alert] Generating FULL document summary via Gemini...")
         raw_summary = services.generate_document_summary(full_text_for_summary)
         
         if isinstance(raw_summary, list):
@@ -210,7 +211,7 @@ def upload_document(
         else:
             root_summary = raw_summary
     else:
-        print("🤫 Skipping global summary (Tokens saved!).")
+        print("[INFO] Skipping global summary (Tokens saved!).")
 
     new_doc = models.Document(
         title=file.filename,
@@ -225,7 +226,7 @@ def upload_document(
 
     embedding_model = services.get_embedding_model()
     chunk_counter = 0
-    print("🧩 Processing pages into chunks...")
+    print("[INFO] Processing pages into chunks...")
     
     for page in pages_data:
         page_chunks_text = services.split_text_into_chunks(page['text'])
@@ -244,7 +245,7 @@ def upload_document(
             chunk_counter += 1
             
     db.commit()
-    print(f"✅ Saved {chunk_counter} chunks!")
+    print(f"[INFO] Saved {chunk_counter} chunks!")
     return new_doc
 
 
@@ -274,7 +275,7 @@ def create_page_summary(document_id: int, page_number: int, db: Session = Depend
     ).first()
 
     if existing_summary:
-        print(f"♻️ [DB Cache] Returning existing summary for Document {document_id}, Page {page_number}")
+        print(f"[DB Cache] Returning existing summary for Document {document_id}, Page {page_number}")
         return existing_summary
 
     # 2. אם לא קיים, שולפים את הטקסט של העמוד
@@ -289,7 +290,7 @@ def create_page_summary(document_id: int, page_number: int, db: Session = Depend
     page_text = "\n".join([c.text for c in page_chunks])
     
     # 3. קריאה לג'ימיני לייצור סיכום חדש
-    print(f"🪙 [Gemini API] Generating NEW summary for Document {document_id}, Page {page_number}...")
+    print(f"[Gemini API] Generating NEW summary for Document {document_id}, Page {page_number}...")
     summary_result = services.generate_specific_page_summary(page_text)
     
     # 4. שמירה בדאטאבייס לפעם הבאה!
@@ -310,6 +311,52 @@ def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
         models.PageSummary.document_id == document_id
     ).all()
     return summaries
+
+@app.delete("/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    document = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = document.file_path
+
+    # Step 1: Null out circular FKs on threads to avoid FK violations during deletion.
+    # Thread.forked_from_message_id → Message, Thread.parent_thread_id → Thread (self-ref).
+    db.query(models.Thread).filter(models.Thread.document_id == document_id).update(
+        {"forked_from_message_id": None, "parent_thread_id": None},
+        synchronize_session=False
+    )
+    db.flush()
+
+    # Step 2: Delete messages belonging to all threads of this document.
+    thread_ids = db.query(models.Thread.id).filter(models.Thread.document_id == document_id)
+    db.query(models.Message).filter(
+        models.Message.thread_id.in_(thread_ids)
+    ).delete(synchronize_session=False)
+
+    # Step 3: Delete threads, chunks, page summaries, then the document record.
+    db.query(models.Thread).filter(models.Thread.document_id == document_id).delete(synchronize_session=False)
+    db.query(models.Chunk).filter(models.Chunk.document_id == document_id).delete(synchronize_session=False)
+    db.query(models.PageSummary).filter(models.PageSummary.document_id == document_id).delete(synchronize_session=False)
+    db.delete(document)
+    db.commit()
+
+    # Step 4: Remove physical file (non-fatal if already missing).
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"[INFO] Deleted file: {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Could not delete file {file_path}: {e}")
+
+    return {"message": "Document deleted successfully"}
 
 @app.get("/personas/", response_model=List[schemas.PersonaResponse])
 def get_all_personas(db: Session = Depends(get_db)):

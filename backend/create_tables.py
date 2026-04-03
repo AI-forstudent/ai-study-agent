@@ -11,11 +11,11 @@ def init_db():
     with engine.connect() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         connection.commit()
-        print("✅ Vector extension enabled!")
+        print("[INFO] Vector extension enabled!")
 
     # 2. יצירת הטבלאות
     Base.metadata.create_all(bind=engine)
-    print("✅ Tables created successfully!")
+    print("[INFO] Tables created successfully!")
 
 if __name__ == "__main__":
     init_db()

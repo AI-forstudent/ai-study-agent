@@ -28,23 +28,23 @@ def print_tree(db: Session):
         # 2. בדיקת ההיסטוריה הווירטואלית (המנגנון ההיברידי שלנו!)
         try:
             virtual_history = services.get_full_thread_history(thread.id, db)
-            history_status = "✅ OK"
+            history_status = "[OK]"
         except Exception as e:
             virtual_history = []
-            history_status = f"❌ ERROR: {e}"
+            history_status = f"[ERROR]: {e}"
         
         # הדפסה ויזואלית של הצומת
         fork_info = f" [Forked from Msg: {thread.forked_from_message_id}]" if thread.parent_thread_id else " [ROOT]"
-        print(f"{indent}🌲 Thread ID: {thread.id}{fork_info}")
-        print(f"{indent}   ├─ Physical Messages: {len(physical_msgs)}")
-        print(f"{indent}   ├─ Virtual History:   {len(virtual_history)} messages {history_status}")
-        
+        print(f"{indent}[Thread] ID: {thread.id}{fork_info}")
+        print(f"{indent}   +- Physical Messages: {len(physical_msgs)}")
+        print(f"{indent}   +- Virtual History:   {len(virtual_history)} messages {history_status}")
+
         # הדפסת זרימת ההודעות (מזהים של ההודעות) לווידוא סדר כרונולוגי
         if virtual_history:
             msg_ids = [f"Msg_{m.id}" for m in virtual_history]
-            print(f"{indent}   └─ Flow: {' -> '.join(msg_ids)}")
+            print(f"{indent}   +- Flow: {' -> '.join(msg_ids)}")
         else:
-            print(f"{indent}   └─ Flow: Empty")
+            print(f"{indent}   +- Flow: Empty")
 
         print("") # שורת רווח לאסתטיקה
 
@@ -53,7 +53,7 @@ def print_tree(db: Session):
             traverse(child.id, depth + 1)
 
     print("\n" + "="*50)
-    print(" 🌳 AI Study Agent: Thread Tree Verification 🌳")
+    print(" AI Study Agent: Thread Tree Verification")
     print("="*50 + "\n")
     
     # מתחילים את הסריקה משיחות השורש בלבד (parent_thread_id is None)
