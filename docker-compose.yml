@@ -43,8 +43,11 @@ services:
     restart: "on-failure:3" # כנ"ל לפרונטאנד
     ports:
       - "80:80" # מגיש את האתר על פורט 80 (הפורט הסטנדרטי לאינטרנט)
+      - "443:443" # פורט 443 ל-HTTPS
     depends_on:
       - backend
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro # מאפשר ל-Nginx להשתמש בתעודות SSL שלנו
 
 # הכרזה על הווליום של הדאטאבייס
 volumes:
