@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, {useMemo, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { MessageSquare, Plus, Loader2, Sparkles, HelpCircle, BookOpen, Lightbulb } from 'lucide-react';
 import type { Thread } from '../types';
