@@ -26,6 +26,9 @@ RUN echo "types { application/javascript mjs; }" > /etc/nginx/conf.d/mjs.conf
 # העתקת התוצרים המוכנים משלב א' אל תוך התיקייה ש-Nginx מגיש ממנה
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/
+
 # השרת יאזין על פורט 80
 EXPOSE 80
 

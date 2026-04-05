@@ -190,11 +190,7 @@ def upload_document(
     file_location = f"uploads/{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
-    file_location = f"uploads/{file.filename}"
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
+              
     pages_data = services.extract_text_from_pdf(file_location)
     full_text_for_summary = "\n".join([p['text'] for p in pages_data])
     

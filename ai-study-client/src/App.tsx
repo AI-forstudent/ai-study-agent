@@ -375,11 +375,31 @@ function App() {
           <DocumentPicker
             docs={userDocs}
             selectedId={documentId}
-            onSelect={(doc) => {
+            onSelect={async (doc) => {
               const full = userDocs.find(d => d.id === doc.id);
+              if (!full) return;
+
+              // מאפסים מיד את המסך כדי לתת תחושת טעינה למשתמש
               setDocumentId(doc.id);
-              setFile(`${API_URL}/${full?.file_path}` as any);
               setActiveThread(null);
+              setThreads([]); 
+              
+              try {
+                // 1. מקודדים את הנתיב כדי שרווחים או עברית לא ישברו את ה-URL
+                const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
+                
+                // 2. מורידים את הקובץ דרך ה-API המסודר שלנו כ-Blob
+                const response = await api.getFile(encodedPath);
+                
+                // 3. הופכים את המידע לקובץ וירטואלי מקומי
+                const blobUrl = URL.createObjectURL(response.data);
+                
+                // 4. מגישים ל-react-pdf קובץ מקומי שאין לו שום בעיות רשת!
+                setFile(blobUrl as any);
+              } catch (error) {
+                console.error("Failed to load document via Blob:", error);
+                alert("לא הצלחנו לטעון את המסמך. ייתכן שהוא פגום או נמחק מהשרת.");
+              }
             }}
             onDeleteRequest={(doc) => setDocToDelete(doc)}
           />

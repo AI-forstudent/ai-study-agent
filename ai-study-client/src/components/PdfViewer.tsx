@@ -121,6 +121,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     };
   }, [pdfContainerRef, setScale]);
 
+  const pdfOptions = useMemo(() => ({
+  cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+  cMapPacked: true,
+  }), []);
+
   return (
       <div 
         ref={pdfContainerRef} 
@@ -143,10 +148,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           file={file}
           className="flex flex-col items-center gap-6"
           onLoadSuccess={onDocumentLoadSuccess}
-          options={{
-            cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
-            cMapPacked: true,
-          }}
+          options={pdfOptions}
         >
           {Array.from(new Array(numPages), (_, index) => {
             const pageNum = index + 1;

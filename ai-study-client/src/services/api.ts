@@ -61,6 +61,8 @@ export const api = {
   deleteDocument: (documentId: number) =>
     apiClient.delete(`/documents/${documentId}`),
 
+  getFile: (filePath: string) => 
+    apiClient.get(`/${filePath}`, { responseType: 'blob' }),
   // ==========================================
   // Threads & Messages
   // ==========================================
