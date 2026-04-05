@@ -13,7 +13,6 @@ import PdfViewer from './components/PdfViewer';
 import AuthView from './components/AuthView';
 import DocumentPicker from './components/DocumentPicker';
 import ConfirmModal from './components/ConfirmModal';
-import API_URL from './services/api';
 import { api } from './services/api';
 
 import type { Message, Thread } from './types';
