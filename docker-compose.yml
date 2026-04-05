@@ -40,7 +40,7 @@ services:
       context: ./ai-study-client # הנתיב לתיקיית הפרונטאנד שלך
       dockerfile: Dockerfile.frontend
       args:
-        - VITE_API_URL=https://ai-study-agent.com
+        - VITE_API_URL=https://ai-study-agent.com/api
     container_name: ai_study_frontend
     restart: "on-failure:3" # כנ"ל לפרונטאנד
     ports:
