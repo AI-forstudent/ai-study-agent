@@ -7,12 +7,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install
 
-# --- התוספת שלנו מתחילה כאן ---
-# קבלת המשתנה מתוך ה-docker-compose
-ARG VITE_API_URL
-# הפיכתו למשתנה סביבה ש-Vite יזהה בוודאות בזמן הבנייה
-ENV VITE_API_URL=$VITE_API_URL
-# --- התוספת שלנו מסתיימת כאן ---
+# Build-time env var — Vite bakes this into the JS bundle at build time
+ARG VITE_AI_API_URL
+ENV VITE_AI_API_URL=$VITE_AI_API_URL
 
 # העתקת כל שאר הקוד והרצת פקודת הבנייה (מייצר את תיקיית dist)
 COPY . .

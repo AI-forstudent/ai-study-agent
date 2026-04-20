@@ -1,82 +1,110 @@
 // src/services/api.ts
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+// Single base URL — all traffic now goes to the unified API on port 8001.
+// In production this resolves to the domain root (nginx routes /api/v1/* and
+// /uploads/* to the backend container; no path prefix needed here).
+const API_BASE = import.meta.env.VITE_AI_API_URL || 'http://localhost:8001';
 
-// 1. יצירת מופע מותאם של Axios כדי שלא נזהם את ההגדרות הגלובליות
 const apiClient = axios.create({
-  baseURL: API_URL,
+  baseURL: API_BASE,
 });
 
-// 2. Interceptor - "מיירט הבקשות" שמוסיף את הטוקן אוטומטית לפני כל פנייה לשרת
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
-  if (token) {
-    // הוספת הטוקן להדר (Header) בדיוק כמו שה-Backend מצפה לקבל
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-}, (error) => {
-  return Promise.reject(error);
-});
+// Inject Bearer token on every outgoing request
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('access_token');
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  },
+  (error) => Promise.reject(error),
+);
 
 export const api = {
-  // ==========================================
-  // Auth & Users
-  // ==========================================
-  // FastAPI מצפה לקבל את פרטי ההתחברות כ-FormData (username, password)
-  login: (formData: FormData) => apiClient.post('/login/', formData),
-  register: (userData: any) => apiClient.post('/users/', userData),
+  // ── Auth ────────────────────────────────────────────────────────────────
+  // FastAPI OAuth2 expects FormData (username + password fields)
+  login:      (formData: FormData) => apiClient.post('/api/v1/auth/login', formData),
+  register:   (userData: unknown)  => apiClient.post('/api/v1/auth/register', userData),
+  guestLogin: ()                   => apiClient.post('/api/v1/auth/guest-login'),
 
-  // ==========================================
-  // System
-  // ==========================================
+  // ── System ───────────────────────────────────────────────────────────────
   checkHealth: () => apiClient.get('/health'),
 
-  // ==========================================
-  // Documents
-  // ==========================================
-  // התיקון: אין יותר צורך לשלוח userId! השרת יודע מי אנחנו לפי הטוקן
-  getUserDocuments: () => apiClient.get('/documents/'),
-  
-  uploadDocument: (file: File, generateSummary: boolean = false) => {
+  // ── Documents ────────────────────────────────────────────────────────────
+  getUserDocuments: () => apiClient.get('/api/v1/documents/'),
+
+  uploadDocument: (file: File, generateSummary = false) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('generate_summary', generateSummary.toString()); 
-    
-    return apiClient.post('/documents/', formData, {
+    formData.append('generate_summary', generateSummary.toString());
+    return apiClient.post('/api/v1/documents/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
 
-  estimatePageSummaryTokens: (documentId: number, pageNumber: number) => 
-    apiClient.get(`/documents/${documentId}/pages/${pageNumber}/estimate-summary`),
-    
-  createPageSummary: (documentId: number, pageNumber: number) => 
-    apiClient.post(`/documents/${documentId}/pages/${pageNumber}/summary`),
-  
+  createPageSummary: (documentId: number, pageNumber: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/pages/${pageNumber}/summary`),
+
   getDocumentSummaries: (documentId: number) =>
-    apiClient.get(`/documents/${documentId}/summaries`),
+    apiClient.get(`/api/v1/documents/${documentId}/summaries`),
 
   deleteDocument: (documentId: number) =>
-    apiClient.delete(`/documents/${documentId}`),
+    apiClient.delete(`/api/v1/documents/${documentId}`),
 
-  getFile: (filePath: string) => 
+  // filePath is stored as "uploads/filename.pdf" — served directly by backend
+  getFile: (filePath: string) =>
     apiClient.get(`/${filePath}`, { responseType: 'blob' }),
-  // ==========================================
-  // Threads & Messages
-  // ==========================================
-  getThreads: (docId: number) => apiClient.get(`/documents/${docId}/threads/`),
-  
-  getThread: (threadId: number) => apiClient.get(`/threads/${threadId}`),
-  
-  createThread: (payload: any) => apiClient.post('/threads/', payload),
-  
-  sendMessage: (threadId: number, content: string) => 
-    apiClient.post(`/threads/${threadId}/messages/`, { content }),
-    
-  forkThread: (threadId: number, messageId: number) => 
-    apiClient.post(`/threads/${threadId}/fork/?message_id=${messageId}`),
+
+  toggleVisibility: (documentId: number, isPublic: boolean) =>
+    apiClient.patch(`/api/v1/documents/${documentId}/visibility`, { is_public: isPublic }),
+
+  getPublicDocuments: () => apiClient.get('/api/v1/documents/public'),
+
+  // ── Folders ──────────────────────────────────────────────────────────────
+  getFolders: () => apiClient.get('/api/v1/folders/'),
+
+  createFolder: (payload: { name: string; color?: string | null; persona_id?: string | null }) =>
+    apiClient.post('/api/v1/folders/', payload),
+
+  updateFolder: (id: number, payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null }) =>
+    apiClient.put(`/api/v1/folders/${id}`, payload),
+
+  deleteFolder: (id: number) =>
+    apiClient.delete(`/api/v1/folders/${id}`),
+
+  moveDocument: (docId: number, folderId: number | null) =>
+    apiClient.patch(`/api/v1/documents/${docId}/folder`, { folder_id: folderId }),
+
+  starDocument: (docId: number, isStarred: boolean) =>
+    apiClient.patch(`/api/v1/documents/${docId}/star`, { is_starred: isStarred }),
+
+  // ── Personas ─────────────────────────────────────────────────────────────
+  // Note: useAppStore.ts calls Grand Vision persona routes directly via fetch.
+  // These wrappers remain for any component that imports api directly.
+  getPersonas: () => apiClient.get('/api/v1/personas/'),
+
+  createPersona: (payload: {
+    id: string;
+    display_name: string;
+    traits?: Record<string, string>;
+    manual_prompt_override?: string;
+  }) => apiClient.post('/api/v1/personas/', payload),
+
+  // ── Threads & Messages ────────────────────────────────────────────────────
+  getThreads: (docId: number) =>
+    apiClient.get(`/api/v1/threads/document/${docId}`),
+
+  getThread: (threadId: number) =>
+    apiClient.get(`/api/v1/threads/${threadId}`),
+
+  createThread: (payload: unknown) =>
+    apiClient.post('/api/v1/threads/', payload),
+
+  sendMessage: (threadId: number, content: string) =>
+    apiClient.post(`/api/v1/threads/${threadId}/messages`, { content }),
+
+  forkThread: (threadId: number, messageId: number) =>
+    apiClient.post(`/api/v1/threads/${threadId}/fork?message_id=${messageId}`),
 };
 
-export default API_URL;
+export default API_BASE;

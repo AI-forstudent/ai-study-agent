@@ -1,5 +1,5 @@
 services:
-  # === 1. הדאטאבייס ===
+  # === 1. Database ===
   db:
     image: pgvector/pgvector:pg16
     container_name: ai_study_db
@@ -11,46 +11,46 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      # שומר את המידע של ה-DB כדי שלא יימחק כשהקונטיינר נסגר
       - pgdata:/var/lib/postgresql/data
 
-  # === 2. הבקאנד (FastAPI) ===
+  # === 2. Unified Backend (FastAPI — port 8001) ===
   backend:
     build:
-      context: ./backend # הנתיב לתיקיית הבקאנד שלך
+      context: ./backend
       dockerfile: Dockerfile.backend
     container_name: ai_study_backend
-    restart: "on-failure:3" # התיקון שלנו! ינסה 3 פעמים ויוותר כדי לא לחנוק את המחשב
+    restart: "on-failure:3"
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     ports:
-      - "8000:8000"
+      - "8001:8001"
     environment:
-      # שימו לב! הבקאנד פונה לדאטאבייס דרך השם "db" שהגדרנו למעלה
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY} # יימשך מקובץ .env שנגדיר בהמשך
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
     volumes:
-      # הגשר שלנו! תיקיית ה-uploads תישמר פיזית על השרת
+      # Persist uploaded PDFs across container restarts
       - ./backend/uploads:/app/uploads
+      # Sync new migration scripts without a rebuild
+      - ./backend/alembic/versions:/app/alembic/versions
     depends_on:
       - db
 
-  # === 3. הפרונטאנד (React + Nginx) ===
+  # === 3. Frontend (React + Nginx) ===
   frontend:
     build:
-      context: ./ai-study-client # הנתיב לתיקיית הפרונטאנד שלך
+      context: ./ai-study-client
       dockerfile: Dockerfile.frontend
       args:
-        - VITE_API_URL=https://ai-study-agent.com/api
+        - VITE_AI_API_URL=https://ai-study-agent.com
     container_name: ai_study_frontend
-    restart: "on-failure:3" # כנ"ל לפרונטאנד
+    restart: "on-failure:3"
     ports:
-      - "80:80" # מגיש את האתר על פורט 80 (הפורט הסטנדרטי לאינטרנט)
-      - "443:443" # פורט 443 ל-HTTPS
+      - "80:80"
+      - "443:443"
     depends_on:
       - backend
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro # מאפשר ל-Nginx להשתמש בתעודות SSL שלנו
+      - /etc/letsencrypt:/etc/letsencrypt:ro
 
-# הכרזה על הווליום של הדאטאבייס
 volumes:
   pgdata:

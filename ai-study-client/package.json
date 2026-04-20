@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "axios": "^1.13.4",
     "katex": "^0.16.28",
     "lucide-react": "^0.563.0",

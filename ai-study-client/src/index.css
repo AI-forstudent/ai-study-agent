@@ -1,17 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* עיצוב סימון הטקסט הכללי באפליקציה (הופך לסגול AI בהיר) */
+@layer base {
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    color: #37352F;
+    background-color: #FFFFFF;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Text selection — global (purple tint for AI feel) */
 ::selection {
-  background-color: rgba(147, 51, 234, 0.3); /* צבע סגול תואם לסרגל העליון, עם 30% שקיפות */
+  background-color: rgba(99, 102, 241, 0.2);
   color: inherit;
 }
 
-/* הגדרה ספציפית וחכמה ל-PDF בלבד */
+/* Text selection — PDF canvas only */
 .react-pdf__Page__textContent ::selection {
-  /* שמים רקע סגול עדין מאוד שלא יסתיר את הטקסט שמתחת בקנבס */
-  background-color: rgba(168, 85, 247, 0.4); 
-  /* אנחנו מכריחים את הטקסט להישאר שקוף כדי שנראה את המסמך המקורי מתחת לסימון */
-  color: transparent !important; 
+  background-color: rgba(168, 85, 247, 0.4);
+  color: transparent !important;
 }

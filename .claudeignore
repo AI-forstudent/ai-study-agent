@@ -1,0 +1,19 @@
+# Secrets & Security - קריטי!
+ai-study-key.pem
+*.pem
+.env
+.env.*
+
+# Dependencies & Build (רעש מיותר)
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+.uv/
+
+# Local/System Files
+desktop.ini
+.DS_Store
+.vscode/

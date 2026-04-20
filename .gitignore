@@ -27,11 +27,18 @@ desktop.ini
 # Temporary SQL files
 *.session.sql
 
-# Editor directories
+# OS/IDE generated files
+.DS_Store
+Thumbs.db
 .vscode/
+.idea/
 
 # AWS Services key
 *.pem
 
 # Google Cloud Services key
 google_credentials.json
+
+# AI Tools Local State
+.claude/
+.context/

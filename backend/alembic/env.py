@@ -1,25 +1,37 @@
 from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
 import os
+import sys
+
+from sqlalchemy import engine_from_config, pool
 from dotenv import load_dotenv
 from alembic import context
-from database import Base
-import models 
+
+# ── Make `app/` importable when running `alembic` from the backend/ root ──
+# sys.path already includes "." via alembic.ini prepend_sys_path, but we
+# also ensure the parent of `app/` (i.e. backend/) is on the path.
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+
+# ── Load env vars before importing app modules ─────────────────────────────
+load_dotenv(os.path.join(_backend_dir, ".env"))
+
+# ── Import ALL domain models so their metadata is registered on Base ───────
+# app/models/domain.py re-declares every table (existing + new) and is the
+# single source of truth for autogenerate.
+from app.core.database import Base  # noqa: E402
+import app.models.domain  # noqa: F401  — registers all ORM classes on Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 1. טעינת משתני הסביבה מהקובץ .env שלנו
-load_dotenv()
-config.set_main_option("sqlalchemy.url", os.environ.get("DATABASE_URL"))
+# Override the DB URL from environment (never hard-code credentials)
+config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
 
 target_metadata = Base.metadata
 

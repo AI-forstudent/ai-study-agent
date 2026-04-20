@@ -4,7 +4,13 @@ FROM python:3.11-slim
 # 2. הגדרת תיקיית העבודה בתוך הקונטיינר
 WORKDIR /app
 
-# 3. התקנת מנהל החבילות uv
+# 3. התקנת LibreOffice (המרת DOCX/PPTX ל-PDF) ו-uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice \
+        fonts-liberation \
+        fonts-dejavu-core \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN pip install uv
 
 # 4. העתקת קבצי החבילות בלבד

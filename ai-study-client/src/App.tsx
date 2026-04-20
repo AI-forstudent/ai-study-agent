@@ -1,509 +1,398 @@
-import { useState, useEffect, useRef } from 'react'
-import { FileText, Settings, BookOpen, LogOut } from 'lucide-react'
+import { useState, useEffect } from 'react';
 import { pdfjs } from 'react-pdf';
 
-// קבצי עיצוב חובה
-import 'katex/dist/katex.min.css'; 
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
+import 'katex/dist/katex.min.css';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
 
-import FileUploadView from './components/FileUploadView';
-import ChatPanel from './components/ChatPanel';
-import PdfViewer from './components/PdfViewer';
-import AuthView from './components/AuthView';
-import DocumentPicker from './components/DocumentPicker';
-import ConfirmModal from './components/ConfirmModal';
-import { api } from './services/api';
+import PersonaLab     from './features/personas/components/PersonaLab';
+import ConfirmModal   from './components/ConfirmModal';
+import PreFlightModal from './features/sessions/components/PreFlightModal';
+import PublicGallery  from './features/personas/components/PublicGallery';
+import MainWorkspace  from './components/layout/MainWorkspace';
+import MyLibrary      from './components/layout/MyLibrary';
+import LandingPage    from './components/layout/LandingPage';
+import AppLayout      from './components/layout/AppLayout';
+import Sidebar        from './components/layout/Sidebar';
+import Settings       from './components/layout/Settings';
+import AuthModal      from './components/ui/AuthModal';
+import { ResumeToastContainer } from './features/sessions/components/ResumeToast';
+import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
 
-import type { Message, Thread } from './types';
-import { useAppStore } from './store/useAppStore';
+import { useAuth }      from './hooks/useAuth';
+import { useDocuments } from './hooks/useDocuments';
+import { useChat }      from './hooks/useChat';
+import { useFolders }   from './features/documents/hooks/useFolders';
+import { useAppStore }  from './store/useAppStore';
 
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 function App() {
-  // === הסטייט החדש לניהול התחברות ===
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!localStorage.getItem('access_token'));
-  
-  const [file, setFile] = useState<File | null>(null);
-  const [documentId, setDocumentId] = useState<number | null>(null);
-  const [numPages, setNumPages] = useState<number>(0);
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [inputMessage, setInputMessage] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isCreatingThread, setIsCreatingThread] = useState(false);
-  const [,setSystemStatus] = useState({ healthy: true, error: null as string | null });
-  const [pendingForkMsgId, setPendingForkMsgId] = useState<number | null>(null);
-  const [treeViewMode, setTreeViewMode] = useState<'miller' | 'breadcrumbs' | 'graph'>('miller');
-  const { textSelection, activeThread, setTextSelection, setActiveThread } = useAppStore();
-  const pdfContainerRef = useRef<HTMLDivElement>(null);
-  const [chatWidth, setChatWidth] = useState(33);
-  const [isDragging, setIsDragging] = useState(false); 
-  const [scale, setScale] = useState(1.0);
-  const [userDocs, setUserDocs] = useState<any[]>([]);
-  const [enableGlobalSummary, setEnableGlobalSummary] = useState(false);
-  const [docToDelete, setDocToDelete] = useState<{ id: number; title: string } | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  
-  useEffect(() => {
-    api.checkHealth()
-      .then(() => setSystemStatus({ healthy: true, error: null }))
-      .catch((err) => setSystemStatus({ 
-        healthy: false, 
-        error: err.response?.data?.detail || "אין תקשורת עם השרת" 
-      }));
-  }, []);
+  const {
+    isAuthenticated, setIsAuthenticated,
+    view, setView,
+    isAuthModalOpen, setAuthModalOpen,
+    handleLogoutToLanding,
+  } = useAuth();
 
-  useEffect(() => {
-    // התיקון: מושכים מסמכים רק אם המשתמש מחובר (ה-API עכשיו חכם ולא צריך ID)
-    if (isAuthenticated) {
-      api.getUserDocuments()
-        .then(res => setUserDocs(res.data))
-        .catch(err => {
-          console.error("Failed to fetch documents:", err);
-          // אם קיבלנו 401, כנראה שהטוקן פג תוקף - ננתק את המשתמש
-          if (err.response?.status === 401) {
-            handleLogout();
-          }
-        });
-    }
-  }, [isAuthenticated]); // רץ שוב כשהמשתמש מתחבר
+  const [showGallery, setShowGallery] = useState(false);
 
-  useEffect(() => {
-    if (documentId) {
-      api.getThreads(documentId).then(res => setThreads(res.data));
-    }
-  }, [documentId]);
+  // ── Zustand store ───────────────────────────────────────────────────────────
+  const personas            = useAppStore(state => state.personas);
+  const fetchPersonas       = useAppStore(state => state.fetchPersonas);
+  const activeSession       = useAppStore(state => state.activeSession);
+  const setActiveSession    = useAppStore(state => state.setActiveSession);
+  const clearActiveSession  = useAppStore(state => state.clearActiveSession);
+  const saveSessionMemory   = useAppStore(state => state.saveSessionMemory);
+  const clonePersona        = useAppStore(state => state.clonePersona);
+  const dismissResumePrompt = useAppStore(state => state.dismissResumePrompt);
 
-  // === פונקציית ההתנתקות החדשה ===
-  const handleLogout = () => {
+  // ── Hydrate personas from backend on mount ──────────────────────────────────
+  useEffect(() => {
+    fetchPersonas();
+  }, [fetchPersonas]);
+
+  // ── Pre-flight & persona session state ─────────────────────────────────────
+  const [isPreFlightOpen, setPreFlightOpen]               = useState(false);
+  const [selectedDocForSession, setSelectedDocForSession] = useState<{ id: number; title: string } | null>(null);
+  const [activePersonaId, setActivePersonaId]             = useState<string | null>(null);
+  /** Set when "Use for Session" is clicked in PersonaLab — opens PreFlight in from-persona mode. */
+  const [preFlightPersonaId, setPreFlightPersonaId]       = useState<string | null | undefined>(undefined);
+  /** True when a chat-only (no document) session is active. */
+  const [standaloneMode, setStandaloneMode]               = useState(false);
+  const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
+
+  const docs    = useDocuments(isAuthenticated, handleLogout);
+  const folders = useFolders(isAuthenticated);
+  const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId);
+
+  // ── Derived state ───────────────────────────────────────────────────────────
+  const activePersonaName: string | null = activePersonaId
+    ? (personas.find(p => p.id === activePersonaId)?.name ?? null)
+    : null;
+
+  const isFromPersonaMode = preFlightPersonaId !== undefined;
+
+  // For the resume toast: look up persona name and document title from persisted session
+  const toastPersonaName   = activeSession?.personaId
+    ? (personas.find(p => p.id === activeSession.personaId)?.name ?? null)
+    : null;
+  const toastDocTitle = activeSession?.documentId
+    ? (docs.userDocs.find((d: { id: number; title: string }) => d.id === activeSession.documentId)?.title ?? null)
+    : null;
+
+  // Current document title (for WorkspaceHeader)
+  const currentDocTitle = docs.documentId
+    ? (docs.userDocs.find((d: { id: number; title: string }) => d.id === docs.documentId)?.title ?? 'Document')
+    : standaloneMode ? 'Chat Session' : 'Document';
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
+  function handleLogout() {
+    docs.reset();
+    folders.reset();
+    chat.reset();
+    setActivePersonaId(null);
+    setActiveSession(null);
+    setPreFlightPersonaId(undefined);
+    setStandaloneMode(false);
+    dismissResumePrompt();
     localStorage.removeItem('access_token');
-    setIsAuthenticated(false);
-    setFile(null);
-    setDocumentId(null);
-    setThreads([]);
-    setUserDocs([]);
-    setActiveThread(null);
-  };
-
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
-
-    const IS_DEV_MODE = false; 
-    
-    if (IS_DEV_MODE) {
-      setFile(selectedFile); 
-      setDocumentId(999); 
-      setActiveThread(null);
-      setThreads([]); 
-      return; 
-    }
-
-    setIsUploading(true);
-    setUploadError(null);
-    try {
-      const response = await api.uploadDocument(selectedFile, enableGlobalSummary); // הורדנו את ה-userId (1)
-      setDocumentId(response.data.id);
-      setFile(selectedFile);
-      setActiveThread(null);
-      setThreads([]);
-      
-      // ריענון רשימת המסמכים אחרי העלאה
-      const docsRes = await api.getUserDocuments();
-      setUserDocs(docsRes.data);
-      
-    } catch (error) {
-      setUploadError("הייתה בעיה בהעלאת הקובץ לשרת.");
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleTextSelection = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0 || selection.toString().trim() === "") {
-          setTextSelection(null);
-          return;
-      }
-
-      const text = selection.toString().trim();
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-
-      let node = range.commonAncestorContainer as Node | null;
-      let pageElement: HTMLElement | null = null;
-      while (node && node !== document.body) {
-          if ((node as HTMLElement).classList && (node as HTMLElement).classList.contains('react-pdf__Page')) {
-              pageElement = node as HTMLElement;
-              break;
-          }
-          node = node.parentNode;
-      }
-
-      if (!pageElement) {
-          setTextSelection(null);
-          return;
-      }
-
-      const pageRect = pageElement.getBoundingClientRect();
-      const rawLeft = rect.left - pageRect.left;
-      const rawTop = rect.top - pageRect.top;
-
-      setTextSelection({
-          text,
-          x: rawLeft / scale,
-          y: rawTop / scale,
-          width: rect.width / scale,
-          height: rect.height / scale
-      });
-  };
-
-  const handleCreateThread = async (prompt?: string) => {
-    if (!documentId || !textSelection) return;
-    setIsCreatingThread(true);
-    try {
-      const payload = {
-        document_id: documentId,
-        selected_text: textSelection.text,
-        page_number: currentPage,
-        coordinates: { 
-          x: textSelection.x, 
-          y: textSelection.y,
-          width: (textSelection as any).width,
-          height: (textSelection as any).height
-        },
-        initial_message: prompt
-      };
-      
-      // 1. יצירת השיחה הריקה מול השרת
-      const response = await api.createThread(payload);
-      const newThread = response.data;
-      if (!newThread.messages) newThread.messages = [];
-      
-      // 2. עדכון ה-UI לשיחה החדשה וניקוי הסימון
-      setActiveThread(newThread);
-      setThreads(prev => [...prev, newThread]);
-      setTextSelection(null);
-      window.getSelection()?.removeAllRanges();
-
-      // 3. --- התיקון שלנו: אוטומציה של שליחת הפרומפט ---
-      if (prompt) {
-        setIsSending(true);
-        // יצירת הודעה אופטימית למשתמש כדי שיראה מיד מה הוא שאל
-        const optimisticMsg: Message = { id: Date.now(), role: 'user', content: prompt };
-        const updatedThread = { ...newThread, messages: [optimisticMsg] };
-        
-        setActiveThread(updatedThread);
-        setThreads(prev => prev.map(t => t.id === newThread.id ? updatedThread : t));
-
-        try {
-          // שליחת הבקשה לג'ימיני דרך ה-API
-          await api.sendMessage(newThread.id, prompt);
-          // קבלת התשובה הרעננה מהשרת (כולל התשובה של המודל)
-          const freshThreadRes = await api.getThread(newThread.id);
-          setActiveThread(freshThreadRes.data);
-          setThreads(prev => prev.map(t => t.id === newThread.id ? freshThreadRes.data : t));
-        } catch (error) {
-          alert("הייתה שגיאה בשליחת הפרומפט למודל.");
-        } finally {
-          setIsSending(false);
-        }
-      }
-    } catch (error) {
-      alert("שגיאה ביצירת השיחה");
-    } finally {
-      setIsCreatingThread(false);
-    }
-  };
-
-  const handleQuickAction = async (action: 'translate' | 'explain' | 'quiz' | 'chat') => {
-    if (action === 'chat') {
-        setActiveThread(null);
-        handleCreateThread();
-        return;
-    }
-    let prompt = "";
-    switch (action) {
-        case 'translate': prompt = "תרגם את הטקסט המסומן לעברית בצורה מדויקת וזורמת."; break;
-        case 'explain': prompt = "הסבר את הטקסט המסומן במילים פשוטות (כמו לסטודנט מתחיל)."; break;
-        case 'quiz': prompt = "צור שאלת הבנה אחת (אמריקאית) על הטקסט המסומן כדי לבחון אותי."; break;
-    }
-    setActiveThread(null);
-    handleCreateThread(prompt);
-  };
-
-  const handleSmartAction = (action: string) => {
-    let prompt = "";
-    switch (action) {
-      case 'hint': prompt = "תן לי רמז קטן שיעזור לי להבין את הטקסט המסומן, בלי לגלות את הפתרון המלא."; break;
-      case 'step-by-step': prompt = "הסבר לי את הפתרון או הרעיון שבטקסט המסומן שלב אחר שלב."; break;
-      case 'define': prompt = "מה ההגדרה המדויקת של המושג המסומן בטקסט?"; break;
-      case 'example': prompt = "תן לי דוגמה פרקטית מחיי היומיום שתעזור לי להבין את הטקסט המסומן."; break;
-      case 'summarize': prompt = "סכם את הפסקה המסומנת במשפט אחד או שניים קצרים."; break;
-    }
-    // פשוט וקל: מאפסים את השיחה הפעילה ויוצרים חדשה!
-    setActiveThread(null);
-    handleCreateThread(prompt);
-  };
-
-  const handleForkMessage = (messageId: number) => {
-    if (pendingForkMsgId === messageId) {
-      setPendingForkMsgId(null); 
-    } else {
-      setPendingForkMsgId(messageId); 
-    }
-  };
-
-  const sendMessageToActiveThread = async (messageContent: string) => {
-    if (!messageContent.trim() || !activeThread) return;
-    setIsSending(true);
-
-    const isFirstMessageInThisThread = pendingForkMsgId !== null || (!activeThread.messages || activeThread.messages.length === 0);
-
-    try {
-      let targetThread = activeThread;
-      if (pendingForkMsgId) {
-        const forkResponse = await api.forkThread(activeThread.id, pendingForkMsgId);
-        targetThread = forkResponse.data;
-        setThreads(prev => [...prev, targetThread]);
-        setPendingForkMsgId(null);
-      }
-
-      const optimisticMsg: Message = { id: Date.now(), role: 'user', content: messageContent };
-      const updatedThread = { ...targetThread, messages: [...(targetThread.messages || []), optimisticMsg] };
-      setActiveThread(updatedThread);
-
-      const response = await api.sendMessage(targetThread.id, messageContent);
-
-      try {
-        const freshThreadRes = await api.getThread(targetThread.id);
-        const finalThread = freshThreadRes.data;
-        setActiveThread(finalThread);
-        setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
-
-        if (isFirstMessageInThisThread) {
-          setTimeout(async () => {
-            try {
-              const lateThreadRes = await api.getThread(targetThread.id);
-              const updatedLateThread = lateThreadRes.data;
-              setThreads(prev => prev.map(t => t.id === updatedLateThread.id ? updatedLateThread : t));
-              const currentActive = useAppStore.getState().activeThread;
-              if (currentActive?.id === updatedLateThread.id) {
-                setActiveThread(updatedLateThread);
-              }
-            } catch (err) {
-              console.error("Failed to fetch late title", err);
-            }
-          }, 4500);
-        }
-      } catch (refreshError) {
-        const finalThread = { ...updatedThread, messages: [...updatedThread.messages, response.data] };
-        setActiveThread(finalThread);
-        setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
-      }
-
-    } catch (error) {
-      alert("לא הצלחתי לשלוח את ההודעה...");
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !activeThread) return;
-    const userMsgContent = inputMessage;
-    setInputMessage("");
-    await sendMessageToActiveThread(userMsgContent);
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!docToDelete) return;
-    setIsDeleting(true);
-    try {
-      await api.deleteDocument(docToDelete.id);
-      setUserDocs(prev => prev.filter(d => d.id !== docToDelete.id));
-      if (documentId === docToDelete.id) {
-        setDocumentId(null);
-        setFile(null);
-        setActiveThread(null);
-        setThreads([]);
-        setCurrentPage(1);
-      }
-      setDocToDelete(null);
-    } catch (error) {
-      alert("שגיאה במחיקת המסמך. אנא נסה שוב.");
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    const newWidthPercent = (e.clientX / window.innerWidth) * 100;
-    if (newWidthPercent > 20 && newWidthPercent < 60) {
-      setChatWidth(newWidthPercent);
-    }
-  };
-
-  const handleMouseUp = () => {
-    if (isDragging) setIsDragging(false);
-  };
-  
-  // === חומת התשלום / מסך ההתחברות ===
-  if (!isAuthenticated) {
-    return <AuthView onLoginSuccess={() => setIsAuthenticated(true)} />;
+    handleLogoutToLanding();
   }
 
-  // === מפה והלאה זה האפליקציה הרגילה (רק למחוברים) ===
-  return (
-    <div className="h-screen w-screen overflow-hidden bg-slate-50 flex flex-col font-sans" dir="rtl">
-      
-      <header className="bg-white border-b p-4 flex items-center justify-between shadow-sm shrink-0 z-10">
-        <div className="flex items-center">
-          <div className="bg-blue-600 p-2 rounded-lg ml-3"><FileText className="text-white w-6 h-6" /></div>
-          <h1 className="text-xl font-bold text-slate-800">AI Study Partner</h1>
-        </div>
+  function handleLoginSuccess() {
+    setIsAuthenticated(true);
+    setAuthModalOpen(false);
+  }
 
-        <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm ml-4">
-          <BookOpen className="w-4 h-4 text-slate-500" />
-          <span className="text-sm font-semibold text-slate-600">המסמכים שלי:</span>
-          <DocumentPicker
-            docs={userDocs}
-            selectedId={documentId}
-            onSelect={async (doc) => {
-              const full = userDocs.find(d => d.id === doc.id);
-              if (!full) return;
+  /** Intercepts MyLibrary's onSelectDocument — opens PreFlight (from-doc mode). */
+  function handleOpenPreFlight(doc: { id: number }) {
+    const fullDoc = docs.userDocs.find((d: { id: number; title: string }) => d.id === doc.id);
+    setSelectedDocForSession({ id: doc.id, title: fullDoc?.title ?? 'Document' });
+    setPreFlightPersonaId(undefined);
+    setPreFlightOpen(true);
+  }
 
-              // מאפסים מיד את המסך כדי לתת תחושת טעינה למשתמש
-              setDocumentId(doc.id);
-              setActiveThread(null);
-              setThreads([]); 
-              
-              try {
-                // 1. מקודדים את הנתיב כדי שרווחים או עברית לא ישברו את ה-URL
-                const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
-                
-                // 2. מורידים את הקובץ דרך ה-API המסודר שלנו כ-Blob
-                const response = await api.getFile(encodedPath);
-                
-                // 3. הופכים את המידע לקובץ וירטואלי מקומי
-                const blobUrl = URL.createObjectURL(response.data);
-                
-                // 4. מגישים ל-react-pdf קובץ מקומי שאין לו שום בעיות רשת!
-                setFile(blobUrl as any);
-              } catch (error) {
-                console.error("Failed to load document via Blob:", error);
-                alert("לא הצלחנו לטעון את המסמך. ייתכן שהוא פגום או נמחק מהשרת.");
-              }
-            }}
-            onDeleteRequest={(doc) => setDocToDelete(doc)}
+  /** Called from PersonaLab "Use for Session" / hover "Start Session". */
+  function handleStartWithPersona(personaId: string) {
+    setPreFlightPersonaId(personaId);
+    setSelectedDocForSession(null);
+    setPreFlightOpen(true);
+  }
+
+  /** Called when PreFlight confirms a session. */
+  async function handleStartSession(personaId: string | null, documentId: number | null) {
+    const docId = documentId ?? selectedDocForSession?.id ?? null;
+    if (docId) {
+      docs.handleSelectDocument({ id: docId });
+    }
+
+    // Auto-clone global/community personas so memory stays private.
+    // We AWAIT the backend so effectivePersonaId is always a real DB row.
+    // If the clone fails, fall back to the original ID (it exists in the DB)
+    // rather than using a client-side temp ID that would cause a FK violation.
+    let effectivePersonaId = personaId;
+    if (personaId) {
+      const persona = personas.find(p => p.id === personaId);
+      if (persona && (persona.type === 'global' || persona.type === 'community')) {
+        const clone = await clonePersona(personaId);
+        effectivePersonaId = clone?.id ?? personaId;
+      }
+    }
+
+    setActivePersonaId(effectivePersonaId);
+    setActiveSession({ documentId: docId, personaId: effectivePersonaId });
+    setStandaloneMode(docId === null);
+    dismissResumePrompt();
+    setPreFlightOpen(false);
+    setSelectedDocForSession(null);
+    setPreFlightPersonaId(undefined);
+    setView('main');
+  }
+
+  /** Mid-session persona switch — called by SwitchPersonaModal via ChatPanel. */
+  function handleSwitchPersona(newId: string | null, keepContext: boolean) {
+    console.log('INTENT: switch persona mid-session', { from: activePersonaId, to: newId, keepContext });
+    setActivePersonaId(newId);
+    setActiveSession({ documentId: activeSession?.documentId ?? null, personaId: newId });
+  }
+
+  /** Resumes the active session — called from Sidebar nav or ResumeToast. */
+  function handleResumeSession() {
+    if (activeSession?.documentId) {
+      docs.handleSelectDocument({ id: activeSession.documentId });
+    }
+    setStandaloneMode(activeSession?.documentId === null);
+    setActivePersonaId(activeSession?.personaId ?? null);
+    dismissResumePrompt();
+    setView('main');
+  }
+
+  function handleOpenWrapUp() {
+    setWrapUpOpen(true);
+  }
+
+  function handleWrapUpSave(compressionLevel: number, userInstructions: string) {
+    if (activePersonaId) {
+      saveSessionMemory(activePersonaId, compressionLevel, userInstructions);
+    }
+    clearActiveSession();
+    setWrapUpOpen(false);
+    setActivePersonaId(null);
+    setStandaloneMode(false);
+    docs.reset();
+    chat.reset();
+    setView('main');
+  }
+
+  // ── Unauthenticated ─────────────────────────────────────────────────────────
+  if (!isAuthenticated) {
+    return (
+      <>
+        {showGallery ? (
+          <PublicGallery
+            isAuthenticated={false}
+            onBack={() => setShowGallery(false)}
+            onGetStarted={() => setAuthModalOpen(true)}
           />
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-            <Settings className="w-4 h-4 text-slate-500" />
-            <span className="text-sm font-semibold text-slate-600">תצוגת עץ:</span>
-            <select 
-              value={treeViewMode}
-              onChange={(e) => setTreeViewMode(e.target.value as 'miller' | 'breadcrumbs' | 'graph')}
-              className="bg-transparent text-sm font-bold text-blue-600 focus:outline-none cursor-pointer pr-1"
-            >
-              <option value="miller">עמודות מילר (מומלץ)</option>
-              <option value="graph">תרשים זרימה גרפי</option>
-              <option value="breadcrumbs">פירורי לחם (glich)</option>
-            </select>
-          </div>
-          
-          {/* === כפתור התנתקות חדש === */}
-          <button onClick={handleLogout} className="text-slate-400 hover:text-amber-600 p-2 rounded-full transition-all" title="התנתק">
-            <LogOut className="w-6 h-6" />
-          </button>
-        </div>
-      </header>
-
-      <main className="flex-1 flex overflow-hidden p-6 relative">
-        {!file && (
-          <div className="w-full h-full flex items-center justify-center">
-             <FileUploadView 
-              isUploading={isUploading} 
-              uploadError={uploadError} 
-              onFileChange={handleFileChange} 
-              enableGlobalSummary={enableGlobalSummary}
-              setEnableGlobalSummary={setEnableGlobalSummary}
-            />
-          </div>
+        ) : (
+          <LandingPage
+            onGetStarted={() => setAuthModalOpen(true)}
+            onOpenGallery={() => setShowGallery(true)}
+          />
         )}
+        <AuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => setAuthModalOpen(false)}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      </>
+    );
+  }
 
-        {file && (
-          <div 
-            className="flex w-full h-full overflow-hidden relative"
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-          >
-            {isDragging && <div className="absolute inset-0 z-50 cursor-col-resize" />}
+  // ── Authenticated — sidebar shell ───────────────────────────────────────────
+  const sidebar = (
+    <Sidebar
+      activeView={view}
+      onNavigate={(v) => {
+        if (v === 'main' || v === 'settings') { docs.clearDocument(); setStandaloneMode(false); }
+        setView(v);
+      }}
+      onLogout={handleLogout}
+      hasActiveSession={!!activeSession}
+      onResumeSession={handleResumeSession}
+    />
+  );
 
-            <div className="flex-1 h-full flex flex-col overflow-hidden ml-1">
-              <PdfViewer
-                file={file}
-                numPages={numPages}
-                onDocumentLoadSuccess={({numPages}) => setNumPages(numPages)}
-                threads={threads}
-                activeThread={activeThread}
-                setActiveThread={setActiveThread}
-                textSelection={textSelection}
-                handleQuickAction={handleQuickAction}
-                handleSmartAction={handleSmartAction}
-                isCreatingThread={isCreatingThread}
-                pdfContainerRef={pdfContainerRef}
-                handleTextSelection={handleTextSelection}
-                currentPage={currentPage}
-                setCurrentPage={setCurrentPage}
-                scale={scale}
-                setScale={setScale}
-              />
-            </div>
+  if (view === 'settings') {
+    return (
+      <AppLayout sidebar={sidebar}>
+        <Settings
+          treeViewMode={chat.treeViewMode}
+          setTreeViewMode={chat.setTreeViewMode}
+        />
+        <ResumeToastContainer
+          personaName={toastPersonaName}
+          documentTitle={toastDocTitle}
+          onResume={handleResumeSession}
+        />
+      </AppLayout>
+    );
+  }
 
-            <div
-              className={`w-2 cursor-col-resize hover:bg-blue-400 transition-colors z-20 flex-shrink-0 mx-3 rounded-full ${isDragging ? 'bg-blue-500' : 'bg-slate-200'}`}
-              onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); }}
-              title="גרור כדי לשנות גודל"
-            />
+  if (view === 'lab') {
+    return (
+      <AppLayout sidebar={sidebar}>
+        <PersonaLab
+          onBack={() => setView('main')}
+          onStartWithPersona={handleStartWithPersona}
+        />
+        <ResumeToastContainer
+          personaName={toastPersonaName}
+          documentTitle={toastDocTitle}
+          onResume={handleResumeSession}
+        />
+        {/* PreFlightModal MUST be present here — PersonaLab triggers it from this view */}
+        <PreFlightModal
+          isOpen={isPreFlightOpen}
+          onClose={() => {
+            setPreFlightOpen(false);
+            setSelectedDocForSession(null);
+            setPreFlightPersonaId(undefined);
+          }}
+          mode={isFromPersonaMode ? 'from-persona' : 'from-doc'}
+          documentName={selectedDocForSession?.title}
+          openedDocumentId={selectedDocForSession?.id}
+          preSelectedPersonaId={preFlightPersonaId}
+          userDocs={docs.userDocs}
+          onFileInputChange={docs.handleFileChange}
+          onStartSession={handleStartSession}
+        />
+      </AppLayout>
+    );
+  }
 
-            <div style={{ width: `${chatWidth}%` }} className="flex-shrink-0 overflow-hidden">
-              <ChatPanel
-                documentId={documentId}
-                activeThread={activeThread}
-                threads={threads}
-                setActiveThread={setActiveThread}
-                inputMessage={inputMessage}
-                setInputMessage={setInputMessage}
-                handleSendMessage={handleSendMessage}
-                isSending={isSending}
-                onForkMessage={handleForkMessage} 
-                pendingForkMsgId={pendingForkMsgId}
-                treeViewMode={treeViewMode}
-                currentPage={currentPage}          
-              />
-            </div>
-          </div>
-        )}
-      </main>
+  if (view === 'gallery') {
+    return (
+      <AppLayout sidebar={sidebar}>
+        <PublicGallery
+          isAuthenticated={true}
+          inAppLayout
+          onBack={() => setView('main')}
+          onGetStarted={() => {}}
+        />
+        <ResumeToastContainer
+          personaName={toastPersonaName}
+          documentTitle={toastDocTitle}
+          onResume={handleResumeSession}
+        />
+      </AppLayout>
+    );
+  }
 
+  // ── Main: Library dashboard or active workspace ─────────────────────────────
+  const isInWorkspace = !!docs.documentId || standaloneMode;
+
+  return (
+    <AppLayout sidebar={sidebar}>
+      {!isInWorkspace ? (
+        <>
+          <MyLibrary
+            userDocs={docs.userDocs}
+            isUploading={docs.isUploading}
+            uploadError={docs.uploadError}
+            enableGlobalSummary={docs.enableGlobalSummary}
+            setEnableGlobalSummary={docs.setEnableGlobalSummary}
+            onUploadFile={docs.handleFileChange}
+            onSelectDocument={handleOpenPreFlight}
+            onDeleteRequest={docs.setDocToDelete}
+            onToggleVisibility={docs.toggleVisibilityById}
+            onStarDocument={docs.handleStarDocument}
+            onMoveDocument={docs.handleMoveDocument}
+            folders={folders.folders}
+            activeFolderId={folders.activeFolderId}
+            setActiveFolderId={folders.setActiveFolderId}
+            onCreateFolder={folders.createFolder}
+            onUpdateFolder={folders.updateFolder}
+            onDeleteFolder={folders.deleteFolder}
+            personas={personas}
+          />
+          <ResumeToastContainer
+            personaName={toastPersonaName}
+            documentTitle={toastDocTitle}
+            onResume={handleResumeSession}
+          />
+        </>
+      ) : (
+        <MainWorkspace
+          doc={{
+            file:           docs.file,
+            documentId:     docs.documentId,
+            documentTitle:  currentDocTitle,
+            docType:        docs.docType,
+            numPages:       docs.numPages,
+            setNumPages:    docs.setNumPages,
+            currentPage:    docs.currentPage,
+            setCurrentPage: docs.setCurrentPage,
+          }}
+          chat={{
+            threads:            chat.threads,
+            inputMessage:       chat.inputMessage,
+            setInputMessage:    chat.setInputMessage,
+            isSending:          chat.isSending,
+            isCreatingThread:   chat.isCreatingThread,
+            pendingForkMsgId:   chat.pendingForkMsgId,
+            treeViewMode:       chat.treeViewMode,
+            handleCreateThread: chat.handleCreateThread,
+            handleQuickAction:  chat.handleQuickAction,
+            handleSmartAction:  chat.handleSmartAction,
+            handleForkMessage:  chat.handleForkMessage,
+            handleSendMessage:  chat.handleSendMessage,
+            activePersonaName,
+            activePersonaId,
+            onSwitchPersona:    handleSwitchPersona,
+          }}
+          onSaveMemory={handleOpenWrapUp}
+        />
+      )}
+
+      {/* Delete confirmation */}
       <ConfirmModal
-        isOpen={docToDelete !== null}
-        message="האם אתה בטוח שברצונך למחוק מסמך זה לצמיתות? פעולה זו תמחק גם את כל השיחות המשויכות אליו."
-        isLoading={isDeleting}
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDocToDelete(null)}
+        isOpen={docs.docToDelete !== null}
+        message="Are you sure you want to permanently delete this document? This will also delete all associated conversations."
+        isLoading={docs.isDeleting}
+        onConfirm={docs.handleDeleteConfirm}
+        onCancel={() => docs.setDocToDelete(null)}
       />
-    </div>
-  )
+
+      {/* Pre-flight modal */}
+      <PreFlightModal
+        isOpen={isPreFlightOpen}
+        onClose={() => {
+          setPreFlightOpen(false);
+          setSelectedDocForSession(null);
+          setPreFlightPersonaId(undefined);
+        }}
+        mode={isFromPersonaMode ? 'from-persona' : 'from-doc'}
+        documentName={selectedDocForSession?.title}
+        openedDocumentId={selectedDocForSession?.id}
+        preSelectedPersonaId={preFlightPersonaId}
+        userDocs={docs.userDocs}
+        onFileInputChange={docs.handleFileChange}
+        onStartSession={handleStartSession}
+      />
+
+      {/* Session wrap-up modal */}
+      <SessionWrapUpModal
+        isOpen={isWrapUpOpen}
+        onClose={() => setWrapUpOpen(false)}
+        onSave={handleWrapUpSave}
+        personaName={activePersonaName}
+      />
+    </AppLayout>
+  );
 }
 
 export default App;
