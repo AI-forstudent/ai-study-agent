@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from typing import List, Optional
 
 import pdfplumber
@@ -28,7 +29,7 @@ from sqlalchemy import Integer, cast, null, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.config import GOOGLE_API_KEY
-from app.models.domain import Chunk, Message, Persona, Thread
+from app.models.domain import Chunk, Message, Persona, Thread, UserDocument
 from app.services.prompt_builder import resolve_system_prompt
 
 
@@ -224,7 +225,11 @@ def convert_to_pdf(input_path: str, output_dir: str) -> str:
 
     Returns the path of the generated PDF file.
     Raises RuntimeError if LibreOffice returns a non-zero exit code or the
-    expected output file is not found.
+    file is not fully flushed after the retry budget is exhausted.
+
+    Docker volumes can lag behind LibreOffice's process exit — the file exists
+    in the container's VFS but the bytes haven't landed on disk yet.  The
+    retry loop (5 × 0.5 s = 2.5 s max wait) covers that window cheaply.
     """
     result = subprocess.run(
         ["libreoffice", "--headless", "--convert-to", "pdf", input_path, "--outdir", output_dir],
@@ -234,13 +239,22 @@ def convert_to_pdf(input_path: str, output_dir: str) -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(f"LibreOffice conversion failed: {result.stderr.strip()}")
+
     basename = os.path.splitext(os.path.basename(input_path))[0]
     pdf_path = os.path.join(output_dir, f"{basename}.pdf")
-    if not os.path.exists(pdf_path):
-        raise RuntimeError(
-            f"Expected PDF not found at {pdf_path}. LibreOffice output: {result.stdout.strip()}"
-        )
-    return pdf_path
+
+    max_retries = 5
+    retry_delay = 0.5  # seconds
+    for attempt in range(1, max_retries + 1):
+        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+            return pdf_path
+        print(f"[convert_to_pdf] attempt {attempt}/{max_retries}: waiting for {pdf_path}")
+        time.sleep(retry_delay)
+
+    raise RuntimeError(
+        f"PDF not fully written after {max_retries * retry_delay:.1f}s: {pdf_path}. "
+        f"LibreOffice stdout: {result.stdout.strip()}"
+    )
 
 
 def extract_text(file_path: str) -> list[dict]:
@@ -297,6 +311,122 @@ def generate_specific_page_summary(page_text: str) -> str:
         f"Page Text:\n{page_text}\nSummary:"
     )
     return ask_gemini(prompt, use_smart_model=True)
+
+
+# ── Code Review (Unified Annotation Engine — Phase 1) ─────────────────────
+
+_ANNOTATION_TYPES = (
+    '"compilation_error" | "runtime_error" | "logic_error" | '
+    '"inefficient" | "clean" | "brilliant" | "hint"'
+)
+
+_CODE_REVIEW_SYSTEM = (
+    "You are a strict Senior Software Engineer and CS Professor "
+    "performing a code review of a student's submission."
+)
+
+_CODE_REVIEW_INSTRUCTIONS = """\
+TASK: Analyse every significant section of the code and produce a structured JSON code review.
+
+OUTPUT FORMAT — respond with ONLY a valid JSON object, no markdown fences, no preamble:
+{
+  "annotations": [
+    {
+      "type": "<type>",
+      "quote": "<exact literal snippet from the code>",
+      "feedback": "<explanation in HEBREW>"
+    }
+  ]
+}
+
+Valid annotation types:
+  "compilation_error" — syntax that prevents compilation or execution
+  "runtime_error"     — code that will crash at runtime (e.g. index out of bounds, null dereference)
+  "logic_error"       — code that runs but produces incorrect results
+  "inefficient"       — correct but with poor time/space complexity, redundancy, or style issues
+  "clean"             — well-structured, readable code worth positive reinforcement
+  "brilliant"         — an exceptionally clever or elegant solution
+  "hint"              — a gentle nudge toward a better approach without giving the answer
+
+RULES:
+  1. "quote" MUST be the exact literal string copied from the code — no paraphrasing or ellipsis.
+  2. "feedback" MUST be written in HEBREW.
+  3. Respond ONLY with the JSON object — zero additional text outside the braces.
+  4. Include 3–15 annotations covering a meaningful spread of types.
+  5. If the code is entirely correct and clean, still provide at least 3 "clean" or "brilliant" annotations.\
+"""
+
+
+def generate_code_review(document_id: int, db: Session) -> dict:
+    """Generate a structured code review for a SOURCE_CODE UserDocument.
+
+    Fetches the raw source file from disk, calls Gemini with a strict
+    zero-shot prompt, and returns a parsed dict matching the schema:
+      {"annotations": [{"type": ..., "quote": ..., "feedback": ...}]}
+
+    Raises:
+        ValueError: if the document is missing, not SOURCE_CODE, or the
+                    file cannot be read / the LLM returns invalid JSON.
+    """
+    # ── 1. Resolve UserDocument → BaseDocument ───────────────────────────
+    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    if not user_doc:
+        raise ValueError(f"UserDocument {document_id} not found.")
+
+    base_doc = user_doc.base_document
+    if not base_doc:
+        raise ValueError(f"UserDocument {document_id} has no linked BaseDocument.")
+
+    if base_doc.doc_type != "SOURCE_CODE":
+        raise ValueError(
+            f"Document {document_id} has doc_type='{base_doc.doc_type}'. "
+            "Code review requires doc_type='SOURCE_CODE'."
+        )
+
+    if not base_doc.file_path or not os.path.exists(base_doc.file_path):
+        raise ValueError(
+            f"Source file not found on disk: '{base_doc.file_path}'."
+        )
+
+    # ── 2. Read raw source text ──────────────────────────────────────────
+    try:
+        with open(base_doc.file_path, "r", encoding="utf-8", errors="replace") as fh:
+            code_text = fh.read()
+    except OSError as exc:
+        raise ValueError(f"Could not read source file: {exc}") from exc
+
+    safe_code = code_text[:40_000]  # guard against extremely large files
+
+    # ── 3. Build zero-shot prompt ────────────────────────────────────────
+    prompt = (
+        f"{_CODE_REVIEW_SYSTEM}\n\n"
+        f"File: {base_doc.original_filename}\n\n"
+        "```\n"
+        f"{safe_code}\n"
+        "```\n\n"
+        f"{_CODE_REVIEW_INSTRUCTIONS}"
+    )
+
+    # ── 4. Call Gemini ───────────────────────────────────────────────────
+    raw_response = ask_gemini(prompt, use_smart_model=True)
+
+    # ── 5. Parse JSON — strip markdown fences if Gemini includes them ────
+    clean = raw_response.replace("```json", "").replace("```", "").strip()
+    try:
+        result: dict = json.loads(clean)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Gemini returned invalid JSON for code review: {exc}. "
+            f"Raw (first 500 chars): {raw_response[:500]}"
+        ) from exc
+
+    if "annotations" not in result or not isinstance(result["annotations"], list):
+        raise ValueError(
+            f"Gemini response missing 'annotations' list. "
+            f"Keys received: {list(result.keys())}"
+        )
+
+    return result
 
 
 # ── Background task: thread metadata ──────────────────────────────────────

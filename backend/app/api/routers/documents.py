@@ -56,6 +56,7 @@ from app.services.document_service import (
     extract_text,
     extract_text_from_pdf,
     extract_text_from_word,
+    generate_code_review,
     generate_code_summary,
     generate_document_summary,
     generate_specific_page_summary,
@@ -417,6 +418,54 @@ def star_document(
     db.commit()
     db.refresh(user_doc)
     return _build_doc_response(user_doc)
+
+
+# ── Code Review (Unified Annotation Engine — Phase 1) ────────────────────────
+
+@router.post("/{document_id}/review")
+def review_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Generate a structured AI code review for a SOURCE_CODE document.
+
+    Returns:
+        {
+          "annotations": [
+            {"type": "...", "quote": "...", "feedback": "..."},
+            ...
+          ]
+        }
+
+    Raises 403 if the document does not belong to the calling user.
+    Raises 422 if the document is not a SOURCE_CODE file.
+    Raises 500 if Gemini fails or returns malformed JSON.
+    """
+    # Authorization: ensure the document belongs to this user
+    user_doc = (
+        db.query(UserDocument)
+        .filter(
+            UserDocument.id == document_id,
+            UserDocument.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    base_doc = user_doc.base_document
+    if not base_doc or base_doc.doc_type != "SOURCE_CODE":
+        raise HTTPException(
+            status_code=422,
+            detail="Code review is only available for SOURCE_CODE documents.",
+        )
+
+    try:
+        return generate_code_review(document_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ── Page summaries ────────────────────────────────────────────────────────────

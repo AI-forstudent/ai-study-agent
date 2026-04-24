@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
-import { Loader2, Sparkles, Plus, HelpCircle, Lightbulb, BookOpen, Code2 } from 'lucide-react';
+import { Loader2, Sparkles, Plus, HelpCircle, Lightbulb, BookOpen, Code2, Wand2 } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
+import { api } from '../../../services/api';
 
 // ── Extension → Monaco language identifier ──────────────────────────────────
 
@@ -38,11 +39,75 @@ function getLanguage(filename: string): string {
   return LANGUAGE_MAP[filename.substring(dot).toLowerCase()] ?? 'plaintext';
 }
 
+// ── Annotation types ─────────────────────────────────────────────────────────
+
+type AnnotationType =
+  | 'compilation_error'
+  | 'runtime_error'
+  | 'logic_error'
+  | 'inefficient'
+  | 'clean'
+  | 'brilliant'
+  | 'hint';
+
+interface Annotation {
+  type: AnnotationType;
+  quote: string;
+  feedback: string;
+}
+
+const TYPE_ICONS: Record<AnnotationType, string> = {
+  compilation_error: '🛑',
+  runtime_error:     '💥',
+  logic_error:       '🐛',
+  inefficient:       '⚠️',
+  clean:             '✨',
+  brilliant:         '💎',
+  hint:              '💡',
+};
+
+function formatTypeTitle(t: AnnotationType): string {
+  return t.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+/**
+ * Wraps English/code/math sequences in backticks so Monaco renders them as
+ * inline-code inside the RTL Hebrew tooltip.  Already-wrapped spans are left
+ * untouched via a stash-and-restore pass.
+ *
+ * Regex — two alternatives:
+ *   alt-1 (complex expression):
+ *     starts  → ASCII letter, digit, or _
+ *     middle  → any mix of alphanumeric, _, ., operators (+ - * / ^ = < > ! & | % : , ),
+ *               brackets [](){}, and spaces (needed for "len - 1", "O(n^2)")
+ *     ends    → alphanumeric or a closing bracket ] ) }
+ *     covers: "arr[i]", "arr.length - 1", "O(n^2)", "i < n", "x == 0"
+ *   alt-2 (single token): bare alphanumeric run → "i", "n", "42"
+ */
+function formatBidiText(raw: string): string {
+  // Pass 1 — stash already-wrapped backtick spans
+  const stash: string[] = [];
+  const s1 = raw.replace(/`[^`\n]+`/g, (m) => {
+    stash.push(m);
+    return `\x00${stash.length - 1}\x00`;
+  });
+
+  // Pass 2 — wrap code/math/English blocks
+  const s2 = s1.replace(
+    /([a-zA-Z0-9_][a-zA-Z0-9_.+\-*\/^=<>!&|%:,\[\](){}; ]*[a-zA-Z0-9_\])}]|[a-zA-Z0-9_]+)/g,
+    (m) => `\`${m}\``,
+  );
+
+  // Pass 3 — restore stashed spans
+  return s2.replace(/\x00(\d+)\x00/g, (_, i) => stash[Number(i)]);
+}
+
 // ── Props ────────────────────────────────────────────────────────────────────
 
 interface CodeViewerProps {
-  file: File | string;    // File object (fresh upload) or blob URL (library load)
-  filename: string;       // original filename — drives language detection
+  file: File | string;
+  filename: string;
+  documentId: number | null;
   handleQuickAction: (action: 'translate' | 'explain' | 'quiz' | 'chat') => void;
   handleSmartAction: (action: string) => void;
   isCreatingThread: boolean;
@@ -55,19 +120,26 @@ interface MenuPos { x: number; y: number }
 export default function CodeViewer({
   file,
   filename,
+  documentId,
   handleQuickAction,
   handleSmartAction,
   isCreatingThread,
 }: CodeViewerProps) {
   const setTextSelection = useAppStore(s => s.setTextSelection);
 
-  const [code, setCode]         = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [menuPos, setMenuPos]   = useState<MenuPos | null>(null);
+  const [code, setCode]               = useState<string | null>(null);
+  const [isLoading, setIsLoading]     = useState(true);
+  const [menuPos, setMenuPos]         = useState<MenuPos | null>(null);
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [annotations, setAnnotations] = useState<Annotation[] | null>(null);
+  const [showReviewLayer, setShowReviewLayer] = useState(false);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const editorRef    = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
-  const menuRef      = useRef<HTMLDivElement>(null);
+  const containerRef       = useRef<HTMLDivElement>(null);
+  const editorRef          = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const menuRef            = useRef<HTMLDivElement>(null);
+  const decorationsRef     = useRef<any>(null);
+  const hoverDecRef        = useRef<any>(null);
+  const annotationLinesRef = useRef<Map<number, AnnotationType>>(new Map());
 
   const language = getLanguage(filename);
 
@@ -79,6 +151,13 @@ export default function CodeViewer({
     setCode(null);
     setTextSelection(null);
     setMenuPos(null);
+    setAnnotations(null);
+    setShowReviewLayer(false);
+    decorationsRef.current?.clear?.();
+    decorationsRef.current = null;
+    hoverDecRef.current?.clear?.();
+    hoverDecRef.current = null;
+    annotationLinesRef.current = new Map();
 
     (async () => {
       try {
@@ -95,7 +174,110 @@ export default function CodeViewer({
     })();
   }, [file, setTextSelection]);
 
-  // ── 2. Monaco mount: wire selection events ───────────────────────────────
+  // ── 2. Apply / clear decorations when review layer toggles ───────────────
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    annotationLinesRef.current = new Map();
+
+    if (!showReviewLayer || !annotations?.length) {
+      decorationsRef.current?.clear?.();
+      hoverDecRef.current?.clear?.();
+      return;
+    }
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    const deltas: MonacoEditor.IModelDeltaDecoration[] = [];
+
+    for (const ann of annotations) {
+      if (!ann.quote) continue;
+
+      // Try exact match first, then trimmed fallback (handles LLM whitespace drift)
+      let matches = model.findMatches(ann.quote, false, false, true, null, false);
+      if (!matches.length) {
+        const trimmed = ann.quote.trim();
+        if (trimmed) matches = model.findMatches(trimmed, false, false, true, null, false);
+      }
+      if (!matches.length) {
+        console.warn('[CodeReview] No match for quote:', ann.quote.substring(0, 80));
+        continue;
+      }
+
+      const range = matches[0].range;
+      const icon  = TYPE_ICONS[ann.type];
+      const title = formatTypeTitle(ann.type);
+
+      annotationLinesRef.current.set(range.startLineNumber, ann.type);
+
+      deltas.push({
+        range,
+        options: {
+          linesDecorationsClassName: `review-bar--${ann.type}`,
+          glyphMarginClassName:      `review-glyph review-glyph--${ann.type}`,
+          hoverMessage: {
+            // \u200F = Unicode Right-To-Left Mark — forces browser BiDi engine
+            // to treat the run as RTL without relying on HTML (DOMPurify strips <div dir>)
+            value: `\u200F**${icon} ${title}**\n\n\u200F${formatBidiText(ann.feedback)}`,
+          },
+          glyphMarginHoverMessage: { value: `${icon} ${ann.feedback}` },
+        },
+      });
+    }
+
+    if (decorationsRef.current) {
+      decorationsRef.current.set(deltas);
+    } else {
+      decorationsRef.current = (editor as any).createDecorationsCollection(deltas);
+    }
+  }, [annotations, showReviewLayer, code]);
+
+  // ── 2b. JS-driven hover highlight via onMouseMove ─────────────────────────
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !showReviewLayer || !annotations?.length) {
+      hoverDecRef.current?.clear?.();
+      return;
+    }
+
+    let currentHoverLine = -1;
+
+    const moveDisposable = editor.onMouseMove((e) => {
+      const lineNum = e.target.position?.lineNumber ?? -1;
+      if (lineNum === currentHoverLine) return;
+      currentHoverLine = lineNum;
+
+      hoverDecRef.current?.clear?.();
+      hoverDecRef.current = null;
+
+      const type = annotationLinesRef.current.get(lineNum);
+      if (type) {
+        hoverDecRef.current = (editor as any).createDecorationsCollection([{
+          range: { startLineNumber: lineNum, startColumn: 1, endLineNumber: lineNum, endColumn: 1 },
+          options: { isWholeLine: true, className: `review-hover--${type}` },
+        }]);
+      }
+    });
+
+    const leaveDisposable = editor.onMouseLeave(() => {
+      currentHoverLine = -1;
+      hoverDecRef.current?.clear?.();
+      hoverDecRef.current = null;
+    });
+
+    return () => {
+      moveDisposable.dispose();
+      leaveDisposable.dispose();
+      hoverDecRef.current?.clear?.();
+      hoverDecRef.current = null;
+    };
+  }, [annotations, showReviewLayer]);
+
+  // ── 3. Monaco mount: wire selection events ───────────────────────────────
 
   const handleEditorMount: OnMount = useCallback((editorInstance) => {
     editorRef.current = editorInstance;
@@ -112,7 +294,6 @@ export default function CodeViewer({
         return;
       }
 
-      // Pixel position of selection start, relative to editor container
       const startPos = { lineNumber: sel.startLineNumber, column: sel.startColumn };
       const pixelPos = (editorInstance as any).getScrolledVisiblePosition?.(startPos) as
         | { top: number; left: number; height: number }
@@ -123,21 +304,19 @@ export default function CodeViewer({
         setMenuPos(
           pixelPos != null
             ? { x: rect.left + pixelPos.left, y: rect.top + pixelPos.top }
-            : { x: rect.left + rect.width / 2, y: rect.top + 56 },  // fallback
+            : { x: rect.left + rect.width / 2, y: rect.top + 56 },
         );
       }
 
-      // Push selected text to Zustand so ChatPanel / thread creation has context
       setTextSelection({ text: selectedText, x: 0, y: 0, width: 0, height: 0 });
     });
   }, [setTextSelection]);
 
-  // ── 3. Dismiss menu when clicking outside it ─────────────────────────────
+  // ── 4. Dismiss menu when clicking outside it ─────────────────────────────
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node)) return; // click on menu itself
-      // Defer to let Monaco update its selection first
+      if (menuRef.current?.contains(e.target as Node)) return;
       setTimeout(() => {
         const sel = editorRef.current?.getSelection();
         if (!sel || sel.isEmpty()) {
@@ -149,6 +328,28 @@ export default function CodeViewer({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [setTextSelection]);
+
+  // ── 5. AI Code Review handler ────────────────────────────────────────────
+
+  const handleReview = async () => {
+    if (annotations) {
+      setShowReviewLayer(prev => !prev);
+      return;
+    }
+    if (!documentId) return;
+
+    setIsReviewing(true);
+    try {
+      const res = await api.generateCodeReview(documentId);
+      const data: Annotation[] = res.data?.annotations ?? [];
+      setAnnotations(data);
+      setShowReviewLayer(true);
+    } catch (err) {
+      console.error('[CodeViewer] Code review failed:', err);
+    } finally {
+      setIsReviewing(false);
+    }
+  };
 
   // ── Loading state ─────────────────────────────────────────────────────────
 
@@ -170,11 +371,34 @@ export default function CodeViewer({
       ref={containerRef}
       className="flex-1 h-full flex flex-col overflow-hidden rounded-xl border border-[#E8E8E6] bg-white relative"
     >
-      {/* ── Filename header ──────────────────────────────────────────────── */}
+      {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[#E8E8E6] bg-[#F7F7F5] shrink-0">
         <Code2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
         <span className="text-xs font-mono font-medium text-[#37352F] truncate">{filename}</span>
-        <span className="ms-auto text-[10px] text-[#C4C4C4] capitalize tracking-wide">{language}</span>
+
+        <div className="ms-auto flex items-center gap-2">
+          <span className="text-[10px] text-[#C4C4C4] capitalize tracking-wide">{language}</span>
+
+          {documentId && (
+            <button
+              onClick={handleReview}
+              disabled={isReviewing}
+              title={annotations ? (showReviewLayer ? 'Hide annotations' : 'Show annotations') : 'Run AI Code Review'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150 border
+                ${showReviewLayer && annotations
+                  ? 'bg-indigo-600 text-white border-indigo-500 hover:bg-indigo-700'
+                  : 'bg-white text-[#787774] border-[#E8E8E6] hover:bg-[#F7F7F5] hover:text-[#37352F]'
+                }
+                disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              {isReviewing
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Wand2 className="w-3 h-3" />
+              }
+              {isReviewing ? 'Reviewing…' : annotations ? (showReviewLayer ? 'Hide Review' : 'Show Review') : 'AI Review'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Monaco Editor ────────────────────────────────────────────────── */}
@@ -186,6 +410,7 @@ export default function CodeViewer({
           onMount={handleEditorMount}
           options={{
             readOnly:                  true,
+            glyphMargin:               true,
             minimap:                   { enabled: false },
             wordWrap:                  'on',
             fontSize:                  13,

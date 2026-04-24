@@ -177,6 +177,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
             <CodeViewer
               file={doc.file}
               filename={doc.documentTitle ?? 'file'}
+              documentId={doc.documentId}
               handleQuickAction={chat.handleQuickAction}
               handleSmartAction={chat.handleSmartAction}
               isCreatingThread={chat.isCreatingThread}

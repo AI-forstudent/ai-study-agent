@@ -20,7 +20,7 @@ services:
       dockerfile: Dockerfile.backend
     container_name: ai_study_backend
     restart: "on-failure:3"
-    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     ports:
       - "8001:8001"
     environment:
@@ -28,6 +28,7 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
     volumes:
+      - ./backend/app:/app/app
       # Persist uploaded PDFs across container restarts
       - ./backend/uploads:/app/uploads
       # Sync new migration scripts without a rebuild

@@ -51,6 +51,9 @@ export const api = {
   deleteDocument: (documentId: number) =>
     apiClient.delete(`/api/v1/documents/${documentId}`),
 
+  generateCodeReview: (documentId: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/review`),
+
   // filePath is stored as "uploads/filename.pdf" — served directly by backend
   getFile: (filePath: string) =>
     apiClient.get(`/${filePath}`, { responseType: 'blob' }),
