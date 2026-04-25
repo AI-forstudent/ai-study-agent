@@ -1,0 +1,13 @@
+# Production overrides — AWS EC2.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+services:
+  frontend:
+    build:
+      args:
+        - VITE_AI_API_URL=https://ai-study-agent.com
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro

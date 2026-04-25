@@ -4,6 +4,27 @@
 
 ---
 
+## Visual Overview
+
+```mermaid
+flowchart LR
+    Client["🖥️ Client\n(React + Vite)"]
+    Nginx["🔀 Reverse Proxy\n(Nginx :80/:443)"]
+    Backend["⚙️ Backend\n(FastAPI :8001)"]
+    DB["🗄️ Database\n(PostgreSQL + pgvector)"]
+    Gemini["🤖 Gemini API\n(Google AI)"]
+    LangSmith["🔬 LangSmith\n(AI Ops — planned)"]
+
+    Client -->|"HTTPS"| Nginx
+    Nginx -->|"/api/* · /uploads/* · /health"| Backend
+    Nginx -->|"static assets"| Client
+    Backend -->|"SQLAlchemy ORM"| DB
+    Backend -->|"google-genai SDK\nembeddings + chat"| Gemini
+    Backend -.->|"tracing — future"| LangSmith
+```
+
+---
+
 ## 1. Project Overview
 
 AI Study Partner is a web application that lets students study PDF documents alongside AI agents ("Personas") that guide learning through conversation. Users upload documents, pick or clone a study persona (Socratic mentor, course TA, etc.), and chat in a thread tree that is anchored to specific pages and selected text. Session memory can be compressed and written back into a persona's system prompt so the agent "remembers" the student across sessions.
@@ -38,7 +59,9 @@ AI Study Partner is a web application that lets students study PDF documents alo
 AI_Study_Partner/
 ├── SYSTEM_ARCHITECTURE.md        ← this file
 ├── CLAUDE.md                     ← Claude Code project instructions
-├── docker-compose.yml
+├── docker-compose.yml            ← shared base (all environments)
+├── docker-compose.override.yml   ← dev overrides (git-ignored; auto-merged on `up`)
+├── docker-compose.prod.yml       ← production overrides (AWS; used with -f flag)
 │
 ├── ai-study-client/              ← React frontend
 │   ├── src/
@@ -336,4 +359,4 @@ User selects text on PDF page
 | `SessionMemory.persona_id` is NOT NULL | Hard-delete required before persona delete (cannot null-out the FK) |
 | Nginx routes `/api/`, `/uploads/`, `/health` to `backend:8001` | Single proxy target; frontend JS bundle never contains internal hostnames |
 | `VITE_AI_API_URL=https://ai-study-agent.com` in production | Domain-root base URL + hardcoded `/api/v1/` paths = no per-env path config |
-| `docker-compose.yml` has 3 services only | `db` + `backend` (port 8001) + `frontend` (Nginx); legacy port-8000 service removed |
+| Docker Compose 3-file architecture | **Base** (`docker-compose.yml`): shared services, container names, env, restart policies, internal DB URL. **Dev override** (`docker-compose.override.yml`, git-ignored): GPU `deploy` block, hot-reload volumes, local port bindings (`8001:8001`, `5433:5432`). **Prod override** (`docker-compose.prod.yml`): SSL volumes, `443:443`, `VITE_AI_API_URL=https://ai-study-agent.com`. Dev: `docker-compose up`. Prod: `docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d`. |

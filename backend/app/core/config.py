@@ -36,3 +36,13 @@ ALLOWED_ORIGINS: list[str] = [o.strip() for o in _origins_raw.split(",")]
 
 SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM: str  = "HS256"
+
+# ── Observability & AI Ops (optional — leave empty to disable) ─────────────
+
+# Sentry: error tracking + performance monitoring.
+# Get DSN from https://sentry.io → Project Settings → Client Keys.
+SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
+
+# LangSmith: prompt tracing & RAG evaluation.
+# Get key from https://smith.langchain.com → Settings → API Keys.
+LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "")

@@ -8,8 +8,6 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: app_db
-    ports:
-      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -20,46 +18,25 @@ services:
       dockerfile: Dockerfile.backend
     container_name: ai_study_backend
     restart: "on-failure:3"
-    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
-    ports:
-      - "8001:8001"
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
     volumes:
-      - ./backend/app:/app/app
-      # Persist uploaded PDFs across container restarts
       - ./backend/uploads:/app/uploads
-      # Sync new migration scripts without a rebuild
-      - ./backend/alembic/versions:/app/alembic/versions
     depends_on:
       - db
-    # GPU connection
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # === 3. Frontend (React + Nginx) ===
   frontend:
     build:
       context: ./ai-study-client
       dockerfile: Dockerfile.frontend
-      args:
-        - VITE_AI_API_URL=https://ai-study-agent.com
     container_name: ai_study_frontend
     restart: "on-failure:3"
-    ports:
-      - "80:80"
-      - "443:443"
     depends_on:
       - backend
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
 
 volumes:
   pgdata:

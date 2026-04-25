@@ -16,6 +16,19 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
+# ── Observability (Sentry) ─────────────────────────────────────────────────
+# Uncomment and set SENTRY_DSN in .env to enable error tracking.
+#
+# import sentry_sdk
+# from app.core.config import SENTRY_DSN
+# if SENTRY_DSN:
+#     sentry_sdk.init(
+#         dsn=SENTRY_DSN,
+#         traces_sample_rate=0.2,   # 20% of requests traced for performance
+#         profiles_sample_rate=0.1,
+#     )
+# ──────────────────────────────────────────────────────────────────────────
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

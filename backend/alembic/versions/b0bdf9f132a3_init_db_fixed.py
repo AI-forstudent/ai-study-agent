@@ -31,6 +31,17 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
     op.create_index(op.f('ix_users_id'), 'users', ['id'], unique=False)
+    # Base personas table.
+    # Subsequent migrations add columns (c94831423efe) and rename system_prompt
+    # → manual_prompt_override (c7cc2d36d878), so only the original columns live here.
+    op.create_table('personas',
+    sa.Column('id', sa.String(), nullable=False),
+    sa.Column('display_name', sa.String(), nullable=False),
+    sa.Column('system_prompt', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_personas_id'), 'personas', ['id'], unique=False)
     op.create_table('documents',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=True),
@@ -92,6 +103,8 @@ def downgrade() -> None:
     op.drop_table('chunks')
     op.drop_index(op.f('ix_documents_id'), table_name='documents')
     op.drop_table('documents')
+    op.drop_index(op.f('ix_personas_id'), table_name='personas')
+    op.drop_table('personas')
     op.drop_index(op.f('ix_users_id'), table_name='users')
     op.drop_index(op.f('ix_users_email'), table_name='users')
     op.drop_table('users')
