@@ -28,6 +28,8 @@ AI Study Partner is a web application that lets students study PDF documents alo
 **Local dev:** `VITE_AI_API_URL=http://localhost:8001` (calls backend directly).  
 **Production:** `VITE_AI_API_URL=https://ai-study-agent.com` (Nginx routes `/api/*`, `/uploads/*`, `/health` to `backend:8001`).
 
+**Dev machine:** Headless Ubuntu server ("The Monster", LAN: `10.100.102.11`) with an Nvidia RTX 3060 12GB, accessed via VS Code Remote — SSH from a Windows laptop. The laptop is a thin client only; all Docker builds, Python runtimes, and container workloads execute on the server. The project repo sits on a 1TB ext4 HDD permanently mounted at `/data` (`/data/projects/ai-study-agent`). The GPU is passed into the `backend` container via the Nvidia Container Toolkit (`deploy` block in `docker-compose.yml`) and acts as a placeholder for future local model inference — the Gemini API currently handles all LLM and embedding calls.
+
 ---
 
 ## 3. Directory Tree

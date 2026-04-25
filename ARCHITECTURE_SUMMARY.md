@@ -22,6 +22,9 @@ The local development environment and production builds are containerized to gua
 * **Database Engine:** PostgreSQL via the official `pgvector/pgvector:pg16` image, enabling native vector storage for embeddings.
 * **Volume Management:** Persistent named volumes (`pgdata`) are mapped to ensure data survives container restarts.
 * **Security & Env Management:** Database credentials and API keys are strictly decoupled using localized `.env` files.
+* **Remote SSH Development Server ("The Monster"):** All active development runs on a dedicated headless Ubuntu server (LAN IP: `10.100.102.11`), accessed via VS Code Remote — SSH from a Windows laptop. The laptop is a pure thin-client UI; every Docker build, Python process, and AI workload executes on the server. The project repository lives on a dedicated 1TB ext4 HDD permanently mounted at `/data` (`/data/projects/ai-study-agent`).
+* **GPU Integration (Nvidia RTX 3060 12GB):** The Nvidia Container Toolkit is installed on the Ubuntu host. The `docker-compose.yml` `backend` service uses a `deploy.resources.reservations.devices` block (`driver: nvidia`, `capabilities: [gpu]`) to pass the GPU into the container. The GPU is currently a ready placeholder for future local model inference (e.g., local `sentence-transformers` to replace the Gemini embeddings API for zero-cost pgvector embeddings). All active LLM and embedding work continues to use the Google Gemini API.
+* **Base Image:** `Dockerfile.backend` uses `FROM python:3.13-slim` to match the Python version pinned in `pyproject.toml`.
 
 ## 4. Database Design & ORM
 * **ORM:** SQLAlchemy handles the Object-Relational Mapping.

@@ -35,6 +35,14 @@ services:
       - ./backend/alembic/versions:/app/alembic/versions
     depends_on:
       - db
+    # GPU connection
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # === 3. Frontend (React + Nginx) ===
   frontend:
