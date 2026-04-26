@@ -45,6 +45,7 @@ from app.api.routers import auth as auth_router
 from app.api.routers import documents as documents_router
 from app.api.routers import threads as threads_router
 from app.api.routers import folders as folders_router
+from app.api.routers import personal_hub as personal_hub_router
 from app.api.routers.personas import seed_db as _seed_db
 
 
@@ -122,12 +123,13 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ── Routers ────────────────────────────────────────────────────────────────
 
-app.include_router(auth_router.router,      prefix="/api/v1/auth")
-app.include_router(documents_router.router, prefix="/api/v1/documents")
-app.include_router(folders_router.router,   prefix="/api/v1/folders")
-app.include_router(threads_router.router,   prefix="/api/v1/threads")
-app.include_router(personas_router.router,  prefix="/api/v1/personas")
-app.include_router(chat_router.router,      prefix="/api/v1/chat")
+app.include_router(auth_router.router,          prefix="/api/v1/auth")
+app.include_router(documents_router.router,     prefix="/api/v1/documents")
+app.include_router(folders_router.router,       prefix="/api/v1/folders")
+app.include_router(threads_router.router,       prefix="/api/v1/threads")
+app.include_router(personas_router.router,      prefix="/api/v1/personas")
+app.include_router(chat_router.router,          prefix="/api/v1/chat")
+app.include_router(personal_hub_router.router,  prefix="/api/v1/profile")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────

@@ -25,3 +25,9 @@ Before executing any complex task, you MUST consult the relevant branches of the
 * **NO FEATURE WITHOUT TESTS:** Every significant code change must include a corresponding test script in the relevant directory (`backend/tests/`, `ai-study-client/src/tests/`, or `tests/e2e/`).
 * **EDGE CASE COVERAGE:** Explicitly test for empty states, null values, and network failures — not just the happy path.
 * **REGRESSION LOG:** If a bug from `active_tracker.md` is fixed, a regression test must be added to `backend/tests/` or `tests/e2e/` to ensure it never returns. Label the test class `TestRegressions`.
+
+## 5. Seed Data Policy (Mandatory for Every New Entity)
+* **SEED DATA DRIVEN:** Whenever a new database entity or complex UI component is created, realistic Mock Data (Seed Data) MUST be generated.
+* **Backend seeds** (`backend/app/db/seeds/`): Python scripts that use SQLAlchemy to populate the local dev DB with representative data. Run with: `docker exec ai_study_backend uv run python -m app.db.seeds.<script_name>`
+* **Frontend mocks** (`ai-study-client/src/mocks/`): TypeScript files exporting typed mock objects that mirror the API response shape. Used by UI components during development and visual testing.
+* Both seed and mock files are version-controlled. The app must always be testable visually without manual data entry.

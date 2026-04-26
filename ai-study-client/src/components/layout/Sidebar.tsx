@@ -1,9 +1,9 @@
 import React from 'react';
-import { Sparkles, Library, FlaskConical, Globe, LogOut, Settings, BookOpen } from 'lucide-react';
+import { Sparkles, Library, FlaskConical, Globe, LogOut, Settings, BookOpen, GraduationCap } from 'lucide-react';
 
 interface SidebarProps {
-  activeView: 'main' | 'lab' | 'gallery' | 'settings';
-  onNavigate: (view: 'main' | 'lab' | 'gallery' | 'settings') => void;
+  activeView: 'main' | 'lab' | 'gallery' | 'settings' | 'hub';
+  onNavigate: (view: 'main' | 'lab' | 'gallery' | 'settings' | 'hub') => void;
   onLogout: () => void;
   hasActiveSession?: boolean;
   onResumeSession?: () => void;
@@ -94,6 +94,12 @@ export default function Sidebar({ activeView, onNavigate, onLogout, hasActiveSes
           label="Persona Lab"
           active={activeView === 'lab'}
           onClick={() => onNavigate('lab')}
+        />
+        <NavItem
+          icon={GraduationCap}
+          label="Personal Hub"
+          active={activeView === 'hub'}
+          onClick={() => onNavigate('hub')}
         />
       </div>
 

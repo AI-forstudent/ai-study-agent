@@ -108,6 +108,55 @@ export const api = {
 
   forkThread: (threadId: number, messageId: number) =>
     apiClient.post(`/api/v1/threads/${threadId}/fork?message_id=${messageId}`),
+
+  // ── Personal Hub ──────────────────────────────────────────────────────────
+  getProfile: () =>
+    apiClient.get('/api/v1/profile/'),
+
+  updateProfile: (payload: Record<string, unknown>) =>
+    apiClient.put('/api/v1/profile/', payload),
+
+  getCourseRecords: () =>
+    apiClient.get('/api/v1/profile/courses'),
+
+  addCourseRecord: (payload: { course_id: number; status?: string; grade?: number | null }) =>
+    apiClient.post('/api/v1/profile/courses', payload),
+
+  updateCourseRecord: (recordId: number, payload: Record<string, unknown>) =>
+    apiClient.put(`/api/v1/profile/courses/${recordId}`, payload),
+
+  getJobApplications: () =>
+    apiClient.get('/api/v1/profile/jobs'),
+
+  addJobApplication: (payload: { company: string; role: string; status?: string }) =>
+    apiClient.post('/api/v1/profile/jobs', payload),
+
+  updateJobApplication: (jobId: number, payload: Record<string, unknown>) =>
+    apiClient.put(`/api/v1/profile/jobs/${jobId}`, payload),
+
+  uploadTranscript: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiClient.post('/api/v1/profile/transcript', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
+  // Deletes every StudentCourseRecord for the authenticated user (clean re-import).
+  resetCourseRecords: () =>
+    apiClient.delete('/api/v1/profile/courses'),
+
+  // Deletes a single course record by ID.
+  deleteCourseRecord: (recordId: number) =>
+    apiClient.delete(`/api/v1/profile/courses/${recordId}`),
+
+  // Get-or-create a global catalog entry by name (used by Add Course modal).
+  createCatalogEntry: (payload: { name: string; credits?: number | null; department?: string | null }) =>
+    apiClient.post('/api/v1/profile/catalog', payload),
+
+  // Patch a catalog entry's name or credits (used by Edit Course modal).
+  updateCatalogEntry: (courseId: number, payload: { name?: string; credits?: number | null }) =>
+    apiClient.put(`/api/v1/profile/catalog/${courseId}`, payload),
 };
 
 export default API_BASE;

@@ -18,8 +18,8 @@ Migration strategy (run once after checkout)
 """
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, ForeignKey,
-    Integer, String, Text,
+    Boolean, Column, DateTime, Enum, Float, ForeignKey,
+    Integer, String, Table, Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -58,7 +58,10 @@ class User(Base):
         "Persona", back_populates="author",
         foreign_keys="[Persona.author_id]",
     )
-    study_sessions    = relationship("StudySession", back_populates="user")
+    study_sessions    = relationship("StudySession",       back_populates="user")
+    academic_profile  = relationship("AcademicProfile",    back_populates="user", uselist=False)
+    course_records    = relationship("StudentCourseRecord", back_populates="user")
+    job_applications  = relationship("JobApplication",     back_populates="user")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -348,3 +351,117 @@ class SessionMemory(Base):
 
     session = relationship("StudySession", back_populates="memories")
     persona = relationship("Persona",      back_populates="session_memories")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PERSONAL HUB  (Track D — student profile, course roadmap, career tracking)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Association table for the self-referential M2M on CourseCatalog.
+# Stored as a plain Table (not a mapped class) because it carries no extra columns.
+course_prerequisites = Table(
+    "course_prerequisites",
+    Base.metadata,
+    Column("course_id",       Integer, ForeignKey("course_catalog.id"), primary_key=True),
+    Column("prerequisite_id", Integer, ForeignKey("course_catalog.id"), primary_key=True),
+)
+
+
+class AcademicProfile(Base):
+    """
+    One-to-one extension of User for academic identity.
+    extra_credits captures out-of-curriculum points (reserve duty, volunteering, etc.).
+    social_links is a free-form JSONB dict: {"linkedin": "...", "github": "...", ...}.
+    """
+    __tablename__ = "academic_profiles"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    user_id        = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    university     = Column(String,  nullable=True)
+    degree         = Column(String,  nullable=True)
+    current_year   = Column(Integer, nullable=True)
+    target_gpa     = Column(Float,   nullable=True)   # aspirational goal GPA
+    manual_gpa     = Column(Float,   nullable=True)   # user-supplied override of the calculated GPA
+    extra_credits  = Column(Float,   nullable=True)
+    social_links   = Column(JSONB,   nullable=True)
+    created_at     = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="academic_profile")
+
+
+class CourseCatalog(Base):
+    """
+    Global single source of truth for courses.
+    Powers the visual prerequisite skill-tree in the UI.
+    icon_name maps to a lucide-react icon string (e.g. "Code", "Database").
+    difficulty_rating is a 0–5 float averaged from student submissions (future feature).
+    prerequisite_course_numbers stores raw course-number strings parsed from syllabi (e.g. ["104031", "104166"]).
+    """
+    __tablename__ = "course_catalog"
+
+    id                          = Column(Integer, primary_key=True, index=True)
+    name                        = Column(String,  nullable=False)
+    department                  = Column(String,  nullable=True)
+    credits                     = Column(Float,   nullable=True)
+    is_yearly                   = Column(Boolean, nullable=False, server_default="false")
+    difficulty_rating           = Column(Float,   nullable=False, server_default="0")
+    icon_name                   = Column(String,  nullable=True)
+    prerequisite_course_numbers = Column(JSONB,   nullable=True)
+
+    # Self-referential M2M: a course can have many prerequisites, and can itself
+    # be a prerequisite for many other courses.
+    prerequisites = relationship(
+        "CourseCatalog",
+        secondary=course_prerequisites,
+        primaryjoin="CourseCatalog.id == course_prerequisites.c.course_id",
+        secondaryjoin="CourseCatalog.id == course_prerequisites.c.prerequisite_id",
+        backref="required_by",
+    )
+
+    student_records = relationship("StudentCourseRecord", back_populates="course")
+
+
+class StudentCourseRecord(Base):
+    """
+    Links a User to a CourseCatalog entry with their personal progress data.
+    status values: 'active' | 'completed' | 'failed'
+    exam_date_a / exam_date_b are the scheduled exam sittings (moed A / moed B).
+    semester_taken stores the academic semester label parsed from a transcript (e.g. "Spring 2024").
+    """
+    __tablename__ = "student_course_records"
+
+    id                      = Column(Integer, primary_key=True, index=True)
+    user_id                 = Column(Integer, ForeignKey("users.id"),         nullable=False)
+    course_id               = Column(Integer, ForeignKey("course_catalog.id"), nullable=False)
+    status                  = Column(String,  nullable=False, server_default="active")
+    grade                   = Column(Integer, nullable=True)
+    semester_taken          = Column(String,  nullable=True)
+    exam_date_a             = Column(DateTime(timezone=True), nullable=True)
+    exam_date_b             = Column(DateTime(timezone=True), nullable=True)
+    is_attendance_mandatory = Column(Boolean, nullable=False, server_default="false")
+    created_at              = Column(DateTime(timezone=True), server_default=func.now())
+
+    user   = relationship("User",          back_populates="course_records")
+    course = relationship("CourseCatalog", back_populates="student_records")
+
+
+class JobApplication(Base):
+    """
+    Tracks a student's job-application pipeline.
+    status values: 'applied' | 'interview' | 'offer' | 'rejected' | 'withdrawn'
+    debrief_notes stores free-text interview retrospectives.
+    is_debrief_public allows sharing the debrief to the Study Commons in future.
+    """
+    __tablename__ = "job_applications"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    user_id           = Column(Integer, ForeignKey("users.id"), nullable=False)
+    company           = Column(String,  nullable=False)
+    role              = Column(String,  nullable=False)
+    status            = Column(String,  nullable=False, server_default="applied")
+    application_date  = Column(DateTime(timezone=True), nullable=True)
+    debrief_notes     = Column(Text,    nullable=True)
+    is_debrief_public = Column(Boolean, nullable=False, server_default="false")
+    created_at        = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="job_applications")

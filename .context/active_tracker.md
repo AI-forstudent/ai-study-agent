@@ -5,10 +5,19 @@
 
 ---
 
+> ⚠️ **STANDING RULE (enforced from this session forward):**
+> A bug CANNOT be marked as `✅ Fixed` or removed from this list until the **USER explicitly
+> confirms the fix worked in the real UI**. LLM self-assessment does not count as confirmation.
+
+---
+
 ## Critical Issues
 > Blockers that prevent a feature from working end-to-end.
 
-_None currently._
+| ID | Component | Description | Status |
+|----|-----------|-------------|--------|
+| B-003 | Transcript / pdfplumber | Hebrew text extracted in visual (reversed) order — previous LLM-based fix failed. Proper fix: `python-bidi` `get_display()` applied in Python before Gemini call. | 🔄 Awaiting User Confirmation |
+| B-004 | Transcript upsert | Blind overwrite of `status` + `grade` on every re-upload could downgrade completed courses. Fixed with safe-merge logic: skip status/grade update if record is already `completed` + graded. | 🔄 Awaiting User Confirmation |
 
 ---
 
@@ -23,8 +32,11 @@ _Phase transition complete. Awaiting first Feature Development task._
 
 | ID | Component | Description | Severity | Status |
 |----|-----------|-------------|----------|--------|
-| B-001 | Alembic | `personas` table missing from init migration — `c7cc2d36d878` failed on fresh DB | High | ✅ Fixed |
-| B-002 | Docker / Frontend | `ai_study_frontend` crash loop — production Nginx config required Let's Encrypt certs not present in dev | High | ✅ Fixed |
+| B-001 | Alembic | `personas` table missing from init migration — `c7cc2d36d878` failed on fresh DB | High | ✅ Fixed (user confirmed) |
+| B-002 | Docker / Frontend | `ai_study_frontend` crash loop — production Nginx config required Let's Encrypt certs not present in dev | High | ✅ Fixed (user confirmed) |
+| B-003 | Transcript / pdfplumber | Hebrew RTL text extracted in visual (reversed) character order by pdfplumber. **Failed attempt:** Gemini prompt instruction to flip text. **Fix:** `python-bidi` `get_display()` applied per-line in Python before Gemini call. | High | 🔄 Awaiting User Confirmation |
+| B-004 | Transcript upsert | Blind overwrite of `status`/`grade` on every re-upload could erase completed-course records. **Fix:** safe-merge logic — skip update if existing record is already `completed` + graded; fill catalog fields only when null. | High | 🔄 Awaiting User Confirmation |
+| B-005 | GPA calculation | `_calculate_gpa` used a truthy check `and r.course.credits` which passes for negative credits. **Fix:** explicit `r.course.credits is not None and r.course.credits > 0`. | Low | ✅ Fixed (no UI confirmation required — logic-only) |
 
 ---
 

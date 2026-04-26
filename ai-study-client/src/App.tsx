@@ -5,7 +5,8 @@ import 'katex/dist/katex.min.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
-import PersonaLab     from './features/personas/components/PersonaLab';
+import PersonaLab            from './features/personas/components/PersonaLab';
+import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -217,7 +218,7 @@ function App() {
     <Sidebar
       activeView={view}
       onNavigate={(v) => {
-        if (v === 'main' || v === 'settings') { docs.clearDocument(); setStandaloneMode(false); }
+        if (v === 'main' || v === 'settings' || v === 'hub') { docs.clearDocument(); setStandaloneMode(false); }
         setView(v);
       }}
       onLogout={handleLogout}
@@ -283,6 +284,19 @@ function App() {
           onBack={() => setView('main')}
           onGetStarted={() => {}}
         />
+        <ResumeToastContainer
+          personaName={toastPersonaName}
+          documentTitle={toastDocTitle}
+          onResume={handleResumeSession}
+        />
+      </AppLayout>
+    );
+  }
+
+  if (view === 'hub') {
+    return (
+      <AppLayout sidebar={sidebar}>
+        <PersonalHubDashboard />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}

@@ -1,10 +1,9 @@
-# 1. נקודת ההתחלה: לינוקס עם פייתון 3.13 (תואם ל-pyproject.toml)
+# Base image: Python 3.13-slim matches the version pinned in pyproject.toml.
 FROM python:3.13-slim
 
-# 2. הגדרת תיקיית העבודה בתוך הקונטיינר
 WORKDIR /app
 
-# 3. התקנת LibreOffice (המרת DOCX/PPTX ל-PDF) ו-uv
+# Install LibreOffice (for DOCX/PPTX → PDF conversion) and uv (package manager).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice \
         fonts-liberation \
@@ -13,14 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install uv
 
-# 4. העתקת קבצי החבילות בלבד
+# Copy dependency manifests first to maximise layer caching.
 COPY pyproject.toml uv.lock ./
 
-# 5. התקנת הספריות (בצורה נעילה כדי למנוע הפתעות של גרסאות)
-RUN uv sync --frozen
+# Install all dependencies. Using uv sync (without --frozen) allows the lockfile
+# to update when new packages are added to pyproject.toml.
+RUN uv sync
 
-# 6. העתקת שאר קבצי הפרויקט לתוך הקונטיינר
+# Copy the rest of the project source.
 COPY . .
 
-# 7. הפקודה שתרוץ כשהקונטיינר נדלק
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
