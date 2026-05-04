@@ -1,33 +1,46 @@
-# AI Study Partner - Claude Code Directives (Context Tree Root)
+# AI Study Partner — Claude Code Directives
 
-**CRITICAL RULE:** You are operating within a "Context Tree" architecture. To prevent context confusion, do not load all files at once. Read the specific files relevant to your current task.
+> Cleaned 2026-05-04 — see `CHANGES.md`. Prior version referenced a `.context/` directory that does not exist in the repository; those references have been removed and the relevant guidance folded into `SYSTEM_ARCHITECTURE.md`.
 
-## 1. Mandatory Routine (Read Before Coding)
-Before executing any complex task, you MUST consult the relevant branches of the Context Tree:
-* **If modifying UI/UX:** Read `.context/design_system.md` FIRST. Ensure strict compliance with colors, typography, and "Notion-inspired" minimalism.
-* **If modifying AI logic/Prompts:** Read `.context/architecture_patterns.md` and `.context/naming_conventions.md`.
-* **If starting a new major feature:** Read `.context/vision.md` to ensure the feature aligns with the product's core pillars and parallel tracks.
-* **To understand the current state:** Read `.context/state.md`.
-* **To understand the infrastructure:** Read `.context/tech_context.md` and `.context/project-map.md`.
+## 1. Read-Before-Coding
+
+Before any non-trivial change, read the relevant section(s) of **`SYSTEM_ARCHITECTURE.md`** — that file is the single source of truth for:
+- Tech stack & ports (§2)
+- Directory tree & file index (§4–§6)
+- CAS pipeline, Folder model, data flows (§7–§9)
+- ADRs explaining *why* each major choice was made (§10)
+- Hard constraints you must respect (§12)
 
 ## 2. Build & Run Commands
-* **Backend (UV):** `cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload`
-* **Frontend (Vite):** `cd ai-study-client && npm run dev`
-* **Docker (Dev Environment):** `docker compose up --build`
-* **Database Migrations:** `docker exec -it ai_study_backend uv run alembic upgrade head`
+
+- **Backend (UV):** `cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload`
+- **Frontend (Vite):** `cd ai-study-client && npm run dev`
+- **Docker (Dev Environment):** `docker compose up --build`
+- **Database Migrations:** `docker exec -it ai_study_backend uv run alembic upgrade head`
+- **Generate a new migration:** `docker exec -it ai_study_backend uv run alembic revision --autogenerate -m "describe change"`
 
 ## 3. End of Session Rules
-* Never leave a task half-finished without documenting the exact state.
-* If you alter the database schema, API routing, or overall architecture, you MUST update `SYSTEM_ARCHITECTURE.md` to reflect the changes.
-* **MEGA-CONTEXT MAINTENANCE:** At the end of every work session, you MUST update `PART 6` and `PART 7` of `.context/GEMINI_MEGA_CONTEXT.md` to reflect the latest milestones achieved, database changes made, new routes added, and the current state of the project. This file is intended to grow indefinitely as the primary synchronization anchor.
+
+- Never leave a task half-finished without documenting the exact state.
+- If you alter the database schema, API routing, or overall architecture, you **must** update `SYSTEM_ARCHITECTURE.md` (the relevant file-index entries, ADRs if a decision is being recorded, or §12 constraints).
+- Add an entry to `CHANGES.md` describing what changed and why.
 
 ## 4. Quality Gate (Mandatory for Every Feature)
-* **NO FEATURE WITHOUT TESTS:** Every significant code change must include a corresponding test script in the relevant directory (`backend/tests/`, `ai-study-client/src/tests/`, or `tests/e2e/`).
-* **EDGE CASE COVERAGE:** Explicitly test for empty states, null values, and network failures — not just the happy path.
-* **REGRESSION LOG:** If a bug from `active_tracker.md` is fixed, a regression test must be added to `backend/tests/` or `tests/e2e/` to ensure it never returns. Label the test class `TestRegressions`.
+
+- **NO FEATURE WITHOUT TESTS:** Every significant code change must include a corresponding test in the relevant directory (`backend/tests/`, `ai-study-client/src/tests/`, or `tests/e2e/`).
+- **EDGE CASE COVERAGE:** Explicitly test for empty states, null values, and network failures — not just the happy path.
+- **REGRESSION LOG:** When fixing a bug, add a regression test to ensure it never returns. Label the test class `TestRegressions`.
 
 ## 5. Seed Data Policy (Mandatory for Every New Entity)
-* **SEED DATA DRIVEN:** Whenever a new database entity or complex UI component is created, realistic Mock Data (Seed Data) MUST be generated.
-* **Backend seeds** (`backend/app/db/seeds/`): Python scripts that use SQLAlchemy to populate the local dev DB with representative data. Run with: `docker exec ai_study_backend uv run python -m app.db.seeds.<script_name>`
-* **Frontend mocks** (`ai-study-client/src/mocks/`): TypeScript files exporting typed mock objects that mirror the API response shape. Used by UI components during development and visual testing.
-* Both seed and mock files are version-controlled. The app must always be testable visually without manual data entry.
+
+- Whenever a new database entity or complex UI component is created, realistic Mock Data (Seed Data) **must** be generated.
+- **Backend seeds** (`backend/app/db/seeds/`): Python scripts using SQLAlchemy to populate the dev DB with representative data. Run with: `docker exec ai_study_backend uv run python -m app.db.seeds.<script_name>`.
+- **Frontend mocks** (`ai-study-client/src/data/mocks/`): TypeScript files exporting typed mock objects that mirror the API response shape. Used during component development and visual testing.
+- Both seed and mock files are version-controlled. The app must always be testable visually without manual data entry.
+
+## 6. Style & Conventions
+
+- Backend: `snake_case` field names everywhere except `PersonaResponse` (camelCase — see §12 constraint table).
+- Frontend: `camelCase` everywhere; the `Persona` type mirrors backend `PersonaResponse` directly.
+- Imports must use the canonical paths: `app.models.domain` (not legacy flat modules), `app.core.config`, etc.
+- Prompts: keep section headers consistent (`## ROLE`, `## TONE`, `## STYLE`, `## LANGUAGE`, etc.) — the persona editor parses these visually.
