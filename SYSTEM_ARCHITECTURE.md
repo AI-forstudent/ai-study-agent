@@ -4,7 +4,7 @@
 >
 > **Maintenance Rule:** Update this file whenever a new file is created, a file is deleted, a core data structure changes, a router is added, or routing/state management is altered.
 
----
+--
 
 ## Table of Contents
 
