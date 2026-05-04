@@ -1,0 +1,31 @@
+name: Deploy to Droplet
+
+on:
+  push:
+    branches:
+      - Lior
+  workflow_dispatch:  # also allow manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          port: ${{ secrets.DROPLET_PORT }}
+          script: |
+            set -e
+            cd /opt/ai-study-agent
+            echo "==> Pulling latest code..."
+            git pull origin Lior
+            echo "==> Building and starting containers..."
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            echo "==> Running database migrations..."
+            docker exec ai_study_backend uv run alembic upgrade head
+            echo "==> Pruning old images..."
+            docker image prune -f
+            echo "==> Deploy complete!"
