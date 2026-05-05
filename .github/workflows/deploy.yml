@@ -24,13 +24,13 @@ jobs:
             cd /opt/ai-study-agent
 
             echo "==> Writing .env from GitHub secrets..."
-            cat > .env <<EOF
-            GOOGLE_API_KEY=${GOOGLE_API_KEY}
-            ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-            OPENAI_API_KEY=${OPENAI_API_KEY}
-            SECRET_KEY=${SECRET_KEY}
-            DOMAIN=${DOMAIN}
-            EOF
+            {
+              printf 'GOOGLE_API_KEY=%s\n'    "$GOOGLE_API_KEY"
+              printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY"
+              printf 'OPENAI_API_KEY=%s\n'    "$OPENAI_API_KEY"
+              printf 'SECRET_KEY=%s\n'        "$SECRET_KEY"
+              printf 'DOMAIN=%s\n'            "$DOMAIN"
+            } > .env
             chmod 600 .env
 
             echo "==> Resetting working directory to match origin/Lior..."
