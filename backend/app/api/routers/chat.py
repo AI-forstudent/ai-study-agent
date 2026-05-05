@@ -15,13 +15,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
-from google.genai import types as genai_types
 
 from app.core.database import get_db
 from app.models.domain import Message, Thread
-from app.services.genai_client import get_client
 from app.services.prompt_builder import resolve_system_prompt
-from app.services.model_router import MODEL_MANIFEST, resolve_alias
+from app.services.model_router import resolve_alias
+from app.services.llm_providers import call_llm
 
 router = APIRouter(tags=["chat"])
 
@@ -29,10 +28,11 @@ router = APIRouter(tags=["chat"])
 # ── Request / Response schemas ─────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    message:    str
-    thread_id:  int | None  = None   # null → create a new thread
-    persona_id: str | None  = None   # null → default system prompt
-    model_tier: str | None  = None   # "flash-lite" | "flash" | "pro"
+    message:     str
+    thread_id:   int | None  = None   # null → create a new thread
+    persona_id:  str | None  = None   # null → default system prompt
+    model_tier:  str | None  = None   # "flash-lite" | "flash" | "pro"
+    ai_provider: str | None  = None   # "gemini" | "openai" | "anthropic"
 
 
 class MessageOut(BaseModel):
@@ -108,31 +108,24 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     effective_persona_id = payload.persona_id or thread.persona_id
     system_prompt = resolve_system_prompt(effective_persona_id, db)
 
-    # ── 5. Resolve model alias + string ────────────────────────────────────
-    alias        = resolve_alias("chat", payload.model_tier)
-    model_string = MODEL_MANIFEST[alias]
+    # ── 5. Resolve alias for DB audit trail ────────────────────────────────
+    alias = resolve_alias("chat", payload.model_tier)
 
-    # ── 6. Build contents list and call GenAI ──────────────────────────────
-    contents = [
-        genai_types.Content(
-            role="user" if msg.role == "user" else "model",
-            parts=[genai_types.Part.from_text(text=msg.content)],
-        )
+    # ── 6. Build history and call the appropriate LLM provider ────────────
+    msg_history = [
+        {"role": msg.role if msg.role != "assistant" else "assistant", "content": msg.content}
         for msg in history
     ]
 
     try:
-        client   = get_client()
-        response = client.models.generate_content(
-            model=model_string,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
+        reply_text: str = call_llm(
+            provider=payload.ai_provider,
+            model_tier=payload.model_tier,
+            system_prompt=system_prompt,
+            history=msg_history,
         )
-        reply_text: str = response.text
     except Exception as exc:
-        print(f"[chat] GenAI error (model={model_string}, alias={alias}): {exc}")
+        print(f"[chat] LLM error (provider={payload.ai_provider}, tier={payload.model_tier}): {exc}")
         raise HTTPException(
             status_code=503,
             detail="AI service temporarily unavailable. Please try again in a moment.",

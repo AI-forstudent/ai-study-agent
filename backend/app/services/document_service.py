@@ -313,6 +313,30 @@ def generate_specific_page_summary(page_text: str) -> str:
     return ask_gemini(prompt, use_smart_model=True)
 
 
+def generate_full_document_summary(all_text: str) -> str:
+    safe_text = all_text[:60000]
+    prompt = (
+        "You are an expert study assistant. "
+        "Generate a comprehensive, well-structured summary of the ENTIRE document below. "
+        "Include: main topics, key concepts, important arguments, conclusions, and any notable terminology. "
+        "Structure the summary with clear sections.\n"
+        "CRITICAL: Your response MUST be in HEBREW.\n"
+        f"Document Text:\n{safe_text}\n\nFull Summary:"
+    )
+    return ask_gemini(prompt, use_smart_model=True)
+
+
+def generate_custom_summary(text: str, custom_prompt: str) -> str:
+    safe_text = text[:40000]
+    prompt = (
+        f"You are an expert study assistant. "
+        f"The user has a specific request about the following document text:\n\n"
+        f"User Request: {custom_prompt}\n\n"
+        f"Document Text:\n{safe_text}\n\nResponse:"
+    )
+    return ask_gemini(prompt, use_smart_model=True)
+
+
 # ── Code Review (Unified Annotation Engine — Phase 1) ─────────────────────
 
 _ANNOTATION_TYPES = (

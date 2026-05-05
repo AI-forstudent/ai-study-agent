@@ -85,6 +85,11 @@ interface AppState {
   selectedModelTier: 'flash-lite' | 'flash' | 'pro';
   setSelectedModelTier: (tier: 'flash-lite' | 'flash' | 'pro') => void;
 
+  // ── AI Provider ─────────────────────────────────────────────────────────────
+  /** Which LLM provider to use: openai (ChatGPT), anthropic (Claude), gemini. */
+  selectedAIProvider: 'openai' | 'anthropic' | 'gemini';
+  setSelectedAIProvider: (provider: 'openai' | 'anthropic' | 'gemini') => void;
+
   // ── Resume prompt (shown once per app load if a session was persisted) ──────
   showResumePrompt: boolean;
   dismissResumePrompt: () => void;
@@ -271,6 +276,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── Model tier ──────────────────────────────────────────────────────────────
   selectedModelTier:    'flash',
   setSelectedModelTier: (tier) => set({ selectedModelTier: tier }),
+
+  // ── AI Provider ─────────────────────────────────────────────────────────────
+  selectedAIProvider:    'openai',
+  setSelectedAIProvider: (provider) => set({ selectedAIProvider: provider }),
 
   // ── Resume prompt ───────────────────────────────────────────────────────────
   showResumePrompt:    _savedSession !== null,

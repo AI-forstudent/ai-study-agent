@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2 } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -32,6 +32,39 @@ interface ChatPanelProps {
   onSwitchPersona?: (newId: string | null, keepContext: boolean) => void;
 }
 
+const SummaryLoader = () => (
+  <div className="mt-5 space-y-3">
+    <div className="flex items-center gap-2 text-[#787774] text-xs mb-4">
+      <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+      Generating summary…
+    </div>
+    <div className="h-3 bg-[#EFEFED] rounded-full w-full animate-pulse" />
+    <div className="h-3 bg-[#EFEFED] rounded-full w-5/6 animate-pulse" />
+    <div className="h-3 bg-[#EFEFED] rounded-full w-4/6 animate-pulse" />
+  </div>
+);
+
+const summaryMdComponents = {
+  p:      ({ node, ...props }: any) => <p dir="auto" {...props} />,
+  li:     ({ node, ...props }: any) => <li dir="auto" {...props} />,
+  h1:     ({ node, ...props }: any) => <h1 dir="auto" className="text-xl font-semibold mt-4 mb-2" {...props} />,
+  h2:     ({ node, ...props }: any) => <h2 dir="auto" className="text-lg font-semibold mt-3 mb-2" {...props} />,
+  h3:     ({ node, ...props }: any) => <h3 dir="auto" className="text-base font-semibold mt-2 mb-1" {...props} />,
+  strong: ({ node, ...props }: any) => <strong className="text-[#37352F] font-semibold" {...props} />,
+};
+
+const SummaryContent = ({ text }: { text: string }) => (
+  <div className="mt-4 bg-[#F7F7F5] p-4 rounded-xl border border-[#E8E8E6] prose prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-[#37352F] prose-p:text-[#37352F]">
+    <ReactMarkdown
+      remarkPlugins={[remarkMath, remarkGfm]}
+      rehypePlugins={[rehypeKatex]}
+      components={summaryMdComponents}
+    >
+      {text}
+    </ReactMarkdown>
+  </div>
+);
+
 const ChatPanel: React.FC<ChatPanelProps> = ({
   documentId,
   activeThread,
@@ -51,7 +84,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
   const [pageSummaries, setPageSummaries] = useState<Record<number, string>>({});
+  const [fullDocSummary, setFullDocSummary] = useState<string | null>(null);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [summaryMode, setSummaryMode] = useState<'current' | 'all' | 'custom'>('current');
+  const [customPrompt, setCustomPrompt] = useState('');
+  const [customResult, setCustomResult] = useState<string | null>(null);
   const [isSwitchModalOpen, setIsSwitchModalOpen] = useState(false);
 
   React.useEffect(() => {
@@ -81,15 +118,37 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
+  const handleGenerateAll = async () => {
+    if (!documentId) return;
+    setIsGeneratingSummary(true);
+    try {
+      const res = await api.createFullDocumentSummary(documentId);
+      setFullDocSummary(res.data.summary);
+    } catch {
+      alert('Failed to generate full document summary. Please try again.');
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
+
+  const handleGenerateCustom = async () => {
+    if (!documentId || !customPrompt.trim()) return;
+    setIsGeneratingSummary(true);
+    try {
+      const res = await api.createCustomSummary(documentId, customPrompt);
+      setCustomResult(res.data.summary);
+    } catch {
+      alert('Failed to generate custom summary. Please try again.');
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
+
   const handleSelectThread = (thread: Thread) => setActiveThread(thread);
 
   React.useEffect(() => {
     if (!documentId) setActiveTab('chat');
   }, [documentId]);
-
-  React.useEffect(() => {
-    if (activeThread) setActiveTab('chat');
-  }, [activeThread]);
 
   const handleEnterChat = (thread: Thread) => {
     setActiveThread(thread);
@@ -249,7 +308,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             onClick={() => setActiveTab('summary')}
             className={`${tabBase} ${activeTab === 'summary' ? tabActive : tabInactive}`}
           >
-            <FileText className="w-3.5 h-3.5" /> Page Summary
+            <FileText className="w-3.5 h-3.5" /> Summary
           </button>
         )}
       </div>
@@ -269,59 +328,128 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       )}
 
-      {/* ── Page summary tab ──────────────────────────────────────────── */}
+      {/* ── Summary tab ───────────────────────────────────────────────── */}
       {activeTab === 'summary' && (
-        <div className="flex-1 flex flex-col p-5 overflow-y-auto">
-          <div className="bg-white rounded-xl border border-[#E8E8E6] p-5 mb-4">
-            <h3 className="text-sm font-semibold text-[#37352F] mb-1 flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-indigo-600" />
-              Page {currentPage} Summary
-            </h3>
+        <div className="flex-1 flex flex-col p-5 overflow-y-auto gap-4">
 
-            {!pageSummaries[currentPage] && !isGeneratingSummary && (
-              <div className="mt-6 flex flex-col items-center gap-3 text-center">
-                <p className="text-xs text-[#787774]">No summary yet for this page.</p>
-                <button
-                  onClick={handleGenerateSummary}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors duration-150"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Generate Summary
-                </button>
-              </div>
-            )}
-
-            {isGeneratingSummary && (
-              <div className="mt-5 space-y-3">
-                <div className="flex items-center gap-2 text-[#787774] text-xs mb-4">
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-                  Generating summary…
-                </div>
-                <div className="h-3 bg-[#EFEFED] rounded-full w-full animate-pulse" />
-                <div className="h-3 bg-[#EFEFED] rounded-full w-5/6 animate-pulse" />
-                <div className="h-3 bg-[#EFEFED] rounded-full w-4/6 animate-pulse" />
-              </div>
-            )}
-
-            {pageSummaries[currentPage] && (
-              <div className="mt-4 bg-[#F7F7F5] p-4 rounded-xl border border-[#E8E8E6] prose prose-sm max-w-none prose-p:leading-relaxed prose-headings:text-[#37352F] prose-p:text-[#37352F]">
-                <ReactMarkdown
-                  remarkPlugins={[remarkMath, remarkGfm]}
-                  rehypePlugins={[rehypeKatex]}
-                  components={{
-                    p:      ({ node, ...props }) => <p dir="auto" {...props} />,
-                    li:     ({ node, ...props }) => <li dir="auto" {...props} />,
-                    h1:     ({ node, ...props }) => <h1 dir="auto" className="text-xl font-semibold mt-4 mb-2" {...props} />,
-                    h2:     ({ node, ...props }) => <h2 dir="auto" className="text-lg font-semibold mt-3 mb-2" {...props} />,
-                    h3:     ({ node, ...props }) => <h3 dir="auto" className="text-base font-semibold mt-2 mb-1" {...props} />,
-                    strong: ({ node, ...props }) => <strong className="text-[#37352F] font-semibold" {...props} />,
-                  }}
-                >
-                  {pageSummaries[currentPage]}
-                </ReactMarkdown>
-              </div>
-            )}
+          {/* Mode selector pills */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setSummaryMode('current')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors duration-150 ${
+                summaryMode === 'current'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-[#787774] border-[#E8E8E6] hover:border-indigo-300 hover:text-indigo-600'
+              }`}
+            >
+              <AlignLeft className="w-3 h-3" />
+              Current Page
+            </button>
+            <button
+              onClick={() => setSummaryMode('all')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors duration-150 ${
+                summaryMode === 'all'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-[#787774] border-[#E8E8E6] hover:border-indigo-300 hover:text-indigo-600'
+              }`}
+            >
+              <BookOpen className="w-3 h-3" />
+              Summarize All
+            </button>
+            <button
+              onClick={() => setSummaryMode('custom')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors duration-150 ${
+                summaryMode === 'custom'
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : 'bg-white text-[#787774] border-[#E8E8E6] hover:border-indigo-300 hover:text-indigo-600'
+              }`}
+            >
+              <Settings2 className="w-3 h-3" />
+              Custom
+            </button>
           </div>
+
+          {/* ── Current Page mode ── */}
+          {summaryMode === 'current' && (
+            <div className="bg-white rounded-xl border border-[#E8E8E6] p-5">
+              <h3 className="text-sm font-semibold text-[#37352F] mb-1 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600" />
+                Page {currentPage} Summary
+              </h3>
+              {!pageSummaries[currentPage] && !isGeneratingSummary && (
+                <div className="mt-6 flex flex-col items-center gap-3 text-center">
+                  <p className="text-xs text-[#787774]">No summary yet for this page.</p>
+                  <button
+                    onClick={handleGenerateSummary}
+                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors duration-150"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Generate Summary
+                  </button>
+                </div>
+              )}
+              {isGeneratingSummary && <SummaryLoader />}
+              {pageSummaries[currentPage] && !isGeneratingSummary && (
+                <SummaryContent text={pageSummaries[currentPage]} />
+              )}
+            </div>
+          )}
+
+          {/* ── Summarize All mode ── */}
+          {summaryMode === 'all' && (
+            <div className="bg-white rounded-xl border border-[#E8E8E6] p-5">
+              <h3 className="text-sm font-semibold text-[#37352F] mb-1 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600" />
+                Full Document Summary
+              </h3>
+              {!fullDocSummary && !isGeneratingSummary && (
+                <div className="mt-6 flex flex-col items-center gap-3 text-center">
+                  <p className="text-xs text-[#787774]">Generate a comprehensive summary of the entire document.</p>
+                  <button
+                    onClick={handleGenerateAll}
+                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors duration-150"
+                  >
+                    <BookOpen className="w-4 h-4" />
+                    Summarize All
+                  </button>
+                </div>
+              )}
+              {isGeneratingSummary && <SummaryLoader />}
+              {fullDocSummary && !isGeneratingSummary && (
+                <SummaryContent text={fullDocSummary} />
+              )}
+            </div>
+          )}
+
+          {/* ── Custom mode ── */}
+          {summaryMode === 'custom' && (
+            <div className="bg-white rounded-xl border border-[#E8E8E6] p-5 flex flex-col gap-3">
+              <h3 className="text-sm font-semibold text-[#37352F] flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600" />
+                Custom Summary
+              </h3>
+              <textarea
+                value={customPrompt}
+                onChange={e => setCustomPrompt(e.target.value)}
+                placeholder="e.g. List all key definitions, Explain the main argument in simple terms, Summarize only the conclusions…"
+                dir="auto"
+                rows={3}
+                className="w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 resize-none transition-colors duration-150"
+              />
+              <button
+                onClick={handleGenerateCustom}
+                disabled={!customPrompt.trim() || isGeneratingSummary}
+                className="self-start flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors duration-150"
+              >
+                <Sparkles className="w-4 h-4" />
+                Generate
+              </button>
+              {isGeneratingSummary && <SummaryLoader />}
+              {customResult && !isGeneratingSummary && (
+                <SummaryContent text={customResult} />
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -24,7 +24,11 @@
 
 > What is being actively worked on right now. One-line description + branch/file pointer.
 
-_Phase transition complete. Awaiting first feature development task._
+| ID | Feature | Status | Notes |
+|----|---------|--------|-------|
+| F-001 | Multi-provider AI (ChatGPT / Claude / Gemini) | ✅ Code complete | Needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` in `.env` before providers work. Gemini fallback always active. |
+| F-002 | Summary tab modes (Current Page / All / Custom) | ✅ Code complete | Backend endpoints: `POST /summary/all`, `POST /summary/custom`. Awaiting user UI confirmation. |
+| F-003 | Threads auto-tab-switch bug fix | ✅ Code complete | Removed `useEffect` that auto-switched to chat on activeThread change. Awaiting user UI confirmation. |
 
 ---
 

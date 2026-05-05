@@ -45,7 +45,9 @@ from app.models.domain import (
     Persona, Thread, User, UserDocument,
 )
 from app.schemas.schemas import (
+    CustomSummaryRequest,
     DocumentResponse,
+    FullSummaryResponse,
     PageSummaryResponse,
     PublicDocumentResponse,
     VisibilityUpdate,
@@ -58,7 +60,9 @@ from app.services.document_service import (
     extract_text_from_word,
     generate_code_review,
     generate_code_summary,
+    generate_custom_summary,
     generate_document_summary,
+    generate_full_document_summary,
     generate_specific_page_summary,
     get_embedding_model,
     split_text_into_chunks,
@@ -525,3 +529,70 @@ def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
         .filter(PageSummary.base_hash == user_doc.base_hash)
         .all()
     )
+
+
+@router.post("/{document_id}/summary/all", response_model=FullSummaryResponse)
+def create_full_document_summary(document_id: int, db: Session = Depends(get_db)):
+    """Generate (or return cached) a comprehensive summary of the entire document."""
+    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    base_doc = db.query(BaseDocument).filter(BaseDocument.hash_id == user_doc.base_hash).first()
+    if not base_doc:
+        raise HTTPException(status_code=404, detail="Base document not found")
+
+    if base_doc.global_summary:
+        return FullSummaryResponse(summary=base_doc.global_summary)
+
+    all_chunks = (
+        db.query(Chunk)
+        .filter(Chunk.base_hash == user_doc.base_hash)
+        .order_by(Chunk.page_number.asc())
+        .all()
+    )
+    if not all_chunks:
+        raise HTTPException(status_code=404, detail="No content found for this document")
+
+    all_text = "\n".join(c.text for c in all_chunks)
+    summary_text = generate_full_document_summary(all_text)
+
+    base_doc.global_summary = summary_text
+    db.commit()
+
+    return FullSummaryResponse(summary=summary_text)
+
+
+@router.post("/{document_id}/summary/custom", response_model=FullSummaryResponse)
+def create_custom_summary(
+    document_id: int,
+    payload: CustomSummaryRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate a summary guided by custom user instructions."""
+    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if payload.page_number is not None:
+        chunks = (
+            db.query(Chunk)
+            .filter(Chunk.base_hash == user_doc.base_hash, Chunk.page_number == payload.page_number)
+            .all()
+        )
+        if not chunks:
+            raise HTTPException(status_code=404, detail="Page not found")
+        text = "\n".join(c.text for c in chunks)
+    else:
+        chunks = (
+            db.query(Chunk)
+            .filter(Chunk.base_hash == user_doc.base_hash)
+            .order_by(Chunk.page_number.asc())
+            .all()
+        )
+        if not chunks:
+            raise HTTPException(status_code=404, detail="No content found for this document")
+        text = "\n".join(c.text for c in chunks)
+
+    summary_text = generate_custom_summary(text, payload.custom_prompt)
+    return FullSummaryResponse(summary=summary_text)

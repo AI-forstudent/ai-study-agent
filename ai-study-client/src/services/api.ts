@@ -48,6 +48,15 @@ export const api = {
   getDocumentSummaries: (documentId: number) =>
     apiClient.get(`/api/v1/documents/${documentId}/summaries`),
 
+  createFullDocumentSummary: (documentId: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/summary/all`),
+
+  createCustomSummary: (documentId: number, customPrompt: string, pageNumber?: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/summary/custom`, {
+      custom_prompt: customPrompt,
+      page_number: pageNumber ?? null,
+    }),
+
   deleteDocument: (documentId: number) =>
     apiClient.delete(`/api/v1/documents/${documentId}`),
 

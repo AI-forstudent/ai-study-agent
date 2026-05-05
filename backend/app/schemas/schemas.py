@@ -182,3 +182,12 @@ class PageSummaryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FullSummaryResponse(BaseModel):
+    summary: str
+
+
+class CustomSummaryRequest(BaseModel):
+    custom_prompt: str
+    page_number:   int | None = None

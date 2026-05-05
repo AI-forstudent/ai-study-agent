@@ -184,7 +184,7 @@ export function useChat(documentId: number | null, currentPage: number, activePe
     // set by App.tsx *after* awaiting the backend clone response, so it is
     // always safe to send to /api/v1/chat without causing a FK violation.
     const personaId = activePersonaId;
-    const { selectedModelTier } = useAppStore.getState();
+    const { selectedModelTier, selectedAIProvider } = useAppStore.getState();
 
     // Grab the current active thread id (null = first message, create a new thread)
     const currentThread = useAppStore.getState().activeThread;
@@ -203,10 +203,11 @@ export function useChat(documentId: number | null, currentPage: number, activePe
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message:    messageContent,
-          thread_id:  threadId,
-          persona_id: personaId,
-          model_tier: selectedModelTier,
+          message:     messageContent,
+          thread_id:   threadId,
+          persona_id:  personaId,
+          model_tier:  selectedModelTier,
+          ai_provider: selectedAIProvider,
         }),
       });
 

@@ -39,12 +39,12 @@ A standout feature is **Thread Forking** — a Git-like branching mechanism that
 | State | Zustand (`useAppStore`) + React hooks | — |
 | **Unified API** | **FastAPI + SQLAlchemy (all routes)** | **8001** |
 | Database | PostgreSQL 16 + pgvector | 5433 (host) |
-| LLM | Google Gemini (`google-genai` + `langchain-google-genai`) | — |
+| LLM | Multi-provider: **OpenAI** (`openai`), **Anthropic** (`anthropic`), **Google Gemini** (`google-genai`) — routed via `llm_providers.py`; Gemini is the fallback | — |
 | Reverse Proxy | Nginx | 80 / 443 |
 | Container | Docker Compose | — |
 | Package mgmt | npm (frontend) / UV (backend) | — |
 
-**Key environment variables:** `VITE_AI_API_URL` (the only API base — port 8001 locally, domain root in production), `GOOGLE_API_KEY`, `DATABASE_URL`, `SECRET_KEY`, `ALLOWED_ORIGINS`.
+**Key environment variables:** `VITE_AI_API_URL` (the only API base — port 8001 locally, domain root in production), `GOOGLE_API_KEY`, `OPENAI_API_KEY` (optional — enables ChatGPT), `ANTHROPIC_API_KEY` (optional — enables Claude), `DATABASE_URL`, `SECRET_KEY`, `ALLOWED_ORIGINS`. Missing provider keys fall back to Gemini automatically.
 
 **Local dev:** `VITE_AI_API_URL=http://localhost:8001` (calls backend directly).
 **Production:** `VITE_AI_API_URL=https://<your-domain>` (Nginx routes `/api/*`, `/uploads/*`, `/health` to `backend:8001`).
@@ -147,7 +147,8 @@ AI_Study_Partner/
     │   ├── services/
     │   │   ├── document_service.py ← PDF/DOCX/code extraction, chunking, RAG, prompt assembly
     │   │   ├── genai_client.py     ← google-genai SDK singleton
-    │   │   ├── model_router.py     ← Alias registry + tier routing
+    │   │   ├── llm_providers.py    ← Multi-provider router: OpenAI / Anthropic / Gemini
+    │   │   ├── model_router.py     ← Alias registry + tier routing (Gemini aliases)
     │   │   └── prompt_builder.py   ← system_prompt → manual_prompt_override → default + SessionMemory
     │   └── db/seeds/
     │       └── seed_personal_hub.py
@@ -164,7 +165,7 @@ AI_Study_Partner/
 
 **`backend/app/main.py`** — Single FastAPI entry point. Lifespan: enables pgvector extension, seeds canonical personas, reconciles orphaned upload files. Mounts all seven routers plus `/uploads` StaticFiles. CORS from `config.py`.
 
-**`backend/app/core/config.py`** — Reads `.env` via `python-dotenv`. Exports `DATABASE_URL`, `GOOGLE_API_KEY`, `ALLOWED_ORIGINS`, `SECRET_KEY`, `ALGORITHM`, optional `SENTRY_DSN`, `LANGSMITH_API_KEY`.
+**`backend/app/core/config.py`** — Reads `.env` via `python-dotenv`. Exports `DATABASE_URL`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ALLOWED_ORIGINS`, `SECRET_KEY`, `ALGORITHM`, optional `SENTRY_DSN`, `LANGSMITH_API_KEY`.
 
 **`backend/app/core/database.py`** — SQLAlchemy engine (`pool_pre_ping=True`), `SessionLocal`, `Base`, and `get_db()` dependency. All routers import `get_db` from here.
 
@@ -172,7 +173,7 @@ AI_Study_Partner/
 
 ### Schemas
 
-**`backend/app/schemas/schemas.py`** — Core Pydantic request/response models: `UserCreate`, `UserResponse`, `MessageCreate`, `MessageResponse`, `ThreadCreate`, `ThreadResponse`, `DocumentResponse`, `VisibilityUpdate`, `PublicDocumentResponse`, `PageSummaryResponse`. Imported by `auth.py`, `documents.py`, `threads.py`.
+**`backend/app/schemas/schemas.py`** — Core Pydantic request/response models: `UserCreate`, `UserResponse`, `MessageCreate`, `MessageResponse`, `ThreadCreate`, `ThreadResponse`, `DocumentResponse`, `VisibilityUpdate`, `PublicDocumentResponse`, `PageSummaryResponse`, `FullSummaryResponse`, `CustomSummaryRequest`. Imported by `auth.py`, `documents.py`, `threads.py`.
 
 **`backend/app/schemas/personal_hub.py`** — Pydantic models for the Personal Hub feature: `UserProfileResponse`, `UserProfileUpdate`, `CourseRecordCreate`, `CourseRecordResponse`, `JobApplicationCreate`, `JobApplicationResponse`. Imported by `personal_hub.py`.
 
@@ -180,13 +181,13 @@ AI_Study_Partner/
 
 **`backend/app/api/routers/auth.py`** — Mounted at `/api/v1/auth`. Routes: `POST /register`, `POST /login`, `POST /guest-login`. Exports `get_current_user` FastAPI dependency (JWT decode → User row) — imported by every other authenticated router.
 
-**`backend/app/api/routers/documents.py`** — Mounted at `/api/v1/documents`. Routes: `GET /` (user docs), `POST /` (upload + chunk + embed via the CAS pipeline), `GET /public`, `DELETE /{id}`, `PATCH /{id}/visibility`, `PATCH /{id}/folder` (move to folder), `POST /{id}/pages/{page}/summary`, `GET /{id}/summaries`. Depends on `get_current_user` and `document_service.py`.
+**`backend/app/api/routers/documents.py`** — Mounted at `/api/v1/documents`. Routes: `GET /` (user docs), `POST /` (upload + chunk + embed via the CAS pipeline), `GET /public`, `DELETE /{id}`, `PATCH /{id}/visibility`, `PATCH /{id}/folder` (move to folder), `POST /{id}/pages/{page}/summary` (per-page summary), `GET /{id}/summaries`, `POST /{id}/summary/all` (full-document summary — cached in `BaseDocument.global_summary`), `POST /{id}/summary/custom` (custom-instruction summary). Depends on `get_current_user` and `document_service.py`.
 
 **`backend/app/api/routers/threads.py`** — Mounted at `/api/v1/threads`. Routes: `GET /document/{doc_id}`, `GET /{id}`, `POST /`, `POST /{id}/messages`, `POST /{id}/fork`. Calls `get_full_thread_history` and `get_chat_response_for_thread` from `document_service.py`.
 
 **`backend/app/api/routers/personas.py`** — Mounted at `/api/v1/personas`. Full Persona CRUD: `GET /`, `POST /`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/clone`, `POST /seed`. `PersonaResponse` is camelCase — matches the frontend `Persona` interface directly. Hosts `_SEED_PERSONAS` (canonical seed data, idempotently inserted on lifespan startup).
 
-**`backend/app/api/routers/chat.py`** — Mounted at `/api/v1/chat`. Standalone AI chat (no PDF). Uses `google-genai` SDK directly, `prompt_builder.resolve_system_prompt`, and `model_router.resolve_alias`.
+**`backend/app/api/routers/chat.py`** — Mounted at `/api/v1/chat`. Standalone AI chat (no PDF). `ChatRequest` accepts `ai_provider` (`"openai"` | `"anthropic"` | `"gemini"`). Routes through `llm_providers.call_llm` — falls back to Gemini if requested provider key is absent. Uses `prompt_builder.resolve_system_prompt` and `model_router.resolve_alias` for the DB audit alias.
 
 **`backend/app/api/routers/folders.py`** — Mounted at `/api/v1/folders`. Routes: `GET /` (list caller's folders, starred first then alphabetical), `POST /` (create), `PUT /{id}` (update name / color / `is_starred` / `persona_id`), `DELETE /{id}` (deletes folder; nulls `folder_id` on its documents — they become "unfiled" rather than orphaned). Depends on `get_current_user`.
 
@@ -194,13 +195,15 @@ AI_Study_Partner/
 
 ### Services
 
-**`backend/app/services/document_service.py`** — Functions: `ask_gemini`, `get_smart_model`/`get_fast_model`, `get_embedding_model`, `extract_text_from_pdf`, `extract_text_from_word`, `extract_text_from_code`, `extract_text` (dispatcher), `convert_to_pdf` (LibreOffice headless), `is_code_file`, `split_text_into_chunks`, `generate_document_summary`, `generate_code_summary`, `generate_specific_page_summary`, `generate_code_review`, `find_relevant_chunks`, `get_full_thread_history` (Python walk + SQL CTE hybrid), `get_chat_response_for_thread`, `generate_thread_metadata_background`, `compose_system_prompt` (legacy trait builder — kept for backward compat).
+**`backend/app/services/document_service.py`** — Functions: `ask_gemini`, `get_smart_model`/`get_fast_model`, `get_embedding_model`, `extract_text_from_pdf`, `extract_text_from_word`, `extract_text_from_code`, `extract_text` (dispatcher), `convert_to_pdf` (LibreOffice headless), `is_code_file`, `split_text_into_chunks`, `generate_document_summary`, `generate_code_summary`, `generate_specific_page_summary`, `generate_full_document_summary` (whole-doc, cached), `generate_custom_summary` (user-instruction guided), `generate_code_review`, `find_relevant_chunks`, `get_full_thread_history` (Python walk + SQL CTE hybrid), `get_chat_response_for_thread`, `generate_thread_metadata_background`, `compose_system_prompt` (legacy trait builder — kept for backward compat).
 
 **`backend/app/services/prompt_builder.py`** — `resolve_system_prompt(persona_id, db)`. Priority: `Persona.system_prompt` → `Persona.manual_prompt_override` → built-in default. Appends all `SessionMemory` entries for that persona in chronological order (oldest first) so learning from past sessions carries forward.
 
 **`backend/app/services/model_router.py`** — `MODEL_MANIFEST` alias registry (`DUST` / `SPARK` / `BREEZE` / `VOLT` / `ATLAS` / `INDEX` / `ECHO` / `BANANA` / `VEO`). `route_llm_request(task_type, tier)` returns a model string. `resolve_alias` returns the alias for DB storage. `_TIER_OVERRIDE_MAP` maps frontend tier values (`flash-lite` / `flash` / `pro`) to aliases.
 
-**`backend/app/services/genai_client.py`** — `get_client()` returns a singleton `google-genai` SDK client configured with `GOOGLE_API_KEY`. Used by `chat.py`.
+**`backend/app/services/genai_client.py`** — `get_client()` returns a singleton `google-genai` SDK client configured with `GOOGLE_API_KEY`. Used by `llm_providers.py` (Gemini path) and `document_service.py`.
+
+**`backend/app/services/llm_providers.py`** — Multi-provider LLM routing. `call_llm(provider, model_tier, system_prompt, history)` dispatches to OpenAI, Anthropic, or Gemini based on `provider` param and API key availability. `_PROVIDER_TIER_MAP` maps `flash-lite / flash / pro` to the correct model string per provider. Gemini is always the fallback.
 
 ### Models
 
@@ -234,15 +237,15 @@ ai-study-client/src/
 
 ### Store & Services
 
-**`src/store/useAppStore.ts`** — Global Zustand store. Owns `personas[]` (fetched from `/api/v1/personas`), `activeSession {documentId, personaId}` (persisted to localStorage), `selectedModelTier`, `textSelection`, `treeViewMode`, `showResumePrompt`. Key actions: `fetchPersonas`, `clonePersona`, `createPersona`, `updatePersona`, `deletePersona`, `saveSessionMemory`. Called by almost every component and all hooks.
+**`src/store/useAppStore.ts`** — Global Zustand store. Owns `personas[]` (fetched from `/api/v1/personas`), `activeSession {documentId, personaId}` (persisted to localStorage), `selectedModelTier` (`flash-lite` | `flash` | `pro`), `selectedAIProvider` (`openai` | `anthropic` | `gemini`), `textSelection`, `showResumePrompt`. Key actions: `fetchPersonas`, `clonePersona`, `createPersona`, `updatePersona`, `deletePersona`, `saveSessionMemory`, `setSelectedAIProvider`. Called by almost every component and all hooks.
 
-**`src/services/api.ts`** — Axios instance using `VITE_AI_API_URL` (unified API, port 8001). Injects `Authorization: Bearer <token>` on every request. All routes use `/api/v1/...` prefixes. Imported by every hook and `App.tsx`.
+**`src/services/api.ts`** — Axios instance using `VITE_AI_API_URL` (unified API, port 8001). Injects `Authorization: Bearer <token>` on every request. All routes use `/api/v1/...` prefixes. Summary methods: `createPageSummary`, `getDocumentSummaries`, `createFullDocumentSummary`, `createCustomSummary`. Imported by every hook and `App.tsx`.
 
 ### Hooks
 
 **`src/hooks/useAuth.ts`** — Manages `isAuthenticated`, `view` (which top-level page to show), `isAuthModalOpen`. Reads/writes `access_token` from localStorage. Drives the outer layout switch in `App.tsx`.
 
-**`src/hooks/useChat.ts`** — Owns the thread/message lifecycle: `threads[]`, `activeThread`, `inputMessage`, `isSending`. Exposes `handleCreateThread`, `handleQuickAction`, `handleSmartAction`, `handleForkMessage`. Re-fetches threads whenever `documentId` prop changes.
+**`src/hooks/useChat.ts`** — Owns the thread/message lifecycle: `threads[]`, `activeThread`, `inputMessage`, `isSending`. Exposes `handleCreateThread`, `handleQuickAction`, `handleSmartAction`, `handleForkMessage`. Passes `selectedModelTier` + `selectedAIProvider` from the store to every `/api/v1/chat` request. Re-fetches threads whenever `documentId` prop changes.
 
 **`src/hooks/useDocuments.ts`** — Owns document state: `file`, `documentId`, `numPages`, `currentPage`, `userDocs[]`, `docType` (memoized from extension). Handles upload (FormData to `/api/v1/documents/`), blob download via `/uploads/<path>`, visibility toggle, folder moves. Calls `fetchPersonas` on mount.
 
@@ -262,7 +265,7 @@ ai-study-client/src/
 
 **`src/features/personas/components/PersonaEditor.tsx`** — Full-screen overlay for editing or cloning a persona. Left panel: name, icon, description, tags, system prompt textarea. Right panel: AI refinement chat (integration pending). Two save modes: "Apply to Session" (transient — no DB write) vs "Save Changes" / "Save as Clone".
 
-**`src/features/chat/components/ChatPanel.tsx`** — Central study workspace panel. Three inner tabs: Thread Tree (navigation), Chat (messages), Summary (page summaries). Renders `BreadcrumbTree`, `MillerColumnsTree`, or `NodeGraphTree` based on `treeViewMode`. Shows fork button on assistant messages, text selection context block, markdown + KaTeX message renderer.
+**`src/features/chat/components/ChatPanel.tsx`** — Central study workspace panel. Three inner tabs: **Threads** (navigation), **Active Chat** (messages), **Summary** (AI summaries). Summary tab has three modes: *Current Page* (per-page, cached), *Summarize All* (full-document, cached in `BaseDocument.global_summary`), *Custom* (free-form instruction textarea). Tab switching is explicit only — no auto-switch on thread change. Renders `BreadcrumbTree`, `MillerColumnsTree`, or `NodeGraphTree` based on `treeViewMode`. Shows fork button on assistant messages, markdown + KaTeX message renderer.
 
 **`src/features/chat/components/BreadcrumbTree.tsx` / `MillerColumnsTree.tsx` / `NodeGraphTree.tsx`** — Three interchangeable thread-navigation strategy components implementing the **Strategy Pattern**. Each receives `threads[]`, `activeThread`, `onSelectThread`, `onCreateThread`. Selected by user preference stored in `useAppStore`.
 
@@ -290,7 +293,7 @@ ai-study-client/src/
 
 **`src/components/layout/MyLibrary.tsx`** — Drive-style two-section workspace: **Courses** (folders) section above a **Files** section. Root view shows unfiled documents; clicking a folder filters to its contents.
 
-**`src/components/layout/WorkspaceHeader.tsx`** — Top bar during a session. Shows document title (with file-type icon), model tier selector (flash-lite / flash / pro), persona name, and "End Session" button.
+**`src/components/layout/WorkspaceHeader.tsx`** — Expandable top bar during a session. Shows document title (with file-type icon). Expandable toolbar contains: Export Session, Save to Persona Memory, **AI provider selector** (ChatGPT / Claude / Gemini — writes `selectedAIProvider` to Zustand), and model tier selector (Fast / Balanced / Deep — writes `selectedModelTier`).
 
 ### UI
 

@@ -22,6 +22,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
     volumes:
       - ./backend/uploads:/app/uploads
