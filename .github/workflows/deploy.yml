@@ -17,15 +17,40 @@ jobs:
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           port: ${{ secrets.DROPLET_PORT }}
+          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,SENTRY_DSN,LANGSMITH_API_KEY
+          script_stop: true
           script: |
             set -e
             cd /opt/ai-study-agent
+
+            echo "==> Writing .env from GitHub secrets..."
+            cat > .env <<EOF
+            GOOGLE_API_KEY=${GOOGLE_API_KEY}
+            ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+            OPENAI_API_KEY=${OPENAI_API_KEY}
+            SECRET_KEY=${SECRET_KEY}
+            SENTRY_DSN=${SENTRY_DSN}
+            LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+            EOF
+            chmod 600 .env
+
             echo "==> Pulling latest code..."
             git pull origin Lior
+
             echo "==> Building and starting containers..."
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
             echo "==> Running database migrations..."
             docker exec ai_study_backend uv run alembic upgrade head
+
             echo "==> Pruning old images..."
             docker image prune -f
+
             echo "==> Deploy complete!"
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
