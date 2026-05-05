@@ -5,7 +5,7 @@ services:
   frontend:
     build:
       args:
-        - VITE_AI_API_URL=https://ai-study-agent.com
+        - VITE_AI_API_URL=https://${DOMAIN}
     ports:
       - "80:80"
       - "443:443"

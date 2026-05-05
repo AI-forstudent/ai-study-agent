@@ -17,7 +17,7 @@ jobs:
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           port: ${{ secrets.DROPLET_PORT }}
-          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,SENTRY_DSN,LANGSMITH_API_KEY
+          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,DOMAIN
           script_stop: true
           script: |
             set -e
@@ -29,13 +29,14 @@ jobs:
             ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
             OPENAI_API_KEY=${OPENAI_API_KEY}
             SECRET_KEY=${SECRET_KEY}
-            SENTRY_DSN=${SENTRY_DSN}
-            LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+            DOMAIN=${DOMAIN}
             EOF
             chmod 600 .env
 
-            echo "==> Pulling latest code..."
-            git pull origin Lior
+            echo "==> Resetting working directory to match origin/Lior..."
+            git fetch origin Lior
+            git reset --hard origin/Lior
+            git clean -fd -e .env -e backend/uploads
 
             echo "==> Building and starting containers..."
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -52,5 +53,4 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}

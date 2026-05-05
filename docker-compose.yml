@@ -24,7 +24,8 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
+      - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://${DOMAIN},https://www.${DOMAIN}
     volumes:
       - ./backend/uploads:/app/uploads
     depends_on:
@@ -37,6 +38,8 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: ai_study_frontend
     restart: "on-failure:3"
+    environment:
+      - DOMAIN=${DOMAIN}
     depends_on:
       - backend
 
