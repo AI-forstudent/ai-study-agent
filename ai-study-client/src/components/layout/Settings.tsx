@@ -74,8 +74,10 @@ const TREE_OPTIONS: { value: 'miller' | 'breadcrumbs' | 'graph'; icon: React.Ele
 ];
 
 const LANGUAGE_OPTIONS = [
-  { value: 'en',  label: 'English' },
-  { value: 'he',  label: 'Hebrew (RTL)' },
+  { value: 'en',  label: 'English',      disabled: false },
+  // RTL stays disabled until full bidi/RTL rendering across all components
+  // is verified — half-baked RTL leaks into PDFs and chat bubbles.
+  { value: 'he',  label: 'Hebrew (RTL)', disabled: true  },
 ];
 
 export default function Settings({ treeViewMode, setTreeViewMode }: SettingsProps) {
@@ -124,29 +126,36 @@ export default function Settings({ treeViewMode, setTreeViewMode }: SettingsProp
           description="Interface language support. Full RTL layout for Hebrew is coming soon."
         >
           <div className="flex flex-col gap-2">
-            {LANGUAGE_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => handleLanguageChange(opt.value)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-start transition-colors duration-150 ${
-                  language === opt.value
-                    ? 'bg-indigo-50 border-indigo-300'
-                    : 'bg-white border-[#E8E8E6] hover:bg-[#F7F7F5] hover:border-[#C4C4C4]'
-                }`}
-              >
-                <span className={`text-sm font-medium ${language === opt.value ? 'text-[#37352F]' : 'text-[#787774]'}`}>
-                  {opt.label}
-                </span>
-                <div className="flex items-center gap-2">
-                  {opt.value === 'he' && (
-                    <span className="text-xs text-[#C4C4C4] border border-[#E8E8E6] px-1.5 py-0.5 rounded-md bg-[#F7F7F5]">
-                      Coming soon
-                    </span>
-                  )}
-                  <div className={`w-2 h-2 rounded-full transition-colors ${language === opt.value ? 'bg-indigo-600' : 'bg-[#E8E8E6]'}`} />
-                </div>
-              </button>
-            ))}
+            {LANGUAGE_OPTIONS.map(opt => {
+              const isActive = language === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => !opt.disabled && handleLanguageChange(opt.value)}
+                  disabled={opt.disabled}
+                  title={opt.disabled ? 'RTL layout is still being polished and will be enabled once it works end-to-end.' : undefined}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-start transition-colors duration-150 ${
+                    opt.disabled
+                      ? 'bg-[#F7F7F5] border-[#E8E8E6] opacity-50 cursor-not-allowed'
+                      : isActive
+                        ? 'bg-indigo-50 border-indigo-300'
+                        : 'bg-white border-[#E8E8E6] hover:bg-[#F7F7F5] hover:border-[#C4C4C4]'
+                  }`}
+                >
+                  <span className={`text-sm font-medium ${isActive && !opt.disabled ? 'text-[#37352F]' : 'text-[#787774]'}`}>
+                    {opt.label}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {opt.disabled && (
+                      <span className="text-xs text-[#C4C4C4] border border-[#E8E8E6] px-1.5 py-0.5 rounded-md bg-white">
+                        Coming soon
+                      </span>
+                    )}
+                    <div className={`w-2 h-2 rounded-full transition-colors ${isActive && !opt.disabled ? 'bg-indigo-600' : 'bg-[#E8E8E6]'}`} />
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </SectionCard>
 

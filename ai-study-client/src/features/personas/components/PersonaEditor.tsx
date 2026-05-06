@@ -12,8 +12,12 @@ interface ChatMessage {
 
 export interface PersonaEditorProps {
   persona: Persona;
-  /** 'edit' mutates the persona in-place; 'clone' creates a new personal copy */
-  mode: 'edit' | 'clone';
+  /**
+   *  - 'edit'   : mutates the persona in-place
+   *  - 'clone'  : creates a new personal copy of an existing persona
+   *  - 'create' : creates a brand-new personal persona from a blank template
+   */
+  mode: 'edit' | 'clone' | 'create';
   /** When true, footer shows "Apply to Session" (transient) alongside "Save Globally" */
   inSession?: boolean;
   onClose: () => void;
@@ -47,19 +51,25 @@ export default function PersonaEditor({
 }: PersonaEditorProps) {
 
   // ── Form state ────────────────────────────────────────────────────────────
-  const [name, setName]               = useState(mode === 'clone' ? `${persona.name} (Clone)` : persona.name);
+  const initialName =
+    mode === 'create' ? '' :
+    mode === 'clone'  ? `${persona.name} (Clone)` :
+    persona.name;
+
+  const [name, setName]               = useState(initialName);
   const [icon, setIcon]               = useState(persona.icon);
   const [systemPrompt, setSystemPrompt] = useState(persona.systemPrompt);
   const [tags, setTags]               = useState<string[]>([...persona.tags]);
   const [tagInput, setTagInput]       = useState('');
 
   // ── Chat state ────────────────────────────────────────────────────────────
+  const initialAssistantMsg =
+    mode === 'create'
+      ? "Hi! I'm your AI Teacher refinement assistant. Tell me what kind of teacher you want — subject, tone, teaching style — and I'll help you draft the system prompt."
+      : `Hi! I'm your AI Teacher refinement assistant. Describe what you want to change about "${persona.name}" and I'll suggest edits to the system prompt.`;
+
   const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 0,
-      role: 'assistant',
-      content: `Hi! I'm your persona refinement assistant. Describe what you want to change about "${persona.name}" and I'll suggest edits to the system prompt.`,
-    },
+    { id: 0, role: 'assistant', content: initialAssistantMsg },
   ]);
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping]   = useState(false);
@@ -115,25 +125,27 @@ export default function PersonaEditor({
       updatedAt: new Date().toISOString(),
     };
 
-    const updated: Persona =
-      mode === 'clone'
-        ? {
-            ...base,
-            id: `personal_clone_${Date.now()}`,
-            type: 'personal',
-            author: 'Me',
-            rating: 0,
-            reviewsCount: 0,
-            usageCount: 0,
-            wordCount: systemPrompt.trim().split(/\s+/).filter(Boolean).length,
-            linkedDocIds: [],
-            isCloned: true,
-            originalPersonaId: persona.id,
-            createdAt: new Date().toISOString(),
-          }
-        : base;
+    const isNewRow = mode === 'clone' || mode === 'create';
+    const updated: Persona = isNewRow
+      ? {
+          ...base,
+          id: mode === 'create'
+            ? `personal_new_${Date.now()}`
+            : `personal_clone_${Date.now()}`,
+          type: 'personal',
+          author: 'Me',
+          rating: 0,
+          reviewsCount: 0,
+          usageCount: 0,
+          wordCount: systemPrompt.trim().split(/\s+/).filter(Boolean).length,
+          linkedDocIds: [],
+          isCloned: mode === 'clone',
+          originalPersonaId: mode === 'clone' ? persona.id : undefined,
+          createdAt: new Date().toISOString(),
+        }
+      : base;
 
-    console.log('INTENT: save persona', { id: updated.id, name: updated.name, transient });
+    console.log('INTENT: save persona', { id: updated.id, name: updated.name, transient, mode });
     onSave(updated, transient);
   }
 
@@ -154,9 +166,13 @@ export default function PersonaEditor({
           </div>
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-600">
-              {mode === 'clone' ? 'Clone & Edit' : 'Edit Persona'}
+              {mode === 'create' ? 'Create AI Teacher' :
+               mode === 'clone'  ? 'Clone & Edit'      :
+                                   'Edit AI Teacher'}
             </p>
-            <h1 className="text-sm font-semibold text-[#37352F] leading-tight">{persona.name}</h1>
+            <h1 className="text-sm font-semibold text-[#37352F] leading-tight">
+              {mode === 'create' ? 'New AI Teacher' : persona.name}
+            </h1>
           </div>
         </div>
         <button
@@ -189,7 +205,7 @@ export default function PersonaEditor({
               <input
                 value={name}
                 onChange={e => setName(e.target.value)}
-                placeholder="Persona name…"
+                placeholder="AI Teacher name…"
                 className="w-full h-10 px-3 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
               />
             </div>
@@ -350,9 +366,11 @@ export default function PersonaEditor({
             onClick={() => handleSave(false)}
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
           >
-            {mode === 'clone'
-              ? <><Copy className="w-3.5 h-3.5" /> Save as Clone</>
-              : <><Save className="w-3.5 h-3.5" /> Save Changes</>
+            {mode === 'create'
+              ? <><Save className="w-3.5 h-3.5" /> Create AI Teacher</>
+              : mode === 'clone'
+                ? <><Copy className="w-3.5 h-3.5" /> Save as Clone</>
+                : <><Save className="w-3.5 h-3.5" /> Save Changes</>
             }
           </button>
         </div>

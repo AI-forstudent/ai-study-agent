@@ -91,7 +91,7 @@ export default function Sidebar({ activeView, onNavigate, onLogout, hasActiveSes
         />
         <NavItem
           icon={FlaskConical}
-          label="Persona Lab"
+          label="AI Teachers"
           active={activeView === 'lab'}
           onClick={() => onNavigate('lab')}
         />

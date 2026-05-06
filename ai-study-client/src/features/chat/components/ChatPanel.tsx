@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -9,7 +9,27 @@ import { BreadcrumbTree } from './BreadcrumbTree';
 import { MillerColumnsTree } from './MillerColumnsTree';
 import { NodeGraphTree } from './NodeGraphTree';
 import { api } from '../../../services/api';
+import { useAppStore } from '../../../store/useAppStore';
 import SwitchPersonaModal from '../../personas/components/SwitchPersonaModal';
+
+// ── Model picker config ───────────────────────────────────────────────────
+// The user wants the picker right next to the chat input. The set mirrors the
+// previous WorkspaceHeader picker so power users keep the same controls; an
+// "Auto" option is reserved for a future smart-router (TODO: backend).
+
+type AIProvider = 'openai' | 'anthropic' | 'gemini';
+
+const AI_PROVIDERS: { value: AIProvider; label: string; title: string; dot: string }[] = [
+  { value: 'openai',    label: 'GPT',    title: 'OpenAI — GPT series',     dot: 'bg-emerald-500' },
+  { value: 'anthropic', label: 'Claude', title: 'Anthropic — Claude',      dot: 'bg-orange-500'  },
+  { value: 'gemini',    label: 'Gemini', title: 'Google — Gemini',         dot: 'bg-blue-500'    },
+];
+
+const MODEL_TIERS: { value: 'flash-lite' | 'flash' | 'pro'; label: string; title: string }[] = [
+  { value: 'flash-lite', label: 'Fast',     title: 'Fast & Efficient' },
+  { value: 'flash',      label: 'Balanced', title: 'Balanced'         },
+  { value: 'pro',        label: 'Deep',     title: 'Deep Analysis'    },
+];
 
 interface ChatPanelProps {
   documentId: number | null;
@@ -90,6 +110,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const [customPrompt, setCustomPrompt] = useState('');
   const [customResult, setCustomResult] = useState<string | null>(null);
   const [isSwitchModalOpen, setIsSwitchModalOpen] = useState(false);
+
+  // Model picker — pulled from the global store so the WorkspaceHeader copy
+  // (now removed) and the chat-input copy stay in sync if we ever add a second.
+  const selectedAIProvider    = useAppStore(s => s.selectedAIProvider);
+  const setSelectedAIProvider = useAppStore(s => s.setSelectedAIProvider);
+  const selectedModelTier     = useAppStore(s => s.selectedModelTier);
+  const setSelectedModelTier  = useAppStore(s => s.setSelectedModelTier);
 
   React.useEffect(() => {
     if (!documentId) {
@@ -505,6 +532,49 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Model picker — provider + tier, right above the input */}
+          <div className="px-4 pt-2 pb-1 bg-white border-t border-[#E8E8E6] flex items-center gap-2 flex-wrap text-xs">
+            <span className="flex items-center gap-1 text-[#C4C4C4] me-1">
+              <Zap className="w-3 h-3" />
+              Model
+            </span>
+            {AI_PROVIDERS.map(p => {
+              const isActive = selectedAIProvider === p.value;
+              return (
+                <button
+                  key={p.value}
+                  onClick={() => setSelectedAIProvider(p.value)}
+                  title={p.title}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md border transition-colors duration-150 ${
+                    isActive
+                      ? 'bg-indigo-50 border-indigo-300 text-indigo-700 font-medium'
+                      : 'bg-white border-[#E8E8E6] text-[#787774] hover:border-[#C4C4C4] hover:text-[#37352F]'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${p.dot}`} />
+                  {p.label}
+                </button>
+              );
+            })}
+            <span className="mx-1 w-px h-4 bg-[#E8E8E6]" />
+            <div className="flex items-center bg-[#F7F7F5] border border-[#E8E8E6] rounded-md p-0.5">
+              {MODEL_TIERS.map(tier => (
+                <button
+                  key={tier.value}
+                  onClick={() => setSelectedModelTier(tier.value)}
+                  title={tier.title}
+                  className={`px-2 py-0.5 rounded transition-colors duration-150 ${
+                    selectedModelTier === tier.value
+                      ? 'bg-white text-[#37352F] border border-[#E8E8E6] font-medium'
+                      : 'text-[#787774] hover:text-[#37352F]'
+                  }`}
+                >
+                  {tier.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Input bar */}

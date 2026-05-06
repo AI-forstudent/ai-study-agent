@@ -108,12 +108,37 @@ function App() {
     setAuthModalOpen(false);
   }
 
-  /** Intercepts MyLibrary's onSelectDocument — opens PreFlight (from-doc mode). */
+  /** Intercepts MyLibrary's onSelectDocument.
+   *
+   * The user does not want a per-click "pick an agent" modal anymore — they
+   * just want the document to open. We auto-pick an AI Teacher in this order:
+   *   1. The folder's default `persona_id`, if the doc lives in a folder that has one.
+   *   2. The previously-active session's persona (continuity).
+   *   3. The first personal AI Teacher the user owns.
+   *   4. The first global AI Teacher (Socratic Mentor seed) as a final fallback.
+   *
+   * The user can swap teachers mid-session via SwitchPersonaModal.
+   */
   function handleOpenPreFlight(doc: { id: number }) {
-    const fullDoc = docs.userDocs.find((d: { id: number; title: string }) => d.id === doc.id);
-    setSelectedDocForSession({ id: doc.id, title: fullDoc?.title ?? 'Document' });
-    setPreFlightPersonaId(undefined);
-    setPreFlightOpen(true);
+    const fullDoc = docs.userDocs.find((d: { id: number; title: string; folder_id?: number | null }) => d.id === doc.id);
+
+    // Resolve a sensible persona without opening a modal.
+    const folder = fullDoc?.folder_id != null
+      ? folders.folders.find(f => f.id === fullDoc.folder_id)
+      : null;
+    const folderDefault = folder?.persona_id ?? null;
+    const previousPersona = activeSession?.personaId ?? null;
+    const ownPersonal = personas.find(p => p.type === 'personal')?.id ?? null;
+    const globalFallback = personas.find(p => p.type === 'global')?.id ?? null;
+
+    const autoPersonaId =
+      folderDefault   ??
+      previousPersona ??
+      ownPersonal     ??
+      globalFallback  ??
+      null;
+
+    void handleStartSession(autoPersonaId, doc.id);
   }
 
   /** Called from PersonaLab "Use for Session" / hover "Start Session". */

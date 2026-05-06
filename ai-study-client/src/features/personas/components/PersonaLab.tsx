@@ -27,10 +27,31 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { id: 'store',     label: 'Store',       type: 'global'    },
-  { id: 'community', label: 'Community',   type: 'community' },
-  { id: 'personal',  label: 'My Personas', type: 'personal'  },
+  { id: 'store',     label: 'Store',           type: 'global'    },
+  { id: 'community', label: 'Community',       type: 'community' },
+  { id: 'personal',  label: 'My AI Teachers',  type: 'personal'  },
 ];
+
+// Blank persona used when the user clicks "Create New". The id below is a
+// placeholder — PersonaEditor.handleSave generates the real one.
+const BLANK_PERSONA: Persona = {
+  id:                'personal_new_template',
+  name:              '',
+  description:       '',
+  icon:              '🎓',
+  type:              'personal',
+  author:            'Me',
+  tags:              [],
+  rating:            0,
+  reviewsCount:      0,
+  usageCount:        0,
+  wordCount:         0,
+  linkedDocIds:      [],
+  systemPrompt:      '## ROLE\n\n## TONE\n\n## STYLE\n\n## LANGUAGE\n',
+  isCloned:          false,
+  createdAt:         '',
+  updatedAt:         '',
+};
 
 const MOCK_DOC_TITLES: Record<number, string> = {
   1:  'PostgreSQL 16 Internals',
@@ -214,7 +235,7 @@ function PreviewPanel({ persona, activeTab, onClose, onEdit, onDelete, onCloneEd
             </div>
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600 mb-0.5">
-                {persona.type === 'global' ? 'Global Persona' : persona.type === 'community' ? 'Community Persona' : 'Personal Persona'}
+                {persona.type === 'global' ? 'Global Teacher' : persona.type === 'community' ? 'Community Teacher' : 'My AI Teacher'}
               </p>
               <h2 className="text-base font-bold text-[#37352F] leading-snug truncate">
                 {persona.name}
@@ -325,14 +346,14 @@ function PreviewPanel({ persona, activeTab, onClose, onEdit, onDelete, onCloneEd
                 className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2.5 rounded-lg transition-colors duration-150"
               >
                 <Pencil className="w-4 h-4" />
-                Edit Persona
+                Edit AI Teacher
               </button>
               <button
                 onClick={() => onDelete(persona)}
                 className="w-full flex items-center justify-center gap-2 bg-white hover:bg-red-50 text-red-600 text-sm font-medium py-2.5 rounded-lg border border-red-200 hover:border-red-300 transition-colors duration-150"
               >
                 <Trash2 className="w-4 h-4" />
-                Delete Persona
+                Delete AI Teacher
               </button>
             </>
           ) : (
@@ -371,7 +392,7 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
   const [search, setSearch]                   = useState('');
   const [flexibleSearch, setFlexibleSearch]   = useState(false);
-  const [editorState, setEditorState]         = useState<{ persona: Persona; mode: 'edit' | 'clone' } | null>(null);
+  const [editorState, setEditorState]         = useState<{ persona: Persona; mode: 'edit' | 'clone' | 'create' } | null>(null);
 
   const activeType: PersonaType = TABS.find(t => t.id === activeTab)!.type;
 
@@ -416,7 +437,7 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
   }
 
   function handleEditorSave(updated: Persona, transient: boolean) {
-    if (!transient && editorState?.mode === 'clone') {
+    if (!transient && (editorState?.mode === 'clone' || editorState?.mode === 'create')) {
       void createPersona(updated).then(saved => {
         if (saved) setActiveTab('personal');
         setEditorState(null);
@@ -430,28 +451,41 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
     setEditorState(null);
   }
 
+  function handleCreateNew() {
+    setEditorState({ persona: BLANK_PERSONA, mode: 'create' });
+  }
+
   return (
     <PageContainer>
       <PageHeader
-        title="Persona Hub"
-        subtitle="Discover, clone, and manage AI study agents."
+        title="AI Teachers"
+        subtitle="Discover, clone, and manage your AI study teachers."
         icon={<Wand2 className="w-5 h-5 text-indigo-600" />}
       />
 
-      <div className="flex border-b border-[#E8E8E6] -mt-2">
-        {TABS.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => handleTabChange(tab.id)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
-              activeTab === tab.id
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-[#787774] hover:text-[#37352F]'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex items-center justify-between border-b border-[#E8E8E6] -mt-2">
+        <div className="flex">
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => handleTabChange(tab.id)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+                activeTab === tab.id
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-[#787774] hover:text-[#37352F]'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={handleCreateNew}
+          className="flex items-center gap-1.5 px-3 py-1.5 mb-1 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
+        >
+          <Plus className="w-4 h-4" />
+          Create New
+        </button>
       </div>
 
       <div className="flex items-center gap-3 mt-5 mb-5">
@@ -461,7 +495,7 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search personas by name, description, or tag…"
+            placeholder="Search AI Teachers by name, description, or tag…"
             className="w-full bg-white border border-[#E8E8E6] rounded-lg ps-9 pe-4 py-2 text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
           />
         </div>
@@ -484,13 +518,22 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
         <div className="flex flex-col items-center gap-3 py-24 text-[#787774]">
           <Zap className="w-8 h-8 opacity-30" />
           <p className="text-sm">
-            {search ? 'No personas match your search.' : 'No personas here yet.'}
+            {search ? 'No teachers match your search.' : 'No AI Teachers here yet.'}
           </p>
+          {!search && activeTab === 'personal' && (
+            <button
+              onClick={handleCreateNew}
+              className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
+            >
+              <Plus className="w-4 h-4" />
+              Create your first AI Teacher
+            </button>
+          )}
         </div>
       ) : (
         <>
           <p className="text-xs text-[#787774] font-medium mb-4">
-            {filtered.length} persona{filtered.length !== 1 ? 's' : ''}
+            {filtered.length} AI Teacher{filtered.length !== 1 ? 's' : ''}
             {search && ' matching your search'}
             {flexibleSearch && search && (
               <span className="ms-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-600 border border-indigo-100">

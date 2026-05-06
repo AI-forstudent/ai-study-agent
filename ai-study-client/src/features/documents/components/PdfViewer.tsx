@@ -98,10 +98,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   }, [isPolling, file]);
 
   // ── Fired by react-pdf when the Document fails to parse/load ─────────────
+  // Polling is only useful for HTTP URLs (covers the Office-to-PDF conversion
+  // lag — file path exists in DB but Nginx hasn't seen the new file yet).
+  // Blob URLs are local in-memory references; if they fail to parse the data
+  // is already in hand, so retrying won't change anything — show the error.
   const handleLoadError = (err: Error) => {
-    console.warn('[PdfViewer] Load error, starting poll:', err.message);
-    if (typeof file === 'string' && !pollTimedOut) {
+    console.warn('[PdfViewer] Load error:', err.message);
+    const isHttpUrl = typeof file === 'string' && !file.startsWith('blob:');
+    if (isHttpUrl && !pollTimedOut) {
       setIsPolling(true);
+    } else {
+      setPollTimedOut(true);
     }
   };
 
@@ -216,7 +223,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           <div className="relative flex flex-col items-center mt-2 w-max mx-auto">
             <Document
               key={retryKey}
-              file={typeof file === 'string' ? `${file}?retry=${retryKey}` : file}
+              // Cache-busting `?retry=N` is only valid on http(s) URLs. Blob
+              // URLs are not registered with query strings appended, so adding
+              // one breaks them — and they don't need cache-busting anyway
+              // since the data is already in memory.
+              file={
+                typeof file === 'string'
+                  ? (file.startsWith('blob:') ? file : `${file}?retry=${retryKey}`)
+                  : file
+              }
               className="flex flex-col items-center gap-6"
               onLoadSuccess={onDocumentLoadSuccess}
               onLoadError={handleLoadError}
