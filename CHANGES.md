@@ -2,6 +2,50 @@
 
 ---
 
+## 2026-05-06 (later evening) — Exams Phase B: course-detail UI
+
+**Scope:** Frontend only. Adds the Exams tab inside the course drilldown, the upload-and-process flow, and the per-exam detail view.
+
+### Why this change
+
+Phase A landed the data model and processing pipeline; Phase B is the user-facing surface that reads from it. The user explicitly asked for: a stats header (pie of question types, bar of topics, difficulty histogram), a table of past papers with lecturers + relative difficulty + topics, and an exam-detail page that shows the questions broken out with their tags. This commit ships exactly that and nothing else — Take/Submit/Grade is Phase C.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `ai-study-client/src/features/courses/components/ExamStatsHeader.tsx` | Three small visualisations rendered with inline SVG + CSS (no chart-lib dep): question-types donut, top-topics horizontal bar list, difficulty histogram with sequential color ramp. |
+| `ai-study-client/src/features/courses/components/ExamCreateModal.tsx` | Upload modal — file picker + title/year/semester form, has-solutions checkbox, lecturer-tag chips. Two-step submit (POST /documents/ → POST /courses/{id}/exams) with a "uploading…" / "AI extracting…" progress state. |
+| `ai-study-client/src/features/courses/components/ExamDetailView.tsx` | Per-exam detail. Header card with year/semester/lecturers/topics/difficulty/has-solutions badge. Question cards with question_number chip, type pill, topic pills, difficulty badge, page number, markdown-rendered question text, and a collapsible reference-solution panel. |
+| `ai-study-client/src/features/courses/components/CourseExamsTab.tsx` | Orchestrator. Fetches the exam list and the syllabus's lecturer roster in parallel; renders either the list view or the detail view based on `activeExamId`. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `ai-study-client/src/types/course.ts` | Adds `QuestionType`, `ExamLecturer`, `ExamTopic`, `ExamQuestion`, `ExamCard`, `ExamDetail` interfaces matching the Phase A response shapes. |
+| `ai-study-client/src/services/api.ts` | New `listCourseExams`, `createCourseExam`, `getExam`, `deleteExam` wrappers. |
+| `ai-study-client/src/components/layout/MyLibrary.tsx` | The course drilldown now has THREE tabs (Folders / Syllabus / Exams) instead of two. `CourseTab` type extended; new tab button uses the GraduationCap icon. |
+
+### Visualisation choices
+
+- **No chart library.** Three small visualisations rendered as inline SVG (`PieDonut`) and CSS divs (`HBarList`, `Histogram`). Keeps the bundle slim and avoids dragging in a 60-100kb dep for one tab.
+- **Stand-in for question-type aggregation.** The donut groups by `topic` rather than `question_type` because the card-shape API doesn't carry per-type counts yet. Tracked as T-019; trivial to swap once the backend exposes them.
+
+### UX notes
+
+- **Upload progress is two-phase.** The button surfaces both the file upload and the (5–15 second) AI processing pass with distinct labels and icons so the user understands what's happening.
+- **Same-file re-upload returns 409.** The modal explains the user has the file already and asks them to delete it from My Library first or pick a different version. (Better recovery is T-014's territory and applies here too.)
+- **Detail view is rendered inside the tab**, not on a separate route — clicking a row replaces the tab body; "All exams" link returns to the list. No URL change. Will hold up fine until proper routing is needed.
+
+### Token cost
+
+Zero LLM calls in the frontend. All Phase B work reads cached fields the Phase A pipeline already populated.
+
+---
+
 ## 2026-05-06 (evening) — Exams Phase A: schema + processing pipeline
 
 **Scope:** Backend only. Adds the data model and the token-efficient processing pipeline for past-paper exams. Phase B (UI) and Phase C (Take/Grade) are separate commits.

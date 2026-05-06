@@ -15,6 +15,7 @@ import FileCardCompact from '../../features/sessions/components/FileCardCompact'
 import CourseCard from '../../features/courses/components/CourseCard';
 import CourseModal from '../../features/courses/components/CourseModal';
 import CourseSyllabusTab from '../../features/courses/components/CourseSyllabusTab';
+import CourseExamsTab from '../../features/courses/components/CourseExamsTab';
 import type { Folder } from '../../features/documents/hooks/useFolders';
 import type { Persona } from '../../types/persona';
 import type { Course, LibraryFeedItem } from '../../types/course';
@@ -61,7 +62,7 @@ interface MyLibraryProps {
   onOpenSessionsSearch?: () => void;
 }
 
-type CourseTab = 'folders' | 'syllabus';
+type CourseTab = 'folders' | 'syllabus' | 'exams';
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -417,6 +418,17 @@ export default function MyLibrary({
             <FileText className="w-3.5 h-3.5" />
             Syllabus
           </button>
+          <button
+            onClick={() => setCourseTab('exams')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+              courseTab === 'exams'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-[#787774] hover:text-[#37352F]'
+            }`}
+          >
+            <GraduationCap className="w-3.5 h-3.5" />
+            Exams
+          </button>
         </div>
 
         {/* Tab body */}
@@ -448,6 +460,10 @@ export default function MyLibrary({
 
         {courseTab === 'syllabus' && (
           <CourseSyllabusTab courseId={activeCourse.id} isOwner={isOwner} />
+        )}
+
+        {courseTab === 'exams' && (
+          <CourseExamsTab courseId={activeCourse.id} isOwner={isOwner} />
         )}
       </PageContainer>
     );

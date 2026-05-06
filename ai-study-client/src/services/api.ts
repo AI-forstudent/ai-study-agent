@@ -217,6 +217,26 @@ export const api = {
   detachCourseSyllabus: (courseId: number) =>
     apiClient.delete(`/api/v1/courses/${courseId}/syllabus`),
 
+  // ── Exams ─────────────────────────────────────────────────────────────────
+  listCourseExams: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/exams`),
+
+  // Backend runs the full pipeline (extraction → tagging → difficulty) on this
+  // call — typical 25-question exam takes 5-15s. Frontend should show a
+  // "processing…" state while the request is in flight.
+  createCourseExam: (courseId: number, payload: {
+    user_document_id: number;
+    title:            string;
+    year?:            number | null;
+    semester?:        string | null;
+    has_solutions?:   boolean;
+    lecturer_ids?:    number[];
+  }) => apiClient.post(`/api/v1/courses/${courseId}/exams`, payload),
+
+  getExam: (examId: number) => apiClient.get(`/api/v1/exams/${examId}`),
+
+  deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
+
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────
   listSessions: (limit = 50, offset = 0) =>
     apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),

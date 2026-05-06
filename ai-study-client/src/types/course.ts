@@ -111,3 +111,53 @@ export interface CourseSyllabus {
   topics:           CourseTopic[];
   lecturers:        CourseLecturer[];
 }
+
+// ── Exam types ──────────────────────────────────────────────────────────────
+
+export interface QuestionType {
+  id:   number;
+  name: string;
+}
+
+export interface ExamLecturer {
+  id:   number;
+  name: string;
+  role: string;
+}
+
+export interface ExamTopic {
+  id:   number;
+  name: string;
+}
+
+/** A single extracted question — used in the exam detail view. */
+export interface ExamQuestion {
+  id:                  number;
+  question_number:     string;
+  question_text:       string;
+  page_number:         number | null;
+  question_type:       QuestionType | null;
+  topics:              ExamTopic[];
+  difficulty_score:    number | null;
+  reference_solution:  string | null;
+}
+
+/** Compact card shape used by the exam list table. */
+export interface ExamCard {
+  id:                    number;
+  title:                 string;
+  year:                  number | null;
+  semester:              string | null;
+  has_solutions:         boolean;
+  aggregate_difficulty:  number | null;
+  question_count:        number;
+  topics:                ExamTopic[];
+  lecturers:             ExamLecturer[];
+  processed_at:          string | null;
+  created_at:            string;
+}
+
+/** Full detail returned by GET /api/v1/exams/{id}. */
+export interface ExamDetail extends ExamCard {
+  questions: ExamQuestion[];
+}
