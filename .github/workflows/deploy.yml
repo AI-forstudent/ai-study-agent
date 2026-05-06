@@ -17,7 +17,7 @@ jobs:
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
           port: ${{ secrets.DROPLET_PORT }}
-          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,DOMAIN
+          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,DOMAIN,GOOGLE_OAUTH_CLIENT_ID,VITE_GOOGLE_OAUTH_CLIENT_ID
           script_stop: true
           script: |
             set -e
@@ -25,11 +25,13 @@ jobs:
 
             echo "==> Writing .env from GitHub secrets..."
             {
-              printf 'GOOGLE_API_KEY=%s\n'    "$GOOGLE_API_KEY"
-              printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY"
-              printf 'OPENAI_API_KEY=%s\n'    "$OPENAI_API_KEY"
-              printf 'SECRET_KEY=%s\n'        "$SECRET_KEY"
-              printf 'DOMAIN=%s\n'            "$DOMAIN"
+              printf 'GOOGLE_API_KEY=%s\n'              "$GOOGLE_API_KEY"
+              printf 'ANTHROPIC_API_KEY=%s\n'           "$ANTHROPIC_API_KEY"
+              printf 'OPENAI_API_KEY=%s\n'              "$OPENAI_API_KEY"
+              printf 'SECRET_KEY=%s\n'                  "$SECRET_KEY"
+              printf 'DOMAIN=%s\n'                      "$DOMAIN"
+              printf 'GOOGLE_OAUTH_CLIENT_ID=%s\n'      "$GOOGLE_OAUTH_CLIENT_ID"
+              printf 'VITE_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$VITE_GOOGLE_OAUTH_CLIENT_ID"
             } > .env
             chmod 600 .env
 
@@ -54,3 +56,5 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           DOMAIN: ${{ secrets.DOMAIN }}
+          GOOGLE_OAUTH_CLIENT_ID:      ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.VITE_GOOGLE_OAUTH_CLIENT_ID }}

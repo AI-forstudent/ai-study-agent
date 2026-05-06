@@ -25,6 +25,9 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SECRET_KEY=${SECRET_KEY}
+      # Used by /api/v1/auth/google to verify Google ID tokens. Empty disables
+      # the endpoint (returns 503) — frontend falls back to the disabled button.
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
       - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://${DOMAIN},https://www.${DOMAIN}
     volumes:
       - ./backend/uploads:/app/uploads

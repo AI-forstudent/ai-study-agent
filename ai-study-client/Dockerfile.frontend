@@ -15,10 +15,14 @@ CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 
 # --- Stage 3: Builder ---
 # Compiles the React app into static assets under /app/dist.
-# VITE_AI_API_URL is baked into the JS bundle at build time.
+# VITE_* vars are baked into the JS bundle at build time — they MUST be
+# passed as --build-arg, not as runtime env, because Vite resolves
+# import.meta.env.VITE_* during the build.
 FROM base AS builder
 ARG VITE_AI_API_URL
+ARG VITE_GOOGLE_OAUTH_CLIENT_ID
 ENV VITE_AI_API_URL=$VITE_AI_API_URL
+ENV VITE_GOOGLE_OAUTH_CLIENT_ID=$VITE_GOOGLE_OAUTH_CLIENT_ID
 RUN npm run build
 
 # --- Stage 4: Production (Nginx) ---
