@@ -18,8 +18,8 @@ Migration strategy (run once after checkout)
 """
 
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Enum, Float, ForeignKey,
-    Integer, String, Table, Text,
+    BigInteger, Boolean, CheckConstraint, Column, DateTime, Enum, Float,
+    ForeignKey, Index, Integer, String, Table, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
@@ -36,6 +36,30 @@ PERSONA_TYPE_ENUM = Enum(
     "global", "community", "personal",
     name="persona_type",
     native_enum=False,
+)
+
+
+# ── Multi-tenancy enums (Phase 1 — docs/plans/multi_tenancy.md) ────────────
+# These ARE native PostgreSQL ENUMs (`native_enum=True`). They're new types,
+# we control the migration that creates them, and we want DB-level value
+# enforcement so a typo in `granted_via` fails at write time.
+SCOPE_ENUM = Enum(
+    "platform", "organization", "community", "course",
+    name="scope_enum",
+    native_enum=True,
+)
+
+ROLE_ENUM = Enum(
+    "super_user", "org_admin", "community_admin", "course_admin", "member",
+    name="role_enum",
+    native_enum=True,
+)
+
+GRANT_SOURCE_ENUM = Enum(
+    # Phase 7 will `ALTER TYPE grant_source_enum ADD VALUE 'invitation_link'`.
+    "admin_ui", "system_default", "super_user_bootstrap",
+    name="grant_source_enum",
+    native_enum=True,
 )
 
 
@@ -64,6 +88,16 @@ class User(Base):
     # Unique when present; NULL for password accounts.
     google_sub = Column(String, nullable=True, unique=True, index=True)
 
+    # Multi-tenancy "home org" — set on first org-scoped role assignment.
+    # NULL when the user has no org-scoped role (or had it revoked); the UI
+    # surfaces a "pick a home org" prompt if other org roles still exist.
+    home_organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     user_documents    = relationship("UserDocument", back_populates="owner")
     folders           = relationship("Folder",        back_populates="owner")
     authored_personas = relationship(
@@ -81,6 +115,130 @@ class User(Base):
         foreign_keys="[Course.owner_id]",
     )
     course_memberships   = relationship("CourseMembership", back_populates="user")
+    home_organization    = relationship("Organization", foreign_keys=[home_organization_id])
+    role_assignments     = relationship(
+        "RoleAssignment",
+        back_populates="user",
+        foreign_keys="[RoleAssignment.user_id]",
+        cascade="all, delete-orphan",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MULTI-TENANCY  (Phase 1 — docs/plans/multi_tenancy.md)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Organization(Base):
+    """
+    Top-level tenant. A real institution (a university, a school) or the
+    catch-all `Default` parking-lot org seeded by the Phase-1 migration to
+    hold pre-tenancy users and content. Identified by a URL-safe slug.
+
+    Inside the `Default` org, cross-user visibility is suppressed by `can()`
+    (see docs/plans/multi_tenancy.md §3.2c) — `Default` is NOT a collaborative
+    tenant, just a holder for legacy user role assignments.
+    """
+    __tablename__ = "organizations"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    name       = Column(String,  nullable=False)
+    slug       = Column(String,  nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    communities = relationship(
+        "Community",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class Community(Base):
+    """
+    Sub-grouping inside an Organization (faculty / department / programme /
+    cohort). Flat in v1 — no nested sub-communities. A Course belongs to
+    exactly one Community.
+
+    `slug` is unique per organization but not globally; URLs follow
+    `/<org-slug>/<community-slug>` so collisions across orgs are fine.
+    """
+    __tablename__ = "communities"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name            = Column(String,  nullable=False)
+    slug            = Column(String,  nullable=False)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_communities_org_slug"),
+    )
+
+    organization = relationship("Organization", back_populates="communities")
+
+
+class RoleAssignment(Base):
+    """
+    Authoritative source of truth for permissions. Each row =
+    "user U holds role R at scope (scope_type, scope_id)".
+
+    Higher roles inherit lower-tier capabilities at every nested scope (see
+    docs/plans/multi_tenancy.md §3.2). No explicit `member` row is written
+    when the user already holds a higher role at or above the course — `can()`
+    walks the scope hierarchy at check time.
+
+    A DB CHECK enforces the platform-scope NULL sentinel: `scope_id IS NULL`
+    iff `scope_type = 'platform'`.
+
+    `granted_via` records HOW this assignment was created — useful both for
+    audit and for telling Phase-1 backfill ('system_default') apart from
+    later admin-UI grants ('admin_ui') and from the founding super-user
+    bootstrap ('super_user_bootstrap'). Phase 7 adds 'invitation_link' via
+    `ALTER TYPE`.
+    """
+    __tablename__ = "role_assignments"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    user_id     = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role        = Column(ROLE_ENUM,         nullable=False)
+    scope_type  = Column(SCOPE_ENUM,        nullable=False)
+    scope_id    = Column(Integer,           nullable=True)   # NULL only when scope_type='platform'
+    granted_by  = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    granted_via = Column(GRANT_SOURCE_ENUM, nullable=False)
+    granted_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "role", "scope_type", "scope_id",
+            name="uq_role_assignments_user_role_scope",
+        ),
+        CheckConstraint(
+            "(scope_type = 'platform' AND scope_id IS NULL) "
+            "OR (scope_type <> 'platform' AND scope_id IS NOT NULL)",
+            name="ck_role_assignments_platform_null_sentinel",
+        ),
+        Index("ix_role_assignments_scope", "scope_type", "scope_id"),
+    )
+
+    user    = relationship(
+        "User",
+        back_populates="role_assignments",
+        foreign_keys=[user_id],
+    )
+    granter = relationship("User", foreign_keys=[granted_by])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -147,11 +305,20 @@ class UserDocument(Base):
     personal_summary = Column(Text,       nullable=True)
     is_public        = Column(Boolean,    nullable=False, server_default="false")
     ai_feedback      = Column(JSONB,      nullable=True)
+    # Denormalized scope (Phase 1). NULL = unfiled/personal document
+    # (per A.3). Inherited from the folder when the doc lives in one.
+    organization_id  = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
     shared_at        = Column(DateTime(timezone=True), nullable=True)
 
     owner         = relationship("User",         back_populates="user_documents")
     folder        = relationship("Folder",       back_populates="documents")
+    organization  = relationship("Organization", foreign_keys=[organization_id])
     base_document = relationship("BaseDocument", back_populates="user_documents")
     threads       = relationship("Thread",       back_populates="user_document")
     study_sessions = relationship("StudySession", back_populates="user_document")
@@ -209,11 +376,28 @@ class Folder(Base):
     is_starred = Column(Boolean, nullable=False, server_default="false")
     persona_id = Column(String,  ForeignKey("personas.id"), nullable=True)
     course_id  = Column(Integer, ForeignKey("courses.id"),  nullable=True, index=True)
+    # Denormalized scope (Phase 1). NULL = personal/top-level folder
+    # (per A.3 — personal scratchpad scope is always NULL). Populated
+    # automatically when a folder is attached to a course.
+    community_id    = Column(
+        Integer,
+        ForeignKey("communities.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     owner     = relationship("User",         back_populates="folders")
     persona   = relationship("Persona",      back_populates="folders")
     course    = relationship("Course",       back_populates="folders")
+    community = relationship("Community", foreign_keys=[community_id])
+    organization = relationship("Organization", foreign_keys=[organization_id])
     documents = relationship("UserDocument", back_populates="folder")
 
 
@@ -247,7 +431,26 @@ class Course(Base):
     __tablename__ = "courses"
 
     id                          = Column(Integer, primary_key=True, index=True)
+    # owner_id stays as a denormalized cache of the primary `course_admin`
+    # role assignment. Authoritative source of truth is `role_assignments`;
+    # `owner_id` is dropped in Phase 6.
     owner_id                    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # Scope columns (Phase 1). Every Course belongs to exactly one Community
+    # in v1. organization_id is denormalized from community for fast scoping
+    # queries — kept in sync by service-layer writes (never read by app code
+    # to make permission decisions, which always go through `can()`).
+    community_id                = Column(
+        Integer,
+        ForeignKey("communities.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    organization_id             = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     title                       = Column(String,  nullable=False)
     description                 = Column(Text,    nullable=True)
     visibility                  = Column(String,  nullable=False, server_default="private")
@@ -263,6 +466,8 @@ class Course(Base):
     created_at                  = Column(DateTime(timezone=True), server_default=func.now())
 
     owner       = relationship("User", back_populates="owned_courses", foreign_keys=[owner_id])
+    community   = relationship("Community", foreign_keys=[community_id])
+    organization = relationship("Organization", foreign_keys=[organization_id])
     folders     = relationship("Folder", back_populates="course")
     memberships = relationship("CourseMembership", back_populates="course")
     topics      = relationship("CourseTopic",    back_populates="course",
@@ -376,6 +581,20 @@ class Exam(Base):
     course_id                = Column(
         Integer,
         ForeignKey("courses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Denormalized scope (Phase 1). Always NOT NULL because every Exam
+    # belongs to a Course, and every Course belongs to a Community.
+    community_id             = Column(
+        Integer,
+        ForeignKey("communities.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    organization_id          = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
@@ -515,12 +734,28 @@ class Thread(Base):
     # course's syllabus summary into the system prompt so the AI Teacher
     # answers within the course's framing.
     course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    # Denormalized scope (Phase 1). NULL when course_id is NULL, i.e. for
+    # personal scratchpad threads (per A.3). Populated from course on writes.
+    community_id    = Column(
+        Integer,
+        ForeignKey("communities.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     user          = relationship("User")
     user_document = relationship("UserDocument", back_populates="threads")
     persona       = relationship("Persona",      back_populates="threads")
     course        = relationship("Course")
+    community     = relationship("Community",    foreign_keys=[community_id])
+    organization  = relationship("Organization", foreign_keys=[organization_id])
     messages      = relationship("Message",      back_populates="thread",
                                  foreign_keys="[Message.thread_id]")
     study_sessions_active = relationship(
