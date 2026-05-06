@@ -14,7 +14,12 @@ const STANDALONE_CHAT_API = `${AI_API_BASE}/api/v1/chat`;
  * Automatically clears and re-fetches threads whenever documentId changes,
  * making it the single owner of thread lifecycle tied to a document.
  */
-export function useChat(documentId: number | null, currentPage: number, activePersonaId: string | null = null) {
+export function useChat(
+  documentId: number | null,
+  currentPage: number,
+  activePersonaId: string | null = null,
+  activeCourseId: number | null = null,
+) {
   const { textSelection, setTextSelection, activeThread, setActiveThread } = useAppStore();
 
   const [threads, setThreads]               = useState<Thread[]>([]);
@@ -201,13 +206,23 @@ export function useChat(documentId: number | null, currentPage: number, activePe
     try {
       const res = await fetch(STANDALONE_CHAT_API, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // The standalone chat endpoint requires auth — the regular axios
+          // interceptor isn't in the fetch path so attach the token manually.
+          ...(localStorage.getItem('access_token')
+            ? { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
+            : {}),
+        },
         body: JSON.stringify({
           message:     messageContent,
           thread_id:   threadId,
           persona_id:  personaId,
           model_tier:  selectedModelTier,
           ai_provider: selectedAIProvider,
+          // Course scoping: only meaningful for the FIRST message of a new
+          // thread; thereafter the thread's stored course_id wins server-side.
+          course_id:   threadId == null ? activeCourseId : null,
         }),
       });
 

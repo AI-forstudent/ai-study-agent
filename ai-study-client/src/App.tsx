@@ -64,11 +64,12 @@ function App() {
   const [preFlightPersonaId, setPreFlightPersonaId]       = useState<string | null | undefined>(undefined);
   /** True when a chat-only (no document) session is active. */
   const [standaloneMode, setStandaloneMode]               = useState(false);
+  const [activeCourseId, setActiveCourseId]               = useState<number | null>(null);
   const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
 
   const docs    = useDocuments(isAuthenticated, handleLogout);
   const folders = useFolders(isAuthenticated);
-  const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId);
+  const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId, activeCourseId);
 
   // ── Derived state ───────────────────────────────────────────────────────────
   const activePersonaName: string | null = activePersonaId
@@ -98,6 +99,7 @@ function App() {
     chat.reset();
     setActivePersonaId(null);
     setActiveSession(null);
+    setActiveCourseId(null);
     setPreFlightPersonaId(undefined);
     setStandaloneMode(false);
     dismissResumePrompt();
@@ -201,6 +203,16 @@ function App() {
   /** Sidebar "+ New Session" — open a fresh standalone chat with a sensible
    *  default AI Teacher and clear any previous document/thread state. */
   function handleStartNewSession() {
+    startStandaloneSession(null);
+  }
+
+  /** "Chat about this course" — same as a new session but the next chat call
+   *  will tag the new thread with this course_id so the syllabus is in scope. */
+  function handleStartCourseChat(courseId: number) {
+    startStandaloneSession(courseId);
+  }
+
+  function startStandaloneSession(courseId: number | null) {
     docs.clearDocument();
     chat.reset();
     const defaultPersona =
@@ -209,8 +221,12 @@ function App() {
       null;
     setActivePersonaId(defaultPersona);
     setActiveSession({ documentId: null, personaId: defaultPersona });
+    setActiveCourseId(courseId);
     setStandaloneMode(true);
     dismissResumePrompt();
+    // No active thread yet — the first message creates the thread server-side
+    // and the chat hook attaches course_id at that moment.
+    useAppStore.getState().setActiveThread(null);
     setView('main');
   }
 
@@ -392,6 +408,7 @@ function App() {
             onSelectDocument={handleOpenPreFlight}
             onSelectSession={handleOpenSession}
             onStartNewSession={handleStartNewSession}
+            onStartCourseChat={handleStartCourseChat}
             onDeleteRequest={docs.setDocToDelete}
             onStarDocument={docs.handleStarDocument}
             onMoveDocument={docs.handleMoveDocument}

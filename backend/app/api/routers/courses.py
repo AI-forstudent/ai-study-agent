@@ -16,7 +16,7 @@ Mounted at /api/v1/courses in app/main.py.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Course, CourseMembership, Folder, User, UserDocument
+from app.models.domain import (
+    Course, CourseLecturer, CourseMembership, CourseTopic,
+    Folder, User, UserDocument,
+)
+from app.services.document_service import extract_text
+from app.services.syllabus_extractor import extract_syllabus
 
 router = APIRouter(tags=["courses"])
 
@@ -390,3 +395,178 @@ def star_course(
     if refreshed:
         role = refreshed.role
     return _build_response(course, role, db)
+
+
+# ── Syllabus ──────────────────────────────────────────────────────────────
+
+
+class SyllabusAttachRequest(BaseModel):
+    """Use an existing UserDocument as the course syllabus.
+
+    The doc must belong to the caller (the courses router does not stream
+    files itself; reuse the existing document upload endpoint to put a PDF
+    into the user's library, then attach it here).
+    """
+    user_document_id: int
+
+
+class LecturerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id:    int
+    name:  str
+    email: Optional[str] = None
+    role:  str
+
+
+class TopicOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id:     int
+    name:   str
+    source: str
+
+
+class SyllabusResponse(BaseModel):
+    """Combined view used by the Course detail page Syllabus tab."""
+    user_document_id: Optional[int]              = None
+    extracted:        Optional[dict[str, Any]]   = None
+    topics:           list[TopicOut]             = []
+    lecturers:        list[LecturerOut]          = []
+
+
+def _seed_topics_and_lecturers(course: Course, extracted: dict[str, Any], db: Session) -> None:
+    """Idempotently insert syllabus topics and lecturers for the course.
+
+    Existing rows survive — re-extracting a syllabus won't lose
+    'exam_inferred' topics or hand-edited lecturer rows. New names are added
+    on the next pass; obsolete ones are NOT auto-deleted.
+    """
+    existing_topic_names = {t.name for t in course.topics}
+    for name in extracted.get("topics", []):
+        if name and name not in existing_topic_names:
+            db.add(CourseTopic(course_id=course.id, name=name, source="syllabus"))
+            existing_topic_names.add(name)
+
+    existing_lect_names = {l.name for l in course.lecturers}
+    for lec in extracted.get("lecturers", []):
+        nm = (lec.get("name") or "").strip()
+        if nm and nm not in existing_lect_names:
+            db.add(CourseLecturer(
+                course_id=course.id,
+                name=nm,
+                email=lec.get("email"),
+                role=lec.get("role") or "lecturer",
+            ))
+            existing_lect_names.add(nm)
+
+
+def _serialize_syllabus(course: Course) -> SyllabusResponse:
+    return SyllabusResponse(
+        user_document_id=course.syllabus_user_document_id,
+        extracted=course.syllabus_extracted,
+        topics=[TopicOut(id=t.id, name=t.name, source=t.source) for t in course.topics],
+        lecturers=[
+            LecturerOut(id=l.id, name=l.name, email=l.email, role=l.role)
+            for l in course.lecturers
+        ],
+    )
+
+
+@router.get("/{course_id}/syllabus", response_model=SyllabusResponse)
+def get_course_syllabus(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the course's cached syllabus + derived topics/lecturers.
+
+    Read access matches GET /{course_id}: owner, member, or any logged-in
+    user for a public course.
+    """
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if course.owner_id != current_user.id:
+        membership = (
+            db.query(CourseMembership)
+            .filter(
+                CourseMembership.user_id == current_user.id,
+                CourseMembership.course_id == course_id,
+            )
+            .first()
+        )
+        if not membership and course.visibility != "public":
+            raise HTTPException(status_code=404, detail="Course not found")
+
+    return _serialize_syllabus(course)
+
+
+@router.post("/{course_id}/syllabus", response_model=SyllabusResponse)
+def attach_course_syllabus(
+    course_id: int,
+    payload: SyllabusAttachRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Attach an existing UserDocument as the course syllabus and run a
+    one-time Gemini extraction.
+
+    Idempotent re-runs (same user_document_id) re-extract and refresh the
+    cached fields; topics and lecturers are upserted (new ones added; old
+    ones — including manually edited rows — preserved).
+    """
+    course = _get_owned_course_or_404(course_id, current_user, db)
+
+    user_doc = (
+        db.query(UserDocument)
+        .filter(
+            UserDocument.id == payload.user_document_id,
+            UserDocument.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Syllabus document not found in your library")
+    if not user_doc.base_document or not user_doc.base_document.file_path:
+        raise HTTPException(status_code=422, detail="Syllabus document has no file on disk")
+
+    # Re-run text extraction — pdfplumber for PDF, the DOCX path for Word, etc.
+    try:
+        pages = extract_text(user_doc.base_document.file_path)
+    except Exception as exc:  # narrow extraction errors are surfaced as 422
+        raise HTTPException(status_code=422, detail=f"Could not read syllabus: {exc}")
+    full_text = "\n".join(p["text"] for p in pages)
+
+    try:
+        extracted = extract_syllabus(full_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    course.syllabus_user_document_id = user_doc.id
+    course.syllabus_extracted        = extracted
+    db.flush()
+
+    _seed_topics_and_lecturers(course, extracted, db)
+    db.commit()
+    db.refresh(course)
+    return _serialize_syllabus(course)
+
+
+@router.delete("/{course_id}/syllabus", response_model=SyllabusResponse)
+def detach_course_syllabus(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Detach the syllabus document and clear the cached extraction.
+
+    Topics and lecturers are NOT auto-deleted — they may have been used to
+    tag exam questions or hand-edited; the user can prune them explicitly
+    from the topics/lecturers endpoints (TODO).
+    """
+    course = _get_owned_course_or_404(course_id, current_user, db)
+    course.syllabus_user_document_id = None
+    course.syllabus_extracted        = None
+    db.commit()
+    db.refresh(course)
+    return _serialize_syllabus(course)

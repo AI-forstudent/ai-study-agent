@@ -75,3 +75,39 @@ export type LibraryFeedItem =
       is_starred:     boolean;
       is_public:      boolean;
     };
+
+// ── Syllabus types ──────────────────────────────────────────────────────────
+
+export interface CourseLecturer {
+  id:    number;
+  name:  string;
+  email: string | null;
+  role:  string;
+}
+
+export interface CourseTopic {
+  id:     number;
+  name:   string;
+  source: string;   // 'syllabus' | 'lecture' | 'exam_inferred'
+}
+
+/** Output shape of services/syllabus_extractor.extract_syllabus. */
+export interface SyllabusExtraction {
+  topics:           string[];
+  books:            string[];
+  lecturers:        { name: string; email: string | null; role: string }[];
+  grading_policy:   string | null;
+  prerequisites:    string[];
+  weekly_breakdown: { week: number; topic: string }[];
+  course_code:      string | null;
+  institution:      string | null;
+  semester:         string | null;
+  language:         string | null;
+}
+
+export interface CourseSyllabus {
+  user_document_id: number | null;
+  extracted:        SyllabusExtraction | null;
+  topics:           CourseTopic[];
+  lecturers:        CourseLecturer[];
+}

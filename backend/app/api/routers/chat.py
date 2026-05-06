@@ -34,6 +34,9 @@ class ChatRequest(BaseModel):
     persona_id:  str | None  = None   # null → default system prompt
     model_tier:  str | None  = None   # "flash-lite" | "flash" | "pro"
     ai_provider: str | None  = None   # "gemini" | "openai" | "anthropic"
+    # Optional course scoping. When set on a new thread, the syllabus
+    # extraction for that course is injected into the system prompt.
+    course_id:   int | None  = None
 
 
 class MessageOut(BaseModel):
@@ -89,6 +92,7 @@ def chat(
             user_id=current_user.id,
             document_id=None,
             persona_id=payload.persona_id,
+            course_id=payload.course_id,
             selected_text="",
             emoji="💬",
         )
@@ -114,8 +118,15 @@ def chat(
     )
 
     # ── 4. Resolve system prompt ────────────────────────────────────────────
+    # Course scoping flows from the thread (set on creation) — payload.course_id
+    # is only meaningful for the very first message in a new thread.
     effective_persona_id = payload.persona_id or thread.persona_id
-    system_prompt = resolve_system_prompt(effective_persona_id, db)
+    effective_course_id  = thread.course_id or payload.course_id
+    system_prompt = resolve_system_prompt(
+        effective_persona_id,
+        db,
+        course_id=effective_course_id,
+    )
 
     # ── 5. Resolve alias for DB audit trail ────────────────────────────────
     alias = resolve_alias("chat", payload.model_tier)

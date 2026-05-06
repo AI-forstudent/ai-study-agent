@@ -204,6 +204,19 @@ export const api = {
   starCourse: (id: number, isStarred: boolean) =>
     apiClient.post(`/api/v1/courses/${id}/star`, { is_starred: isStarred }),
 
+  // ── Course syllabus ───────────────────────────────────────────────────────
+  // Returns { user_document_id, extracted, topics[], lecturers[] }.
+  getCourseSyllabus: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/syllabus`),
+
+  // Attach an existing UserDocument as the course syllabus. Triggers a
+  // one-time Gemini extraction on the backend.
+  attachCourseSyllabus: (courseId: number, userDocumentId: number) =>
+    apiClient.post(`/api/v1/courses/${courseId}/syllabus`, { user_document_id: userDocumentId }),
+
+  detachCourseSyllabus: (courseId: number) =>
+    apiClient.delete(`/api/v1/courses/${courseId}/syllabus`),
+
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────
   listSessions: (limit = 50, offset = 0) =>
     apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),

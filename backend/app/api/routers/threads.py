@@ -119,6 +119,7 @@ def create_thread(
         emoji="💬",
         title=None,
         persona_id=thread_data.persona_id,
+        course_id=thread_data.course_id,
     )
     db.add(new_thread)
     db.commit()

@@ -1,11 +1,15 @@
 """
 app/services/prompt_builder.py
 ──────────────────────────────
-Resolves the effective system prompt for a Persona, including any persisted
-SessionMemory entries appended in chronological order so learning from past
-sessions carries forward automatically.
+Resolves the effective system prompt for a chat turn. The prompt is composed
+from up to three layers (highest priority first):
 
-Priority:
+  1. Persona system prompt (or manual override / built-in default).
+  2. Persisted SessionMemory entries — appended chronologically.
+  3. Course context block (when the chat is course-scoped) — built from the
+     cached syllabus extraction. See services/syllabus_extractor.py.
+
+Priority for the persona base prompt:
   1. Persona.system_prompt          (rich structured prompt — preferred)
   2. Persona.manual_prompt_override (legacy raw override)
   3. Built-in default               (generic study assistant)
@@ -15,7 +19,8 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models.domain import Persona, SessionMemory
+from app.models.domain import Course, Persona, SessionMemory
+from app.services.syllabus_extractor import build_syllabus_system_block
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful and precise AI study assistant. "
@@ -23,14 +28,41 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def resolve_system_prompt(persona_id: str | None, db: Session) -> str:
-    """Return the fully assembled system prompt for a persona.
+def resolve_system_prompt(
+    persona_id: str | None,
+    db: Session,
+    *,
+    course_id: int | None = None,
+) -> str:
+    """Return the fully assembled system prompt for a chat turn.
 
     Safely falls back to the default when:
       - persona_id is None
       - the Persona row does not exist in the DB
       - both system_prompt and manual_prompt_override are empty
+
+    `course_id` is optional. When set, the course's cached syllabus
+    extraction is appended as a "## COURSE CONTEXT" block at the END of the
+    prompt — this position keeps the persona's voice/style as the primary
+    framing while still grounding answers in the course's topics, books,
+    lecturers, and prerequisites.
     """
+    persona_block = _persona_block(persona_id, db)
+    memory_block  = _memory_block(persona_id, db)
+    course_block  = _course_block(course_id, db)
+
+    parts = [persona_block]
+    if memory_block:
+        parts.append(f"## SESSION MEMORY\n{memory_block}")
+    if course_block:
+        parts.append(course_block)
+
+    return "\n\n".join(parts)
+
+
+# ── Layer 1: persona ───────────────────────────────────────────────────────
+
+def _persona_block(persona_id: str | None, db: Session) -> str:
     if not persona_id:
         return _DEFAULT_SYSTEM_PROMPT
 
@@ -40,28 +72,34 @@ def resolve_system_prompt(persona_id: str | None, db: Session) -> str:
     if not persona:
         return _DEFAULT_SYSTEM_PROMPT
 
-    # Priority 1 → rich structured system_prompt
-    # Priority 2 → legacy manual_prompt_override
     base: str = (persona.system_prompt or persona.manual_prompt_override or "").strip()
+    return base or _DEFAULT_SYSTEM_PROMPT
 
-    if not base:
-        return _DEFAULT_SYSTEM_PROMPT
 
-    # Append persisted session memories (oldest first so latest context wins)
+# ── Layer 2: persisted session memory ──────────────────────────────────────
+
+def _memory_block(persona_id: str | None, db: Session) -> str:
+    if not persona_id:
+        return ""
     memories: list[SessionMemory] = (
         db.query(SessionMemory)
         .filter(SessionMemory.persona_id == persona_id)
         .order_by(SessionMemory.created_at.asc())
         .all()
     )
+    return "\n\n".join(
+        m.injected_memory_text
+        for m in memories
+        if m.injected_memory_text and m.injected_memory_text.strip()
+    )
 
-    if memories:
-        blocks = "\n\n".join(
-            m.injected_memory_text
-            for m in memories
-            if m.injected_memory_text and m.injected_memory_text.strip()
-        )
-        if blocks:
-            base = f"{base}\n\n## SESSION MEMORY\n{blocks}"
 
-    return base
+# ── Layer 3: course syllabus context ───────────────────────────────────────
+
+def _course_block(course_id: int | None, db: Session) -> str:
+    if not course_id:
+        return ""
+    course: Course | None = db.query(Course).filter(Course.id == course_id).first()
+    if not course or not course.syllabus_extracted:
+        return ""
+    return build_syllabus_system_block(course.syllabus_extracted, course.title)

@@ -2,6 +2,56 @@
 
 ---
 
+## 2026-05-06 (later still) — Course Syllabus + course-scoped chat
+
+**Scope:** Backend + frontend. Adds the Syllabus feature to Courses: upload a syllabus, AI extracts structured fields, the course gets a normalized topic taxonomy + lecturer list, and chats opened with course context get the syllabus injected into the system prompt.
+
+### Why this change
+
+The user's design has Courses as the parent of everything else (folders → docs → sessions). For the AI Teacher to answer well *within a course*, it needs to know what's in that course — topics, books, prerequisites, who teaches it, what the grading policy is. Re-discovering that on every turn would be wasteful; one-time extraction + cache is the right shape.
+
+The extracted topic list also seeds the per-course taxonomy that the upcoming Exams feature will use to tag questions, so syllabus has to land first.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/k6j7i8h9g0f1_course_syllabus_topics_lecturers.py` | Adds `courses.syllabus_user_document_id` (ON DELETE SET NULL), `courses.syllabus_extracted` JSONB, `course_topics` and `course_lecturers` tables, plus `threads.course_id`. |
+| `backend/app/services/syllabus_extractor.py` | `extract_syllabus(text)` runs one Gemini call and returns the canonical structured dict. `build_syllabus_system_block(extracted, title)` formats it into a 300-800-token system-prompt block. |
+| `ai-study-client/src/features/courses/components/CourseSyllabusTab.tsx` | Course detail "Syllabus" tab — upload, replace, detach, plus a read-only render of every extracted field (topics, books, lecturers, prerequisites, weekly schedule, grading policy). |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | `Course` gains `syllabus_user_document_id`, `syllabus_extracted`, plus relationships to `topics`, `lecturers`, `syllabus_doc`. New `CourseTopic` and `CourseLecturer` models. `Thread` gains `course_id`. |
+| `backend/app/api/routers/courses.py` | New `GET/POST/DELETE /{id}/syllabus` endpoints. `POST` runs the extractor and idempotently upserts topics/lecturers (preserves manually-edited rows and `exam_inferred` entries on re-extraction). |
+| `backend/app/services/prompt_builder.py` | `resolve_system_prompt` now takes `course_id`; appends a `## COURSE CONTEXT` block from the cached syllabus extraction whenever course context is set. |
+| `backend/app/api/routers/chat.py` | `ChatRequest.course_id` accepted; new threads stamped with it; effective `course_id = thread.course_id ?? payload.course_id` flows into `resolve_system_prompt`. |
+| `backend/app/api/routers/threads.py` | `ThreadCreate.course_id` honored on creation. |
+| `backend/app/schemas/schemas.py` | `ThreadCreate` and `ThreadResponse` carry `course_id`. |
+| `ai-study-client/src/components/layout/MyLibrary.tsx` | Course drilldown becomes a tabbed view (Folders / Syllabus). New "Chat about this course" button. |
+| `ai-study-client/src/App.tsx` | New `activeCourseId` state, `handleStartCourseChat(id)` opens a standalone session pinned to that course. `useChat` accepts `activeCourseId` and forwards it on the first standalone-chat call. |
+| `ai-study-client/src/hooks/useChat.ts` | Standalone-chat fetch now sends the Bearer token (was silently 401-ing since auth was added to `/chat`) and passes `course_id` for new threads. |
+| `ai-study-client/src/services/api.ts` | New `getCourseSyllabus`, `attachCourseSyllabus`, `detachCourseSyllabus` wrappers. |
+| `ai-study-client/src/types/course.ts` | New `CourseTopic`, `CourseLecturer`, `SyllabusExtraction`, `CourseSyllabus` interfaces. |
+
+### Token-efficiency design
+
+- **Extraction**: one Gemini call per attach (~3-8k tokens depending on syllabus length). Result cached as JSONB; never re-extracted unless the user explicitly re-attaches.
+- **Per-turn cost**: ~300-800 tokens of system-prompt overhead from the formatted block. No further LLM calls for syllabus reading.
+- **Anthropic prompt caching deferred** (T-011): the system prompt is currently a single string, so we'd have to refactor `prompt_builder` to return structured blocks before adding `cache_control`. Cheap enough to skip for now.
+
+### Behaviour and safety notes
+
+- `courses.syllabus_user_document_id` uses `ON DELETE SET NULL` — deleting the syllabus document from My Library auto-clears the pointer; the extraction stays cached so the user can re-attach a different file later.
+- Topics/lecturers are upserted (UNIQUE on `(course_id, name)`); the Exams feature will rely on this normalization to tag questions.
+- Detaching a syllabus clears the cached extraction but never auto-deletes topics/lecturers (they may already be in use).
+
+---
+
 ## 2026-05-06 (later) — Course / Session Architecture (Phase 1: schema + backend)
 
 **Scope:** Backend-only. New top-level Course entity, membership/visibility model, and a read-only Sessions API exposing root threads as first-class objects. The frontend lane-based My Library + new sidebar lands in the next commit.

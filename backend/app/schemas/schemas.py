@@ -66,6 +66,9 @@ class ThreadCreate(BaseModel):
     coordinates: Optional[Any] = None
     initial_message: Optional[str] = None
     persona_id: Optional[str] = None
+    # Optional course scoping — when set, the prompt builder injects the
+    # course's cached syllabus extraction into the system prompt.
+    course_id: Optional[int] = None
 
 
 class ThreadResponse(BaseModel):
@@ -80,6 +83,7 @@ class ThreadResponse(BaseModel):
     parent_thread_id: Optional[int] = None
     forked_from_message_id: Optional[int] = None
     persona_id: Optional[str] = None
+    course_id: Optional[int] = None
     messages: List[MessageResponse] = []
 
     class Config:

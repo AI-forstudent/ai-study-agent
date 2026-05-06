@@ -236,22 +236,76 @@ class Course(Base):
 
     course_metadata is a JSONB grab-bag for forward-compat (semester, code,
     institution, etc.) so we don't need migrations for cosmetic fields.
+
+    Syllabus
+    ────────
+    A course can have one syllabus document (a UserDocument) plus a cached
+    structured extraction of its contents. The extraction is computed once
+    by `services.syllabus_extractor.extract_syllabus()` and reused for every
+    course-scoped chat (no further LLM calls).
     """
     __tablename__ = "courses"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    owner_id        = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    title           = Column(String,  nullable=False)
-    description     = Column(Text,    nullable=True)
-    visibility      = Column(String,  nullable=False, server_default="private")
-    color           = Column(String,  nullable=True)
-    icon            = Column(String,  nullable=True)
-    course_metadata = Column("course_metadata", JSONB, nullable=False, server_default="{}")
-    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    id                          = Column(Integer, primary_key=True, index=True)
+    owner_id                    = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title                       = Column(String,  nullable=False)
+    description                 = Column(Text,    nullable=True)
+    visibility                  = Column(String,  nullable=False, server_default="private")
+    color                       = Column(String,  nullable=True)
+    icon                        = Column(String,  nullable=True)
+    course_metadata             = Column("course_metadata", JSONB, nullable=False, server_default="{}")
+    syllabus_user_document_id   = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    syllabus_extracted          = Column(JSONB, nullable=True)
+    created_at                  = Column(DateTime(timezone=True), server_default=func.now())
 
     owner       = relationship("User", back_populates="owned_courses", foreign_keys=[owner_id])
     folders     = relationship("Folder", back_populates="course")
     memberships = relationship("CourseMembership", back_populates="course")
+    topics      = relationship("CourseTopic",    back_populates="course",
+                               cascade="all, delete-orphan")
+    lecturers   = relationship("CourseLecturer", back_populates="course",
+                               cascade="all, delete-orphan")
+    syllabus_doc = relationship("UserDocument", foreign_keys=[syllabus_user_document_id])
+
+
+class CourseTopic(Base):
+    """
+    Normalized topic taxonomy per course. Seeded from the syllabus extraction
+    (source='syllabus'); the Exams feature later inserts new ones with
+    source='exam_inferred' when a question doesn't fit any existing topic.
+
+    Topic name is unique within a course (uq_course_topics_course_name).
+    """
+    __tablename__ = "course_topics"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    course_id  = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    name       = Column(String,  nullable=False)
+    source     = Column(String,  nullable=False, server_default="syllabus")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    course = relationship("Course", back_populates="topics")
+
+
+class CourseLecturer(Base):
+    """
+    Normalized lecturer/TA list per course. Lets analytics later compare
+    exam difficulty across lecturers without text-matching unstable strings.
+    """
+    __tablename__ = "course_lecturers"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    course_id  = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    name       = Column(String,  nullable=False)
+    email      = Column(String,  nullable=True)
+    role       = Column(String,  nullable=False, server_default="lecturer")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    course = relationship("Course", back_populates="lecturers")
 
 
 class CourseMembership(Base):
@@ -308,11 +362,16 @@ class Thread(Base):
     emoji         = Column(String,  nullable=True, default="💬")
     title         = Column(String,  nullable=True)
     persona_id    = Column(String,  ForeignKey("personas.id"), nullable=True)
+    # Optional course context — when set, the prompt builder injects the
+    # course's syllabus summary into the system prompt so the AI Teacher
+    # answers within the course's framing.
+    course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
     user          = relationship("User")
     user_document = relationship("UserDocument", back_populates="threads")
     persona       = relationship("Persona",      back_populates="threads")
+    course        = relationship("Course")
     messages      = relationship("Message",      back_populates="thread",
                                  foreign_keys="[Message.thread_id]")
     study_sessions_active = relationship(
