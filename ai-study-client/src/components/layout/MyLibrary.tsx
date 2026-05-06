@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload, Library, Loader2, AlertCircle, CheckCircle2,
   Plus, FolderPlus, GraduationCap, MessageSquare, ArrowLeft,
-  Search, Trash2, Star, FolderOpen,
+  Trash2, Star, FolderOpen,
 } from 'lucide-react';
 import PageContainer from './PageContainer';
 import PageHeader from './PageHeader';
@@ -384,8 +384,8 @@ export default function MyLibrary({
               <FolderCard
                 key={folder.id}
                 folder={folder}
-                docs={userDocs}
-                personas={personas}
+                docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+                personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
                 onOpen={openFolder}
                 onEdit={f => { setEditingFolder(f); setFolderModalOpen(true); }}
                 onDelete={f => onDeleteFolder(f.id)}
@@ -492,8 +492,8 @@ export default function MyLibrary({
           <div key={folder.id} className="shrink-0 w-64">
             <FolderCard
               folder={folder}
-              docs={userDocs}
-              personas={personas}
+              docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+              personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
               onOpen={openFolder}
               onEdit={f => { setEditingFolder(f); setFolderModalOpen(true); }}
               onDelete={f => onDeleteFolder(f.id)}
