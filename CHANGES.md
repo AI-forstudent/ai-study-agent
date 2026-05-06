@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-05-06 (very overnight) — Two-axis tagging + real exam stats
+
+**Scope:** Backend prompt + tagger refactor; new aggregation endpoint; frontend stats header rewire. No migrations.
+
+### Why this change
+
+Three connected complaints from the user:
+
+1. **The tagger conflates topics with question types.** Names like "Multiple Choice" or "Proof" sometimes ended up in `topic_new` instead of `question_type_new`. The original prompt mentioned both but didn't enforce a clean separation.
+2. **Topics only inferred from question text.** If a question asks "show this graph has a perfect matching" and the solution invokes Hall's theorem, the tag "Hall's theorem" was missed because the question text never mentioned it.
+3. **The Question-Types donut on the stats header was fake data** — it reused the topics distribution because `ExamCard` didn't carry per-type counts (the T-019 placeholder in the previous commit). Plus the stats only showed top 5/6 entries, no way to view the full taxonomy.
+
+### What changed
+
+#### ✏️ Modified — Backend
+
+| File | What changed |
+|---|---|
+| `backend/app/services/exam_processor.py` | `_TAGGING_PROMPT` rewritten as a two-axis spec with explicit *Topics = subject matter* / *Question Type = response format* definitions, illustrative examples, and SIX hard rules — including "NEVER put a question-type name into `topic_new`" and "tag topics from BOTH the question and (when provided) the solution; if the solution uses a theorem the question doesn't mention, that theorem IS a topic." `tag_question_pure(question_text, snapshot, *, solution_text=None)` accepts the inline solution; the prompt's solution block is conditionally injected (rule 4 — "mentally sketch one before tagging" — covers the no-solution case). `process_exam` passes `q.get("solution_text")` through. |
+| `backend/app/api/routers/exams.py` | New `GET /api/v1/courses/{id}/exam-stats` endpoint returns sorted topic and question-type histograms with both `question_count` and `exam_count` per row, plus a 5-bucket aggregate-difficulty distribution. Scoped to `processing_status='completed'` exams so in-flight or failed uploads don't pollute the visualisations. New Pydantic schemas `TopicStatOut`, `QuestionTypeStatOut`, `ExamStatsOut`. |
+
+#### ✏️ Modified — Frontend
+
+| File | What changed |
+|---|---|
+| `ai-study-client/src/types/course.ts` | New `TopicStat`, `QuestionTypeStat`, `ExamStats` interfaces. |
+| `ai-study-client/src/services/api.ts` | `getCourseExamStats(courseId)` wrapper. |
+| `ai-study-client/src/features/courses/components/ExamStatsHeader.tsx` | Full rewrite. Fetches `/exam-stats` (re-runs when `invalidateKey` or exam count changes). Question-types donut now uses real per-type counts. Each card has an expandable "View all (N)" button — collapsed view stays compact (top 5 in the legend, top 6 bars), expanded view scrolls through the entire course taxonomy. Difficulty histogram now also draws from server data, not a client-side recompute. |
+| `ai-study-client/src/features/courses/components/CourseExamsTab.tsx` | Passes `courseId` and an `invalidateKey` (count of completed exams) into the stats header so the stats refresh on each successful upload / retry. |
+
+### Behaviour notes
+
+- **Server-side filtering of zero-count rows** is intentionally skipped — the backend returns the full taxonomy (`question_count` may be 0 for a topic that came in via the syllabus extraction but hasn't shown up in any exam yet). The frontend filters them out of the visualisations so empty slices don't appear, but they remain visible if/when a future "Topics & Tags admin" panel reads the same endpoint.
+- **`exam-stats` only counts completed exams.** A failed exam's auto-inferred topics still live in `course_topics` (so they're available for the next retry / next exam), but they don't count toward the donut until something successfully tags them.
+- **The "View all" expander caps at `max-h-44` / `max-h-56`** with internal scroll — courses with 50+ topics don't blow out the header card height.
+
+### Token cost
+
+Zero new LLM calls — the tagging prompt is longer (~1.5x previous size, still well under 1k tokens) but runs the same number of times. The new stats endpoint is pure SQL aggregation; no AI involved.
+
+---
+
 ## 2026-05-06 (overnight) — Exam processing infrastructure for scale
 
 **Scope:** Backend perf + reliability upgrades sized for 20-30 exams per course (with headroom). User confirmed the basic flow works and asked me to focus on infrastructure — this is that.

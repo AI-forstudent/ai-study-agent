@@ -221,6 +221,12 @@ export const api = {
   listCourseExams: (courseId: number) =>
     apiClient.get(`/api/v1/courses/${courseId}/exams`),
 
+  // Aggregated topic / question-type / difficulty stats for the Exams tab.
+  // Returned as full sorted lists; the frontend chooses how many to show
+  // in the chart vs. the "View all" expander.
+  getCourseExamStats: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/exam-stats`),
+
   // Backend runs the full pipeline (extraction → tagging → difficulty) on this
   // call — typical 25-question exam takes 5-15s. Frontend should show a
   // "processing…" state while the request is in flight.

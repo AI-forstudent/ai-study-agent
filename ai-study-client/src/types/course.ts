@@ -166,3 +166,29 @@ export interface ExamCard {
 export interface ExamDetail extends ExamCard {
   questions: ExamQuestion[];
 }
+
+// ── Course-level exam aggregation ───────────────────────────────────────────
+
+export interface TopicStat {
+  id:             number;
+  name:           string;
+  source:         string;   // 'syllabus' | 'lecture' | 'exam_inferred'
+  question_count: number;
+  exam_count:     number;
+}
+
+export interface QuestionTypeStat {
+  id:             number;
+  name:           string;
+  source:         string;   // 'syllabus' | 'inferred'
+  question_count: number;
+  exam_count:     number;
+}
+
+/** Returned by GET /api/v1/courses/{id}/exam-stats. */
+export interface ExamStats {
+  topics:               TopicStat[];           // sorted by question_count desc
+  question_types:       QuestionTypeStat[];    // sorted by question_count desc
+  difficulty_buckets:   number[];              // 5 entries: easy → hard
+  exam_count_processed: number;
+}

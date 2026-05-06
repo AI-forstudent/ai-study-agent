@@ -147,43 +147,75 @@ def extract_questions(text: str) -> list[dict[str, Any]]:
 # ══════════════════════════════════════════════════════════════════════════
 
 _TAGGING_PROMPT = """\
-You are a course-aware question tagger. Available topics and question types
-for this course are listed below. Choose from them whenever possible; only
-introduce a new entry when nothing fits.
+You are a course-aware question tagger. Tag every question along TWO
+INDEPENDENT axes — they must NEVER be merged or cross-contaminated.
 
-Available topics
-────────────────
+──────────── Axis 1: TOPICS (subject matter) ────────────
+What is the question ABOUT — which course concepts must one know to solve it?
+Topics are nouns naming mathematical / scientific / domain ideas.
+Examples (illustrative — use whatever fits this course):
+  • "Hall's theorem"            • "Eigenvalues"
+  • "Differential equations"    • "Bayesian inference"
+  • "Graph coloring"            • "Lambda calculus"
+  • "Linked lists"              • "RSA encryption"
+
+──────────── Axis 2: QUESTION TYPE (response format) ────────────
+What KIND of answer is expected — what response shape does the question demand?
+Question types are nouns naming a question FORMAT, not subject matter.
+Examples (illustrative):
+  • "Proof"                     • "Multiple Choice"
+  • "True / False"              • "Calculation"
+  • "Open-ended explanation"    • "Counterexample request"
+  • "Code completion"           • "Diagram drawing"
+  • "Fill in the blank"         • "Short answer"
+
+Available topics for this course
+────────────────────────────────
 {topics_block}
 
-Available question types
-────────────────────────
+Available question types for this course
+────────────────────────────────────────
 {types_block}
 
 Course context
 ──────────────
 {course_context}
 
-Question to tag
-───────────────
+Question text
+─────────────
 {question}
+
+{solution_block}
 
 Return ONLY a valid JSON object — no markdown fences, no prose:
 
 {{
-  "topic_ids":          array of int,        // ids picked from the topics list above
-  "topic_new":          array of str,        // ONLY topic names that DON'T fit any existing one
-  "question_type_id":   int|null,            // id picked from the types list, or null
-  "question_type_new":  str|null,            // ONLY when no existing type fits
-  "reference_solution": str                  // a model-generated correct answer for this question
+  "topic_ids":          array of int,    // ids from the topics list above
+  "topic_new":          array of str,    // 1-3 word topic names not in the list
+  "question_type_id":   int | null,      // id from the question types list
+  "question_type_new":  str | null,      // a NEW question-type name (only if nothing fits)
+  "reference_solution": str              // the model's correct answer for this question
 }}
 
-Hard rules
-──────────
-• Prefer existing ids. Add a new name only when the existing list lacks an
-  obvious match — never duplicate.
-• `topic_ids` and `topic_new` together must contain at least one entry.
-• `reference_solution` is required and must be the model's best concise answer
-  (used later for grading); preserve LaTeX/code; match the question's language.
+HARD RULES — IMPORTANT
+══════════════════════
+1. NEVER put a question-type name (Proof / Multiple Choice / True-False /
+   Calculation / etc.) into `topic_new` or `topic_ids`. These belong in
+   `question_type_*` only.
+2. NEVER put a topic name (Linear Algebra / Hall's theorem / etc.) into
+   `question_type_new` or `question_type_id`. These belong in `topic_*` only.
+3. Tag topics from BOTH the question and (when provided) its solution.
+   If the solution uses a specific theorem or construction that the
+   question doesn't name explicitly, that theorem IS a topic — tag it.
+4. When no solution is provided, mentally sketch one before tagging.
+   Tag every concept that sketch would invoke.
+5. Prefer existing ids over new names. Add a new name only when the
+   existing list genuinely lacks a match — duplicates pollute the
+   taxonomy.
+6. `topic_ids` + `topic_new` together must contain at least one entry.
+7. `reference_solution` is required, must match the question's language,
+   and must preserve LaTeX / code blocks verbatim. It will be shown to
+   students later — write it as if for them.
 """
 
 
@@ -239,8 +271,17 @@ def _snapshot_course(course: Course) -> CourseSnapshot:
 def tag_question_pure(
     question_text: str,
     snapshot: CourseSnapshot,
+    *,
+    solution_text: str | None = None,
 ) -> dict[str, Any]:
     """Thread-safe tagger. Performs ONE Gemini call; touches NO database.
+
+    `solution_text` is the inline solution the source PDF carried for this
+    question, when available. Passing it lets the tagger pick up topics
+    that the question text doesn't mention by name (e.g. the question
+    asks "show this graph has a perfect matching", solution invokes
+    Hall's theorem — without the solution, the model might miss "Hall's
+    theorem" as a topic).
 
     Returns the model's raw decisions in a serialisable shape:
 
@@ -260,11 +301,23 @@ def tag_question_pure(
     """
     from app.services.document_service import ask_gemini_json
 
+    # Solution block: only inject when we actually have one; otherwise the
+    # prompt's rule-4 ("mentally sketch one before tagging") kicks in.
+    if solution_text and solution_text.strip():
+        solution_block = (
+            "Solution from the source\n"
+            "────────────────────────\n"
+            f"{solution_text[:2_000]}"
+        )
+    else:
+        solution_block = ""   # rule 4 in the prompt handles this case
+
     base_prompt = _TAGGING_PROMPT.format(
         topics_block=_topics_block_from_pairs(snapshot.topic_pairs),
         types_block=_types_block_from_pairs(snapshot.type_pairs),
         course_context=_course_context_block_from_snapshot(snapshot),
         question=question_text[:2_000],   # cap so tagging stays cheap
+        solution_block=solution_block,
     )
 
     try:
@@ -466,9 +519,15 @@ def process_exam(
 
     with ThreadPoolExecutor(max_workers=_TAG_PARALLELISM) as ex:
         # `executor.map` preserves input order, so tag_results aligns with
-        # questions_data without needing explicit index tracking.
+        # questions_data without needing explicit index tracking. We pass
+        # the inline solution_text when it exists so the tagger can read
+        # topics out of the answer (Hall's theorem case).
         tag_results = list(ex.map(
-            lambda q: tag_question_pure(q["text"], snapshot),
+            lambda q: tag_question_pure(
+                q["text"],
+                snapshot,
+                solution_text=q.get("solution_text"),
+            ),
             questions_data,
         ))
 

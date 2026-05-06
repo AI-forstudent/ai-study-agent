@@ -28,8 +28,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.routers.auth import get_current_user
 from app.core.database import SessionLocal, get_db
 from app.models.domain import (
-    Course, CourseLecturer, CourseMembership, Exam, ExamQuestion,
-    User, UserDocument,
+    Course, CourseLecturer, CourseMembership, CourseQuestionType, CourseTopic,
+    Exam, ExamQuestion, User, UserDocument,
+    exam_question_topics,
 )
 from app.services.document_service import extract_text
 from app.services.exam_processor import process_exam
@@ -86,6 +87,38 @@ class QuestionOut(BaseModel):
     topics:              list[TopicOut] = []
     difficulty_score:    Optional[float] = None
     reference_solution:  Optional[str] = None
+
+
+class TopicStatOut(BaseModel):
+    """One row in the per-course topic histogram."""
+    model_config = ConfigDict(from_attributes=True)
+    id:             int
+    name:           str
+    source:         str    # 'syllabus' | 'lecture' | 'exam_inferred'
+    question_count: int    # how many questions across the course are tagged with this
+    exam_count:     int    # how many distinct exams contain it
+
+
+class QuestionTypeStatOut(BaseModel):
+    """One row in the per-course question-type histogram."""
+    model_config = ConfigDict(from_attributes=True)
+    id:             int
+    name:           str
+    source:         str    # 'syllabus' | 'inferred'
+    question_count: int
+    exam_count:     int
+
+
+class ExamStatsOut(BaseModel):
+    """Aggregated stats consumed by the Exams tab's stats header.
+
+    Both lists are sorted by `question_count` descending. The frontend
+    decides how many to show in the chart vs. the "View all" expander.
+    """
+    topics:               list[TopicStatOut]
+    question_types:       list[QuestionTypeStatOut]
+    difficulty_buckets:   list[int]    # 5 entries: easy → hard
+    exam_count_processed: int          # number of completed exams these stats reflect
 
 
 class ExamCardOut(BaseModel):
@@ -215,6 +248,108 @@ def _serialize_detail(exam: Exam) -> ExamDetailOut:
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
+
+@router.get("/courses/{course_id}/exam-stats", response_model=ExamStatsOut)
+def get_course_exam_stats(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Aggregated topic / question-type / difficulty stats for a course.
+
+    Only counts questions that belong to **completed** exams — in-flight
+    or failed exams don't contribute to the visualisations (and their
+    auto-inferred topics/types are still listed in the taxonomy with
+    counts of 0 if the user wants the full picture).
+
+    The endpoint exists so the polling list call doesn't have to ship
+    every question's tags every 5 seconds; the stats header fetches this
+    separately on tab open and after a successful upload.
+    """
+    from sqlalchemy import distinct, func
+
+    _ensure_course_readable(course_id, current_user, db)
+
+    # ── Topic histogram ─────────────────────────────────────────────────
+    # Joined through exam_question_topics → exam_questions → exams so we can
+    # restrict to completed-status exams only. COUNT(DISTINCT exam.id) gives
+    # us the per-topic exam reach; COUNT(*) gives the question reach.
+    topic_rows = (
+        db.query(
+            CourseTopic.id,
+            CourseTopic.name,
+            CourseTopic.source,
+            func.count(ExamQuestion.id).label("question_count"),
+            func.count(distinct(Exam.id)).label("exam_count"),
+        )
+        .outerjoin(exam_question_topics,
+                   exam_question_topics.c.topic_id == CourseTopic.id)
+        .outerjoin(ExamQuestion,
+                   ExamQuestion.id == exam_question_topics.c.question_id)
+        .outerjoin(Exam,
+                   (Exam.id == ExamQuestion.exam_id) & (Exam.processing_status == "completed"))
+        .filter(CourseTopic.course_id == course_id)
+        .group_by(CourseTopic.id, CourseTopic.name, CourseTopic.source)
+        .order_by(func.count(ExamQuestion.id).desc(), CourseTopic.name)
+        .all()
+    )
+
+    # ── Question-type histogram ─────────────────────────────────────────
+    type_rows = (
+        db.query(
+            CourseQuestionType.id,
+            CourseQuestionType.name,
+            CourseQuestionType.source,
+            func.count(ExamQuestion.id).label("question_count"),
+            func.count(distinct(Exam.id)).label("exam_count"),
+        )
+        .outerjoin(ExamQuestion,
+                   ExamQuestion.question_type_id == CourseQuestionType.id)
+        .outerjoin(Exam,
+                   (Exam.id == ExamQuestion.exam_id) & (Exam.processing_status == "completed"))
+        .filter(CourseQuestionType.course_id == course_id)
+        .group_by(CourseQuestionType.id, CourseQuestionType.name, CourseQuestionType.source)
+        .order_by(func.count(ExamQuestion.id).desc(), CourseQuestionType.name)
+        .all()
+    )
+
+    # ── Difficulty histogram (5 buckets across completed exams) ─────────
+    completed_exams = (
+        db.query(Exam)
+        .filter(
+            Exam.course_id == course_id,
+            Exam.processing_status == "completed",
+        )
+        .all()
+    )
+    buckets = [0, 0, 0, 0, 0]
+    for exam in completed_exams:
+        if exam.aggregate_difficulty is None:
+            continue
+        idx = min(4, max(0, int(exam.aggregate_difficulty * 5)))
+        buckets[idx] += 1
+
+    return ExamStatsOut(
+        topics=[
+            TopicStatOut(
+                id=row.id, name=row.name, source=row.source,
+                question_count=row.question_count or 0,
+                exam_count=row.exam_count or 0,
+            )
+            for row in topic_rows
+        ],
+        question_types=[
+            QuestionTypeStatOut(
+                id=row.id, name=row.name, source=row.source,
+                question_count=row.question_count or 0,
+                exam_count=row.exam_count or 0,
+            )
+            for row in type_rows
+        ],
+        difficulty_buckets=buckets,
+        exam_count_processed=len(completed_exams),
+    )
+
 
 @router.get("/courses/{course_id}/exams", response_model=List[ExamCardOut])
 def list_course_exams(

@@ -178,7 +178,13 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
         )}
       </div>
 
-      <ExamStatsHeader exams={exams} />
+      <ExamStatsHeader
+        courseId={courseId}
+        exams={exams}
+        // Bump whenever any exam transitions to/from completed so the stats
+        // header re-fetches. Cheapest signal: the count of completed exams.
+        invalidateKey={exams.filter(e => e.processing_status === 'completed').length}
+      />
 
       {/* Table / loading / empty */}
       {loading ? (
