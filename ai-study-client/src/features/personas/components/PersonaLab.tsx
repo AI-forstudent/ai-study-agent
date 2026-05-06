@@ -103,11 +103,12 @@ interface PersonaCardProps {
   onEdit?: (p: Persona) => void;
   onPlay?: (p: Persona) => void;
   onCloneEdit?: (p: Persona) => void;
+  onDelete?: (p: Persona) => void;
 }
 
-function PersonaCard({ persona, onClick, onEdit, onPlay, onCloneEdit }: PersonaCardProps) {
+function PersonaCard({ persona, onClick, onEdit, onPlay, onCloneEdit, onDelete }: PersonaCardProps) {
   const depth       = getContextDepth(persona.wordCount);
-  const hasOverlay  = !!(onEdit || onPlay || onCloneEdit);
+  const hasOverlay  = !!(onEdit || onPlay || onCloneEdit || onDelete);
 
   return (
     <div
@@ -141,6 +142,16 @@ function PersonaCard({ persona, onClick, onEdit, onPlay, onCloneEdit }: PersonaC
             >
               <Copy className="w-3.5 h-3.5" />
               Clone &amp; Edit
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={e => { e.stopPropagation(); onDelete(persona); }}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-red-200 rounded-lg text-red-600 hover:bg-red-50 hover:border-red-300 shadow-sm transition-all duration-150"
+              title="Delete this AI Teacher"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
             </button>
           )}
         </div>
@@ -555,6 +566,7 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
                 onPlay={handlePlayPersona}
                 onEdit={activeTab === 'personal'  ? handleEditPersona  : undefined}
                 onCloneEdit={activeTab !== 'personal' ? handleCloneAndEdit : undefined}
+                onDelete={activeTab === 'personal'  ? handleDeletePersona : undefined}
               />
             ))}
           </div>
