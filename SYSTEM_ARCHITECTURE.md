@@ -171,6 +171,8 @@ AI_Study_Partner/
 
 **`backend/app/core/security.py`** — `verify_password`, `get_password_hash` (bcrypt), `create_access_token` (PyJWT). Reads `SECRET_KEY` and `ALGORITHM` from `config.py`. Imported by `auth.py`.
 
+**`backend/app/core/quota_config.py`** — Tunable per-tier credit quotas + period length + USD-per-credit rate. `TIER_QUOTAS` has entries for `guest` / `free` / `plus` / `pro`; `PERIOD_SECONDS` is daily by default (86 400). Read-only in Phase 1 — phases 2–4 wire it into LLM call sites, quota enforcement, and the Settings usage bar.
+
 ### Schemas
 
 **`backend/app/schemas/schemas.py`** — Core Pydantic request/response models: `UserCreate`, `UserResponse`, `MessageCreate`, `MessageResponse`, `ThreadCreate`, `ThreadResponse`, `DocumentResponse`, `VisibilityUpdate`, `PublicDocumentResponse`, `PageSummaryResponse`, `FullSummaryResponse`, `CustomSummaryRequest`. Imported by `auth.py`, `documents.py`, `threads.py`.
@@ -179,13 +181,13 @@ AI_Study_Partner/
 
 ### Routers
 
-**`backend/app/api/routers/auth.py`** — Mounted at `/api/v1/auth`. Routes: `POST /register`, `POST /login`, `POST /guest-login`. Exports `get_current_user` FastAPI dependency (JWT decode → User row) — imported by every other authenticated router.
+**`backend/app/api/routers/auth.py`** — Mounted at `/api/v1/auth`. Routes: `POST /register`, `POST /login`, `POST /guest-login` (mints a unique `guest-<uuid>@studyagent.ai` user per call with `subscription_tier='guest'`), `POST /google` (verifies a Google ID token via `google-auth`, requires `email_verified`, links by `google_sub` then by email, otherwise creates a fresh account). Exports `get_current_user` FastAPI dependency (JWT decode → User row) — imported by every other authenticated router.
 
 **`backend/app/api/routers/documents.py`** — Mounted at `/api/v1/documents`. Routes: `GET /` (user docs), `POST /` (upload + chunk + embed via the CAS pipeline), `GET /public`, `DELETE /{id}`, `PATCH /{id}/visibility`, `PATCH /{id}/folder` (move to folder), `POST /{id}/pages/{page}/summary` (per-page summary), `GET /{id}/summaries`, `POST /{id}/summary/all` (full-document summary — cached in `BaseDocument.global_summary`), `POST /{id}/summary/custom` (custom-instruction summary). Depends on `get_current_user` and `document_service.py`.
 
-**`backend/app/api/routers/threads.py`** — Mounted at `/api/v1/threads`. Routes: `GET /document/{doc_id}`, `GET /{id}`, `POST /`, `POST /{id}/messages`, `POST /{id}/fork`. Calls `get_full_thread_history` and `get_chat_response_for_thread` from `document_service.py`.
+**`backend/app/api/routers/threads.py`** — Mounted at `/api/v1/threads`. Routes: `GET /document/{doc_id}`, `GET /{id}`, `POST /`, `POST /{id}/messages`, `POST /{id}/fork`. **All routes require `get_current_user` and filter on `Thread.user_id`**; cross-user reads return 404 (no existence leak). Calls `get_full_thread_history` and `get_chat_response_for_thread` from `document_service.py`.
 
-**`backend/app/api/routers/personas.py`** — Mounted at `/api/v1/personas`. Full Persona CRUD: `GET /`, `POST /`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/clone`, `POST /seed`. `PersonaResponse` is camelCase — matches the frontend `Persona` interface directly. Hosts `_SEED_PERSONAS` (canonical seed data, idempotently inserted on lifespan startup).
+**`backend/app/api/routers/personas.py`** — Mounted at `/api/v1/personas`. Full Persona CRUD: `GET /`, `POST /`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/clone`, `POST /seed`. **`GET /` returns global + community + the caller's own personal personas (filtered by `Persona.author_id`)**; `POST /` rejects non-personal types and stamps `author_id`; `PUT/DELETE` require ownership; `clone` of a personal persona is rejected unless the caller already owns it. `PersonaResponse` is camelCase — matches the frontend `Persona` interface directly. Hosts `_SEED_PERSONAS` (canonical seed data, idempotently inserted on lifespan startup).
 
 **`backend/app/api/routers/chat.py`** — Mounted at `/api/v1/chat`. Standalone AI chat (no PDF). `ChatRequest` accepts `ai_provider` (`"openai"` | `"anthropic"` | `"gemini"`). Routes through `llm_providers.call_llm` — falls back to Gemini if requested provider key is absent. Uses `prompt_builder.resolve_system_prompt` and `model_router.resolve_alias` for the DB audit alias.
 
@@ -207,7 +209,7 @@ AI_Study_Partner/
 
 ### Models
 
-**`backend/app/models/domain.py`** — Single source of truth for all ORM models. Includes: `User`, `BaseDocument`, `UserDocument`, `Folder`, `Thread`, `Message`, `Chunk`, `PageSummary`, `Persona` (with `persona_type`, `system_prompt`, `original_persona_id`), `StudySession`, `SessionMemory`, `UserProfile`, `CourseRecord`, `JobApplication`, `LectureVideo`, `VideoSyncIndex`. Alembic autogenerates migrations from this file.
+**`backend/app/models/domain.py`** — Single source of truth for all ORM models. Includes: `User` (with `subscription_tier`, `auth_provider`, `google_sub`), `BaseDocument`, `UserDocument`, `Folder`, `Thread` (with direct `user_id` for ownership), `Message`, `Chunk`, `PageSummary`, `Persona` (with `persona_type`, `system_prompt`, `original_persona_id`, `author_id`), `StudySession`, `SessionMemory`, `UserProfile`, `CourseRecord`, `JobApplication`, `LectureVideo`, `VideoSyncIndex`, `UsageEvent` (one row per LLM call, drives future quota enforcement). Alembic autogenerates migrations from this file.
 
 ---
 
@@ -611,3 +613,8 @@ Documenting the engineering dilemmas faced during development and the rationale 
 | LibreOffice headless for Office conversion | Keeps UI exclusively `react-pdf`-based |
 | `doc_type` field switches viewer | `GENERAL` → `<PdfViewer>`, `SOURCE_CODE` → `<CodeViewer>` |
 | Folder delete = null FKs, don't cascade | Documents become unfiled rather than orphaned |
+| Cross-user reads return 404, not 403 | Avoids leaking the existence of another user's row to ID-enumeration probes |
+| Each `/auth/guest-login` mints a fresh user | Prior shared-guest behaviour caused all reviewers to see each other's data |
+| `Thread.user_id` is the authoritative ownership field | Both doc-anchored and standalone chat threads carry it; document_id alone is insufficient (NULL for /chat threads) |
+| Personal personas with `author_id IS NULL` are dead data | Pre-existing legacy rows from before ownership enforcement; invisible everywhere by design |
+| `cost_usd_micros` is BIGINT, not INT | INT32 max is 2.147 B micros (~$2,147 aggregate) — overflows fast |

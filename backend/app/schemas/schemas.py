@@ -57,9 +57,11 @@ class MessageResponse(BaseModel):
 # ── Threads ────────────────────────────────────────────────────────────────
 
 class ThreadCreate(BaseModel):
-    # document_id now refers to userdocuments.id
-    document_id: int
-    page_number: int
+    # document_id refers to userdocuments.id; nullable for standalone chat
+    # threads created without an attached document.
+    document_id: Optional[int] = None
+    # page_number is meaningless without a document; nullable for the same reason.
+    page_number: Optional[int] = None
     selected_text: Optional[str] = None
     coordinates: Optional[Any] = None
     initial_message: Optional[str] = None
@@ -69,7 +71,7 @@ class ThreadCreate(BaseModel):
 class ThreadResponse(BaseModel):
     id: int
     document_id: Optional[int] = None   # userdocuments.id
-    page_number: int
+    page_number: Optional[int] = None   # null for standalone chat threads
     selected_text: Optional[str] = None
     coordinates: Optional[Any] = None
     emoji: Optional[str] = "💬"

@@ -16,8 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Message, Thread
+from app.models.domain import Message, Thread, User
 from app.services.prompt_builder import resolve_system_prompt
 from app.services.model_router import resolve_alias
 from app.services.llm_providers import call_llm
@@ -52,11 +53,16 @@ class ChatResponse(BaseModel):
 # ── Route ──────────────────────────────────────────────────────────────────
 
 @router.post("/", response_model=ChatResponse)
-def chat(payload: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    payload: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Send a message and receive an AI reply.
 
     Flow:
-      1. Resolve or create a Thread (standalone: document_id = NULL).
+      1. Resolve or create a Thread (standalone: document_id = NULL). Existing
+         threads are looked up under the current user — cross-user lookups 404.
       2. Persist the user Message.
       3. Load full conversation history for the thread.
       4. Resolve the Persona's system prompt (with session memories appended).
@@ -69,7 +75,9 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     # ── 1. Thread ───────────────────────────────────────────────────────────
     if payload.thread_id is not None:
         thread: Thread | None = (
-            db.query(Thread).filter(Thread.id == payload.thread_id).first()
+            db.query(Thread)
+            .filter(Thread.id == payload.thread_id, Thread.user_id == current_user.id)
+            .first()
         )
         if not thread:
             raise HTTPException(
@@ -78,6 +86,7 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
             )
     else:
         thread = Thread(
+            user_id=current_user.id,
             document_id=None,
             persona_id=payload.persona_id,
             selected_text="",

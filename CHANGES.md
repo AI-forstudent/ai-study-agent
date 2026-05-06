@@ -2,6 +2,72 @@
 
 ---
 
+## 2026-05-06 — Multi-Tenant Isolation Hardening + Google Sign-In + Billing Schema
+
+**Scope:** Backend ownership enforcement (3 routers), unique guest accounts, real Google OAuth, frontend GIS integration, and the schema groundwork for token-based credit billing.
+
+### Why this change
+
+Three structural problems blocked the product moving past "demo" status:
+
+1. **Data was leaking between users.** `threads.py` had no auth dependency at all — any logged-in user could enumerate any other user's threads/messages by ID. `personas.py` returned every personal persona to every user. Several `documents.py` summary endpoints accepted requests against any document. `chat.py` could read any thread.
+2. **All guests shared one account.** `guest-login` always returned a token for `guest@studyagent.ai`, so every "Continue as guest" reviewer saw every other guest's data.
+3. **The Google button was a `console.log`.** No backend route, no client-side OAuth flow.
+
+In addition, the user wants per-account token-usage billing in the medium term. Adding the schema (subscription_tier on users, usage_events table) in the *same* migration as the isolation fix avoids a follow-up migration and means later phases (logging, quota enforcement, Settings UI) are pure-feature additions.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/app/core/quota_config.py` | Single place to tune subscription tiers, period length (default daily), and credit pricing. Phase 1 ships only the schema; this module is wired in by phase 2. |
+| `backend/alembic/versions/i4h5g6f7e8d9_multi_tenant_isolation_and_billing.py` | One migration: adds `users.subscription_tier`, `users.auth_provider`, `users.google_sub`, `threads.user_id`, and the `usage_events` table. Backfills `threads.user_id` from `userdocuments.user_id` so existing chats remain attributable. |
+| `backend/tests/test_quota_config.py` | Unit tests for the quota config module (default-tier fallback, tier ladder monotonicity, period sanity). |
+| `backend/tests/test_isolation_integration.py` | `@pytest.mark.integration` regression tests proving User A cannot read/edit/delete User B's threads or personas, and that two `/guest-login` calls produce distinct accounts. Run with `--run-integration`. |
+
+#### ✏️ Modified — Backend
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | `User`: new fields `subscription_tier` / `auth_provider` / `google_sub` + `usage_events` relationship. `Thread`: new `user_id` column (direct ownership for both doc-anchored and standalone threads). New `UsageEvent` model — one row per LLM call, indexed on `(user_id, created_at)`. `cost_usd_micros` is BIGINT (aggregating micros across many events overflows INT32 quickly). |
+| `backend/app/api/routers/auth.py` | `guest_login` now mints a fresh User per call (UUID-based email, tier=`guest`). New `POST /api/v1/auth/google` verifies a Google ID token via `google-auth`, requires `email_verified`, and either logs in / links / creates the account. `register` records `auth_provider='password'` explicitly. |
+| `backend/app/api/routers/threads.py` | All four routes now require `current_user`. New `_get_owned_thread_or_404` and `_assert_owns_userdoc` helpers; cross-user access returns 404 (no existence leak). Thread creation always sets `user_id`. |
+| `backend/app/api/routers/chat.py` | Adds `current_user` dep. Thread lookup is filtered by ownership; new threads are stamped with `user_id`. |
+| `backend/app/api/routers/documents.py` | The four summary endpoints (`pages/{n}/summary`, `summaries`, `summary/all`, `summary/custom`) now filter `UserDocument` by `(id, user_id)` before doing any work. |
+| `backend/app/api/routers/personas.py` | `GET /` returns global + community + the caller's own personal personas. `POST /` rejects non-personal types and stamps `author_id`. `PUT/DELETE` require ownership via `_get_owned_personal_persona`. `clone` of a personal persona is rejected unless the caller already owns it; clones are stamped with the caller's `author_id`. |
+| `backend/app/core/config.py` | Adds `GOOGLE_OAUTH_CLIENT_ID` (empty string disables the `/auth/google` endpoint with 503). |
+| `backend/app/schemas/schemas.py` | `ThreadCreate.document_id` and `ThreadCreate.page_number` are now `Optional` to match standalone-thread reality. `ThreadResponse.page_number` made `Optional` to match. |
+| `backend/pyproject.toml` | Adds `google-auth>=2.35.0` for ID-token verification. |
+
+#### ✏️ Modified — Frontend
+
+| File | What changed |
+|---|---|
+| `ai-study-client/index.html` | Loads the Google Identity Services SDK (`accounts.google.com/gsi/client`) async. |
+| `ai-study-client/src/components/ui/AuthModal.tsx` | Replaces the `console.log` Google placeholder with a real GIS rendered button. Uses a polling effect to wait for the GIS script. On success, exchanges the ID token via `api.googleLogin` and stores the JWT. |
+| `ai-study-client/src/services/api.ts` | New `googleLogin(idToken)` method. Adds `updatePersona` / `deletePersona` / `clonePersona` wrappers (the store now uses these instead of raw fetch). |
+| `ai-study-client/src/store/useAppStore.ts` | All persona traffic moved from raw `fetch()` (which dropped the auth header) to the Axios `api` client (auth interceptor). Without this change, every persona call would 401 against the now-authenticated backend. |
+| `.env.example` | Documents `GOOGLE_OAUTH_CLIENT_ID` (backend) and `VITE_GOOGLE_OAUTH_CLIENT_ID` (frontend) with a setup walkthrough. |
+
+### Behaviour changes
+
+- **The shared `guest@studyagent.ai` user is reclassified to `subscription_tier='guest'`** but is no longer issued tokens — every new guest gets a unique `guest-<uuid>@studyagent.ai` row. Existing tokens for the legacy account remain valid (no forced sign-out).
+- **Pre-existing personal personas with `author_id IS NULL`** become invisible to all users. They remain in the DB; clean up by hand if desired (`DELETE FROM personas WHERE persona_type='personal' AND author_id IS NULL`).
+- **Pre-existing standalone threads with `document_id IS NULL`** end up with `user_id IS NULL` (no way to derive ownership) and become invisible to all users. Same caveat as above.
+- **Cross-user reads return 404, not 403.** Intentional: it does not leak the existence of another user's data to ID-enumeration probes.
+
+### Phase 2 (later) — what this commit set up
+
+This commit ships the schema and isolation. The phases below are pure additions on top:
+
+1. **Logging** — thread `user_id` through `call_llm` / `ask_gemini` and write a `UsageEvent` per LLM call (read tokens from `usage_metadata` on each provider's response).
+2. **Quota enforcement** — pre-call check `SUM(credits) WHERE user_id=X AND created_at > NOW() - PERIOD_SECONDS >= tier limit` → 429 if over.
+3. **Settings UI** — `GET /api/v1/profile/usage` returning `{tier, used, limit, period_resets_at, by_provider}` + a `<UsageBar />` component.
+
+---
+
 ## 2026-05-04 (later) — Vibe-Coding Setup: MCP, Multi-Tool Context, Doc Restructure
 
 **Scope:** Documentation, configuration, and tooling. **Zero application code changes.** No source files in `backend/`, `ai-study-client/`, `alembic/`, `tests/`, `docker-compose.*.yml`, `Dockerfile.*`, `pyproject.toml`, `package.json`, or any application module were modified.

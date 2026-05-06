@@ -18,7 +18,7 @@ Migration strategy (run once after checkout)
 """
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, Float, ForeignKey,
+    BigInteger, Boolean, Column, DateTime, Enum, Float, ForeignKey,
     Integer, String, Table, Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -52,6 +52,18 @@ class User(Base):
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
     is_active     = Column(Boolean, nullable=False, server_default="true")
 
+    # Subscription tier — drives the per-period credit quota.
+    # Values: 'guest' | 'free' | 'plus' | 'pro'.  See app.core.quota_config.
+    subscription_tier = Column(String, nullable=False, server_default="free")
+
+    # Authentication provider that created/owns this account.
+    # Values: 'password' | 'google'.  Determines which login flow is valid.
+    auth_provider = Column(String, nullable=False, server_default="password")
+
+    # Stable Google subject identifier (the `sub` claim from a verified ID token).
+    # Unique when present; NULL for password accounts.
+    google_sub = Column(String, nullable=True, unique=True, index=True)
+
     user_documents    = relationship("UserDocument", back_populates="owner")
     folders           = relationship("Folder",        back_populates="owner")
     authored_personas = relationship(
@@ -62,6 +74,7 @@ class User(Base):
     academic_profile  = relationship("AcademicProfile",    back_populates="user", uselist=False)
     course_records    = relationship("StudentCourseRecord", back_populates="user")
     job_applications  = relationship("JobApplication",     back_populates="user")
+    usage_events      = relationship("UsageEvent",         back_populates="user")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -202,6 +215,12 @@ class Thread(Base):
     __tablename__ = "threads"
 
     id                     = Column(Integer, primary_key=True, index=True)
+    # Direct ownership: every Thread is owned by exactly one User. This is
+    # the authoritative attribution for both document-anchored and
+    # standalone (chat.py) threads. Existing rows are backfilled in
+    # migration i4h5g6f7e8d9; orphans remain NULL and are filtered out
+    # of every listing/read endpoint (effectively invisible).
+    user_id                = Column(Integer, ForeignKey("users.id"),         nullable=True, index=True)
     # document_id → userdocuments.id  (chats belong to the user's workspace)
     document_id            = Column(Integer, ForeignKey("userdocuments.id"), nullable=True)
     parent_thread_id       = Column(Integer, ForeignKey("threads.id"),       nullable=True)
@@ -218,6 +237,7 @@ class Thread(Base):
     persona_id    = Column(String,  ForeignKey("personas.id"), nullable=True)
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
 
+    user          = relationship("User")
     user_document = relationship("UserDocument", back_populates="threads")
     persona       = relationship("Persona",      back_populates="threads")
     messages      = relationship("Message",      back_populates="thread",
@@ -465,3 +485,42 @@ class JobApplication(Base):
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="job_applications")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# USAGE / BILLING  (one row per LLM call — drives quota enforcement and metering)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class UsageEvent(Base):
+    """
+    A single LLM invocation made on behalf of a user.
+
+    Schema notes
+    ────────────
+    • One row per call. Periodic aggregation is computed by SUM over a time window
+      — there is no per-user counter cache. Index on (user_id, created_at) keeps
+      the rolling-window query fast.
+    • `credits` is the billable unit shown in the UI. The mapping
+      (input_tokens, output_tokens, model) → credits is computed at write time
+      using app.core.quota_config so price changes never rewrite history.
+    • `cost_usd_micros` stores the provider's actual USD cost in millionths
+      ($0.000001 units). Integer math avoids float drift in summed reports.
+    • `endpoint` distinguishes which feature triggered the call so the UI
+      can break down usage by feature ('chat' / 'summary_full' / 'transcript' / …).
+    """
+    __tablename__ = "usage_events"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    provider        = Column(String, nullable=False)            # 'gemini' | 'openai' | 'anthropic'
+    model_alias     = Column(String(16), nullable=True)         # 'VOLT' | 'SPARK' | …
+    model_name      = Column(String, nullable=True)             # raw provider model id
+    endpoint        = Column(String, nullable=False)            # 'chat' | 'summary_full' | …
+    input_tokens    = Column(Integer,    nullable=False, server_default="0")
+    output_tokens   = Column(Integer,    nullable=False, server_default="0")
+    credits         = Column(Integer,    nullable=False, server_default="0")
+    # BIGINT — aggregating micros across many events can exceed INT32 quickly.
+    cost_usd_micros = Column(BigInteger, nullable=False, server_default="0")
+
+    user = relationship("User", back_populates="usage_events")

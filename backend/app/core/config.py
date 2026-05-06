@@ -39,6 +39,12 @@ ALLOWED_ORIGINS: list[str] = [o.strip() for o in _origins_raw.split(",")]
 SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM: str  = "HS256"
 
+# ── Google Sign-In ────────────────────────────────────────────────────────
+# OAuth Client ID from Google Cloud Console → APIs & Services → Credentials.
+# Empty string disables the /api/v1/auth/google endpoint (returns 503) so
+# deployments without Google Sign-In don't need to configure anything.
+GOOGLE_OAUTH_CLIENT_ID: str = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+
 # ── Observability & AI Ops (optional — leave empty to disable) ─────────────
 
 # Sentry: error tracking + performance monitoring.

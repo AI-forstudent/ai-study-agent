@@ -26,6 +26,9 @@ export const api = {
   login:      (formData: FormData) => apiClient.post('/api/v1/auth/login', formData),
   register:   (userData: unknown)  => apiClient.post('/api/v1/auth/register', userData),
   guestLogin: ()                   => apiClient.post('/api/v1/auth/guest-login'),
+  // Exchanges a Google ID token (from Google Identity Services) for our JWT.
+  googleLogin: (idToken: string) =>
+    apiClient.post('/api/v1/auth/google', { id_token: idToken }),
 
   // ── System ───────────────────────────────────────────────────────────────
   checkHealth: () => apiClient.get('/health'),
@@ -91,16 +94,35 @@ export const api = {
     apiClient.patch(`/api/v1/documents/${docId}/star`, { is_starred: isStarred }),
 
   // ── Personas ─────────────────────────────────────────────────────────────
-  // Note: useAppStore.ts calls Grand Vision persona routes directly via fetch.
-  // These wrappers remain for any component that imports api directly.
+  // All persona traffic flows through here so the auth interceptor attaches
+  // the Bearer token automatically. Direct fetch() calls would be unauth'd
+  // and get 401 from the backend's per-user filtering.
   getPersonas: () => apiClient.get('/api/v1/personas/'),
 
   createPersona: (payload: {
     id: string;
     display_name: string;
-    traits?: Record<string, string>;
-    manual_prompt_override?: string;
+    description?: string;
+    persona_type?: string;
+    system_prompt?: string;
+    tags?: string[];
+    icon?: string;
+    original_persona_id?: string | null;
   }) => apiClient.post('/api/v1/personas/', payload),
+
+  updatePersona: (id: string, payload: {
+    display_name?: string;
+    description?: string;
+    system_prompt?: string;
+    tags?: string[];
+    icon?: string;
+  }) => apiClient.put(`/api/v1/personas/${encodeURIComponent(id)}`, payload),
+
+  deletePersona: (id: string) =>
+    apiClient.delete(`/api/v1/personas/${encodeURIComponent(id)}`),
+
+  clonePersona: (id: string) =>
+    apiClient.post(`/api/v1/personas/${encodeURIComponent(id)}/clone`),
 
   // ── Threads & Messages ────────────────────────────────────────────────────
   getThreads: (docId: number) =>

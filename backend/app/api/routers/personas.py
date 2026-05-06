@@ -21,10 +21,12 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Persona, Thread, StudySession, SessionMemory
+from app.models.domain import Persona, SessionMemory, StudySession, Thread, User
 
 router = APIRouter(tags=["personas"])
 
@@ -248,10 +250,28 @@ def seed_db(db: Session) -> int:
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[PersonaResponse])
-def list_personas(db: Session = Depends(get_db)):
-    """Return all personas ordered global → community → personal."""
+def list_personas(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return personas the caller can use.
+
+    Visibility rules:
+      - global    : visible to everyone
+      - community : visible to everyone
+      - personal  : visible only to the persona's author (Persona.author_id)
+        Personal personas with NULL author_id (legacy/orphan rows from before
+        ownership was enforced) are filtered out — they are dead data and
+        re-creatable.
+    """
     rows = (
         db.query(Persona)
+        .filter(
+            or_(
+                Persona.persona_type.in_(("global", "community")),
+                Persona.author_id == current_user.id,
+            )
+        )
         .order_by(Persona.persona_type, Persona.display_name)
         .all()
     )
@@ -259,8 +279,23 @@ def list_personas(db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=PersonaResponse, status_code=201)
-def create_persona(payload: CreatePersonaRequest, db: Session = Depends(get_db)):
-    """Create a new personal persona (used for deferred clone saves from the frontend)."""
+def create_persona(
+    payload: CreatePersonaRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new personal persona (used for deferred clone saves from the frontend).
+
+    Only personal personas can be created via this endpoint. global and
+    community personas are seeded at startup and are not user-creatable.
+    The caller is recorded as the persona's author.
+    """
+    if payload.persona_type != "personal":
+        raise HTTPException(
+            status_code=403,
+            detail="Only personal personas can be created via this endpoint.",
+        )
+
     if db.query(Persona).filter(Persona.id == payload.id).first():
         raise HTTPException(status_code=409, detail=f"Persona '{payload.id}' already exists.")
 
@@ -274,6 +309,7 @@ def create_persona(payload: CreatePersonaRequest, db: Session = Depends(get_db))
         system_prompt=payload.system_prompt,
         word_count=word_count,
         original_persona_id=payload.original_persona_id,
+        author_id=current_user.id,
         traits={
             "icon": payload.icon,
             "author": "Me",
@@ -300,12 +336,34 @@ def seed_personas(db: Session = Depends(get_db)):
     return {"message": f"Seeded {inserted} personas."}
 
 
-@router.put("/{persona_id}", response_model=PersonaResponse)
-def update_persona(persona_id: str, payload: UpdatePersonaRequest, db: Session = Depends(get_db)):
-    """Update fields of an existing persona."""
+def _get_owned_personal_persona(persona_id: str, user: User, db: Session) -> Persona:
+    """Fetch a personal persona owned by the caller, or 404.
+
+    Global/community personas always 403 — they are seed data and not editable.
+    A personal persona owned by a different user 404s (no existence leak).
+    """
     persona = db.query(Persona).filter(Persona.id == persona_id).first()
     if not persona:
         raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found.")
+    if persona.persona_type != "personal":
+        raise HTTPException(
+            status_code=403,
+            detail="Global and community personas cannot be modified.",
+        )
+    if persona.author_id != user.id:
+        raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found.")
+    return persona
+
+
+@router.put("/{persona_id}", response_model=PersonaResponse)
+def update_persona(
+    persona_id: str,
+    payload: UpdatePersonaRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update fields of a personal persona owned by the caller."""
+    persona = _get_owned_personal_persona(persona_id, current_user, db)
 
     if payload.display_name is not None:
         persona.display_name = payload.display_name
@@ -329,8 +387,15 @@ def update_persona(persona_id: str, payload: UpdatePersonaRequest, db: Session =
 
 
 @router.delete("/{persona_id}", status_code=204)
-def delete_persona(persona_id: str, db: Session = Depends(get_db)):
-    """Delete a personal persona by ID. Global and community personas are protected.
+def delete_persona(
+    persona_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a personal persona owned by the caller.
+
+    Global and community personas are protected. A persona owned by a
+    different user 404s (no existence leak).
 
     Before removing the row we null-out every FK that references it so the
     DELETE doesn't hit a PostgreSQL IntegrityError:
@@ -339,14 +404,7 @@ def delete_persona(persona_id: str, db: Session = Depends(get_db)):
       - Persona.original_persona_id  (clones of this persona become unlinked)
     SessionMemory rows are hard-deleted because persona_id is NOT NULL there.
     """
-    persona = db.query(Persona).filter(Persona.id == persona_id).first()
-    if not persona:
-        raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found.")
-    if persona.persona_type != "personal":
-        raise HTTPException(
-            status_code=403,
-            detail="Only personal personas can be deleted.",
-        )
+    persona = _get_owned_personal_persona(persona_id, current_user, db)
 
     # ── Detach all inbound FK references ──────────────────────────────────
     db.query(Thread).filter(
@@ -372,18 +430,30 @@ def delete_persona(persona_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{persona_id}/clone", response_model=PersonaResponse, status_code=201)
-def clone_persona(persona_id: str, db: Session = Depends(get_db)):
+def clone_persona(
+    persona_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
-    Clone an existing persona.
+    Clone an existing persona into a personal persona owned by the caller.
 
-    Creates a new row with:
+    The source must be visible to the caller — i.e. global, community, or
+    a personal persona the caller already owns.
+
+    The clone:
       - persona_type  = 'personal'
+      - author_id     = current_user.id   (so it shows up in their list)
       - original_persona_id = source persona id
       - display_name  = 'Copy of {original name}'
       - All other fields inherited from the original.
     """
     original = db.query(Persona).filter(Persona.id == persona_id).first()
     if not original:
+        raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found.")
+    if original.persona_type == "personal" and original.author_id != current_user.id:
+        # Cloning another user's personal persona is not allowed — they may
+        # have written private content into the system prompt.
         raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found.")
 
     new_id = f"personal_clone_{persona_id}_{int(time.time())}"
@@ -398,7 +468,7 @@ def clone_persona(persona_id: str, db: Session = Depends(get_db)):
         word_count=original.word_count,
         traits=original.traits,
         original_persona_id=original.id,
-        author_id=None,   # not tied to a user account yet
+        author_id=current_user.id,
     )
     db.add(clone)
     db.commit()

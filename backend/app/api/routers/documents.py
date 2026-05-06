@@ -481,10 +481,17 @@ def review_document(
 def create_page_summary(
     document_id: int,
     page_number: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # document_id is UserDocument.id; summaries are stored against BaseDocument
-    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    # document_id is UserDocument.id; summaries are stored against BaseDocument.
+    # The summary itself is shared across users (CAS), but only the document's
+    # owner can request its generation.
+    user_doc = (
+        db.query(UserDocument)
+        .filter(UserDocument.id == document_id, UserDocument.user_id == current_user.id)
+        .first()
+    )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
     base_hash = user_doc.base_hash
@@ -520,8 +527,16 @@ def create_page_summary(
 
 
 @router.get("/{document_id}/summaries", response_model=List[PageSummaryResponse])
-def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
-    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+def get_document_summaries(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_doc = (
+        db.query(UserDocument)
+        .filter(UserDocument.id == document_id, UserDocument.user_id == current_user.id)
+        .first()
+    )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return (
@@ -532,9 +547,17 @@ def get_document_summaries(document_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{document_id}/summary/all", response_model=FullSummaryResponse)
-def create_full_document_summary(document_id: int, db: Session = Depends(get_db)):
+def create_full_document_summary(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Generate (or return cached) a comprehensive summary of the entire document."""
-    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    user_doc = (
+        db.query(UserDocument)
+        .filter(UserDocument.id == document_id, UserDocument.user_id == current_user.id)
+        .first()
+    )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -567,10 +590,15 @@ def create_full_document_summary(document_id: int, db: Session = Depends(get_db)
 def create_custom_summary(
     document_id: int,
     payload: CustomSummaryRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Generate a summary guided by custom user instructions."""
-    user_doc = db.query(UserDocument).filter(UserDocument.id == document_id).first()
+    user_doc = (
+        db.query(UserDocument)
+        .filter(UserDocument.id == document_id, UserDocument.user_id == current_user.id)
+        .first()
+    )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
 

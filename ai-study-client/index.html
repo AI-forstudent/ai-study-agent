@@ -5,6 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ai-study-client</title>
+    <!-- Google Identity Services — populates window.google.accounts.id.
+         Loaded async so it never blocks the React boot. The AuthModal waits
+         for window.google before rendering the Google Sign-In button. -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
     <div id="root"></div>
