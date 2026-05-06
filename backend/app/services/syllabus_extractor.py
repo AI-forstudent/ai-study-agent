@@ -37,7 +37,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.services.document_service import ask_gemini
+# NOTE: `ask_gemini` is imported lazily inside `extract_syllabus` to break a
+# circular import. document_service imports prompt_builder, which now imports
+# this module — a top-level `from app.services.document_service import ...`
+# would close the cycle. Lazy import keeps each module's top-level imports
+# acyclic.
 
 
 _EXTRACTION_PROMPT = """\
@@ -81,6 +85,9 @@ def extract_syllabus(text: str) -> dict[str, Any]:
     """
     if not text or not text.strip():
         return _empty_extraction()
+
+    # Lazy import — see top-of-file note about the document_service cycle.
+    from app.services.document_service import ask_gemini
 
     # Cap the syllabus body at a generous-but-bounded token budget. Most
     # syllabi are 3-10 pages; 12k characters comfortably covers that without
