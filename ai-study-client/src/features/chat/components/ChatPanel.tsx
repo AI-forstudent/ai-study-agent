@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -71,6 +71,91 @@ const summaryMdComponents = {
   h2:     ({ node, ...props }: any) => <h2 dir="auto" className="text-lg font-semibold mt-3 mb-2" {...props} />,
   h3:     ({ node, ...props }: any) => <h3 dir="auto" className="text-base font-semibold mt-2 mb-1" {...props} />,
   strong: ({ node, ...props }: any) => <strong className="text-[#37352F] font-semibold" {...props} />,
+};
+
+// ── Code block with copy button (assistant chat messages) ─────────────────
+// Used as the renderer for fenced code blocks in markdown — wraps the content
+// in a chrome strip showing the language label + a copy-to-clipboard button.
+// Inline code (single-backtick) renders through `inlineCode` separately.
+function CodeBlockWithCopy({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // Clipboard unavailable (insecure context) — silently no-op.
+    }
+  };
+  return (
+    <div className="not-prose my-3 rounded-lg border border-[#E8E8E6] bg-[#F7F7F5] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#E8E8E6] text-[10px] uppercase tracking-wide text-[#787774] font-medium">
+        <span>{language || 'code'}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[#787774] hover:text-[#37352F] hover:bg-[#EFEFED] transition-colors duration-150"
+          title="Copy to clipboard"
+        >
+          {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="p-3 overflow-x-auto text-xs leading-relaxed">
+        <code className="font-mono text-[#37352F]">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ── Markdown renderer config used by assistant chat messages ──────────────
+// Document-style: full markdown surface (headings, lists, tables, code blocks
+// with copy, blockquotes, hr, KaTeX) with comfortable typography. Distinct
+// from `summaryMdComponents` because the chat bubble lives outside `prose`
+// in this design (we don't want the prose plugin's bubble-tight overrides).
+const assistantMdComponents = {
+  p:          ({ node, ...props }: any) => <p dir="auto" {...props} />,
+  li:         ({ node, ...props }: any) => <li dir="auto" {...props} />,
+  h1:         ({ node, ...props }: any) => <h1 dir="auto" className="text-xl font-bold text-[#37352F] mt-5 mb-2" {...props} />,
+  h2:         ({ node, ...props }: any) => <h2 dir="auto" className="text-lg font-bold text-[#37352F] mt-4 mb-2" {...props} />,
+  h3:         ({ node, ...props }: any) => <h3 dir="auto" className="text-base font-semibold text-[#37352F] mt-3 mb-1.5" {...props} />,
+  h4:         ({ node, ...props }: any) => <h4 dir="auto" className="text-sm font-semibold text-[#37352F] mt-2 mb-1" {...props} />,
+  strong:     ({ node, ...props }: any) => <strong className="text-[#37352F] font-semibold" {...props} />,
+  blockquote: ({ node, ...props }: any) => (
+    <blockquote dir="auto" className="border-s-4 border-indigo-200 bg-indigo-50/40 ps-4 pe-3 py-2 my-3 text-[#37352F] italic" {...props} />
+  ),
+  hr:         () => <hr className="my-5 border-t border-[#E8E8E6]" />,
+  table:      ({ node, ...props }: any) => (
+    <div className="overflow-x-auto my-4 not-prose">
+      <table className="border-collapse border border-[#E8E8E6] w-full rounded-lg text-sm" {...props} />
+    </div>
+  ),
+  th:         ({ node, ...props }: any) => (
+    <th dir="auto" className="border border-[#E8E8E6] bg-[#F7F7F5] p-2 font-semibold text-[#37352F] text-start" {...props} />
+  ),
+  td:         ({ node, ...props }: any) => (
+    <td dir="auto" className="border border-[#E8E8E6] p-2 text-[#37352F] text-start" {...props} />
+  ),
+  // react-markdown v10: code blocks have className="language-xxx"; inline
+  // single-backtick code has no className. We dispatch on that to render a
+  // chrome strip + copy button for blocks vs. plain inline pill for inline.
+  code: ({ inline, className, children, ...rest }: any) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const text = String(children).replace(/\n$/, '');
+    if (!inline && match) {
+      return <CodeBlockWithCopy language={match[1]} code={text} />;
+    }
+    if (!inline && text.includes('\n')) {
+      // Fenced block without a language hint — still render with copy.
+      return <CodeBlockWithCopy language="" code={text} />;
+    }
+    return (
+      <code className="px-1.5 py-0.5 rounded bg-[#F7F7F5] border border-[#E8E8E6] text-[0.85em] font-mono text-[#37352F]" {...rest}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }: any) => <>{children}</>,
 };
 
 const SummaryContent = ({ text }: { text: string }) => (
@@ -183,6 +268,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   // ── Message renderer ───────────────────────────────────────────────────────
+  // User messages render as compact gray bubbles (right-aligned, capped at
+  // 85%). Assistant messages render document-style — full width, no card
+  // chrome, comfortable typography — so long-form rich-markdown answers
+  // (headings, tables, code blocks, math) feel like reading a Notion page
+  // rather than a chat balloon. The fork button stays on assistant messages.
   const renderMessage = (
     msg: Message,
     allThreads: Thread[],
@@ -190,90 +280,81 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
     setThread: Function,
     forkHandler: Function,
     pendingId: number | null,
-  ) => (
-    <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-      {/* Avatar */}
-      <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-        msg.role === 'user'
-          ? 'bg-[#EFEFED] text-[#787774]'
-          : 'bg-indigo-50 text-indigo-600'
-      }`}>
-        {msg.role === 'user' ? <UserIcon size={14} /> : <Bot size={14} />}
-      </div>
+  ) => {
+    const forkButton = msg.role === 'assistant' && (() => {
+      const isForkActiveInDB = currentThread.forked_from_message_id === msg.id;
+      const isPendingFork    = pendingId === msg.id;
 
-      <div className="flex flex-col gap-1.5 max-w-[85%]">
-        {/* Bubble */}
-        <div className={`p-3 text-sm leading-relaxed ${
-          msg.role === 'user'
-            ? 'bg-[#F7F7F5] text-[#37352F] border border-[#E8E8E6] rounded-xl rounded-tr-none whitespace-pre-wrap'
-            : 'bg-white border border-[#E8E8E6] text-[#37352F] rounded-xl rounded-tl-none prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0'
-        }`}>
-          <ReactMarkdown
-            remarkPlugins={[remarkMath, remarkGfm]}
-            rehypePlugins={[rehypeKatex]}
-            components={{
-              p:     ({ node, ...props }) => <p dir="auto" {...props} />,
-              li:    ({ node, ...props }) => <li dir="auto" {...props} />,
-              table: ({ node, ...props }) => (
-                <div className="overflow-x-auto my-4">
-                  <table className="border-collapse border border-[#E8E8E6] w-full rounded-lg" {...props} />
-                </div>
-              ),
-              th: ({ node, ...props }) => (
-                <th dir="auto" className="border border-[#E8E8E6] bg-[#F7F7F5] p-2 font-semibold text-[#37352F] text-start" {...props} />
-              ),
-              td: ({ node, ...props }) => (
-                <td dir="auto" className="border border-[#E8E8E6] p-2 text-[#787774] text-start" {...props} />
-              ),
-            }}
-          >
-            {msg.content}
-          </ReactMarkdown>
-        </div>
+      let btnClass = 'text-[#787774] border border-[#E8E8E6] hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50';
+      let btnText  = 'Fork thread';
+      let btnTitle = 'Start a new branch from this message';
+      let onClickHandler: () => void = () => forkHandler(msg.id);
 
-        {/* Fork button — AI messages only */}
-        {msg.role === 'assistant' && (
-          <div className="flex justify-start ms-1">
-            {(() => {
-              const isForkActiveInDB = currentThread.forked_from_message_id === msg.id;
-              const isPendingFork    = pendingId === msg.id;
+      if (isForkActiveInDB) {
+        btnClass = 'bg-indigo-50 text-indigo-700 border border-indigo-200';
+        btnText  = 'Fork active — click to return';
+        btnTitle = 'Deactivate fork and return to parent thread';
+        onClickHandler = () => {
+          const parent = allThreads.find(t => t.id === currentThread.parent_thread_id);
+          if (parent) setThread(parent);
+        };
+      } else if (isPendingFork) {
+        btnClass = 'bg-amber-50 text-amber-700 border border-amber-200';
+        btnText  = 'Pending fork — click to cancel';
+        btnTitle = 'Cancel planned fork';
+        onClickHandler = () => forkHandler(msg.id);
+      }
 
-              let btnClass = 'text-[#787774] border border-[#E8E8E6] hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50';
-              let btnText  = 'Fork thread';
-              let btnTitle = 'Start a new branch from this message';
-              let onClickHandler = () => forkHandler(msg.id);
+      return (
+        <button
+          onClick={onClickHandler}
+          className={`self-start flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-medium transition-all duration-200 ${btnClass}`}
+          title={btnTitle}
+        >
+          <GitBranch size={12} />
+          {btnText}
+        </button>
+      );
+    })();
 
-              if (isForkActiveInDB) {
-                btnClass = 'bg-indigo-50 text-indigo-700 border border-indigo-200';
-                btnText  = 'Fork active — click to return';
-                btnTitle = 'Deactivate fork and return to parent thread';
-                onClickHandler = () => {
-                  const parent = allThreads.find(t => t.id === currentThread.parent_thread_id);
-                  if (parent) setThread(parent);
-                };
-              } else if (isPendingFork) {
-                btnClass = 'bg-amber-50 text-amber-700 border border-amber-200';
-                btnText  = 'Pending fork — click to cancel';
-                btnTitle = 'Cancel planned fork';
-                onClickHandler = () => forkHandler(msg.id);
-              }
-
-              return (
-                <button
-                  onClick={onClickHandler}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-medium transition-all duration-200 ${btnClass}`}
-                  title={btnTitle}
-                >
-                  <GitBranch size={12} />
-                  {btnText}
-                </button>
-              );
-            })()}
+    if (msg.role === 'user') {
+      return (
+        <div key={msg.id} className="flex gap-3 flex-row-reverse">
+          <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#EFEFED] text-[#787774]">
+            <UserIcon size={14} />
           </div>
-        )}
+          <div className="flex flex-col gap-1.5 max-w-[85%]">
+            <div
+              className="p-3 text-sm leading-relaxed bg-[#F7F7F5] text-[#37352F] border border-[#E8E8E6] rounded-xl rounded-tr-none whitespace-pre-wrap"
+              dir="auto"
+            >
+              {msg.content}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div key={msg.id} className="flex gap-3">
+        <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-indigo-50 text-indigo-600">
+          <Bot size={14} />
+        </div>
+        <div className="flex flex-col gap-3 flex-1 min-w-0">
+          <article className="prose prose-base max-w-none text-[#37352F] prose-headings:text-[#37352F] prose-strong:text-[#37352F] prose-a:text-indigo-600 prose-p:leading-relaxed prose-li:leading-relaxed prose-ul:my-2 prose-ol:my-2 prose-pre:bg-transparent prose-pre:p-0 prose-pre:my-0 leading-relaxed">
+            <ReactMarkdown
+              remarkPlugins={[remarkMath, remarkGfm]}
+              rehypePlugins={[rehypeKatex]}
+              components={assistantMdComponents as any}
+            >
+              {msg.content}
+            </ReactMarkdown>
+          </article>
+          {forkButton}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // ── Tab helpers ────────────────────────────────────────────────────────────
   const tabBase = 'flex-1 py-3 flex items-center justify-center gap-1.5 text-xs font-medium border-b-2 transition-colors duration-150';
