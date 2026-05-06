@@ -270,6 +270,12 @@ class Course(Base):
     lecturers   = relationship("CourseLecturer", back_populates="course",
                                cascade="all, delete-orphan")
     syllabus_doc = relationship("UserDocument", foreign_keys=[syllabus_user_document_id])
+    exams          = relationship("Exam",
+                                  back_populates="course",
+                                  cascade="all, delete-orphan")
+    question_types = relationship("CourseQuestionType",
+                                  back_populates="course",
+                                  cascade="all, delete-orphan")
 
 
 class CourseTopic(Base):
@@ -306,6 +312,133 @@ class CourseLecturer(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     course = relationship("Course", back_populates="lecturers")
+
+
+class CourseQuestionType(Base):
+    """
+    Per-course question-type taxonomy (mirrors course_topics in shape).
+
+    Source distinguishes manually-curated entries (typically empty in V1)
+    from `inferred` types the AI tagger introduces while processing exams.
+    """
+    __tablename__ = "course_question_types"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    course_id  = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    name       = Column(String,  nullable=False)
+    source     = Column(String,  nullable=False, server_default="inferred")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    course = relationship("Course", back_populates="question_types")
+
+
+# ── Exam M2M association tables ────────────────────────────────────────────
+# Created as plain Tables (no extra columns) so SQLAlchemy can treat them
+# as pure join tables without a mapped class.
+
+exam_question_topics = Table(
+    "exam_question_topics",
+    Base.metadata,
+    Column("question_id", Integer,
+           ForeignKey("exam_questions.id", ondelete="CASCADE"), primary_key=True),
+    Column("topic_id", Integer,
+           ForeignKey("course_topics.id", ondelete="CASCADE"), primary_key=True),
+)
+
+exam_lecturers = Table(
+    "exam_lecturers",
+    Base.metadata,
+    Column("exam_id", Integer,
+           ForeignKey("exams.id", ondelete="CASCADE"), primary_key=True),
+    Column("lecturer_id", Integer,
+           ForeignKey("course_lecturers.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Exam(Base):
+    """
+    A past-paper uploaded against a course.
+
+    A single user-uploaded PDF backs the exam; the companion (blank-if-uploaded
+    -was-solved or solved-if-uploaded-was-blank) is generated lazily by the
+    Take/Grade flow and cached on a follow-up column once that work lands.
+
+    `aggregate_difficulty` is a 0..1 mean of the contained question difficulty
+    scores; recomputed whenever questions are tagged or new exams arrive in
+    the same course.
+
+    `reference_solutions` is a JSON map `{question_number: solution_text}` —
+    populated by the AI when the source PDF didn't include solutions.
+    """
+    __tablename__ = "exams"
+
+    id                       = Column(Integer, primary_key=True, index=True)
+    course_id                = Column(
+        Integer,
+        ForeignKey("courses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title                    = Column(String,  nullable=False)
+    year                     = Column(Integer, nullable=True)
+    semester                 = Column(String,  nullable=True)
+    user_document_id         = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    has_solutions            = Column(Boolean, nullable=False, server_default="false")
+    aggregate_difficulty     = Column(Float,   nullable=True)
+    reference_solutions      = Column(JSONB,   nullable=True)
+    processed_at             = Column(DateTime(timezone=True), nullable=True)
+    created_at               = Column(DateTime(timezone=True), server_default=func.now())
+
+    course      = relationship("Course",       back_populates="exams")
+    user_doc    = relationship("UserDocument", foreign_keys=[user_document_id])
+    questions   = relationship("ExamQuestion",
+                               back_populates="exam",
+                               cascade="all, delete-orphan")
+    lecturers   = relationship("CourseLecturer", secondary=exam_lecturers)
+
+
+class ExamQuestion(Base):
+    """
+    One extracted question from an Exam.
+
+    The `embedding` column powers difficulty calibration — distance from the
+    cluster center of same-typed questions in the same course translates to
+    a 0..1 difficulty_score. Embeddings are computed at extraction time using
+    the Gemini text-embedding-004 model (same one that powers RAG).
+
+    `reference_solution` is the AI's best guess at the correct answer; used
+    by the Take/Grade flow to grade student submissions in Phase 3.
+    """
+    __tablename__ = "exam_questions"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    exam_id             = Column(
+        Integer,
+        ForeignKey("exams.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    question_number     = Column(String,    nullable=False)
+    question_text       = Column(Text,      nullable=False)
+    page_number         = Column(Integer,   nullable=True)
+    question_type_id    = Column(
+        Integer,
+        ForeignKey("course_question_types.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    difficulty_score    = Column(Float,     nullable=True)
+    embedding           = Column(Vector(768), nullable=True)
+    reference_solution  = Column(Text,      nullable=True)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+
+    exam          = relationship("Exam",               back_populates="questions")
+    question_type = relationship("CourseQuestionType")
+    topics        = relationship("CourseTopic",
+                                 secondary=exam_question_topics)
 
 
 class CourseMembership(Base):

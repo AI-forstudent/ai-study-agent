@@ -2,6 +2,56 @@
 
 ---
 
+## 2026-05-06 (evening) — Exams Phase A: schema + processing pipeline
+
+**Scope:** Backend only. Adds the data model and the token-efficient processing pipeline for past-paper exams. Phase B (UI) and Phase C (Take/Grade) are separate commits.
+
+### Why this change
+
+The user's product spec for Course exams: upload past papers, AI breaks them into questions, each question is tagged with topic and question type from the course's taxonomy, every question gets a relative difficulty score, and the exam aggregates a difficulty number for the table view. Without batching the work into discrete passes, classification would re-read every exam on every interaction — burning tokens for no extra signal. The pipeline below caches each pass's output so the work is paid for once.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/l7k8j9i0h1g2_exams_and_questions.py` | Adds `course_question_types`, `exams`, `exam_questions` (with `Vector(768)`), `exam_question_topics` (M2M), `exam_lecturers` (M2M). |
+| `backend/app/services/exam_processor.py` | Three-pass pipeline: `extract_questions` (one Gemini call per exam), `tag_question` (one small Gemini call per question — chooses ids from existing course taxonomy or upserts new entries), `compute_difficulty_scores` (no-LLM, embedding-cluster-based calibration). `process_exam` glues them together for the router. |
+| `backend/app/api/routers/exams.py` | `GET /courses/{id}/exams`, `POST /courses/{id}/exams` (full pipeline), `GET /exams/{id}` (detail), `DELETE /exams/{id}`. Mounted at `/api/v1` because routes span both `/courses/{id}/exams` and `/exams/{id}`. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | New `Exam`, `ExamQuestion`, `CourseQuestionType` classes; new `exam_lecturers` and `exam_question_topics` Tables. `Course` gets `exams` and `question_types` relationships. |
+| `backend/app/main.py` | Mounts the exams router at `/api/v1`. |
+| `SYSTEM_ARCHITECTURE.md` | New router/service entries in §5; four constraints in §12 documenting the lazy-companion-PDF and global-difficulty-calibration design. |
+
+### Token cost summary
+
+| Action | Cost |
+|---|---|
+| Upload one 25-question exam | ~3-6k tokens (extraction) + ~25 × 500 tokens (per-question tagging) ≈ 15k tokens |
+| Difficulty recalibration | 0 LLM tokens (pure embedding math) |
+| List/read existing exams | 0 LLM tokens (everything is cached on the row) |
+
+### Behaviour and safety notes
+
+- **One PDF per exam.** The companion (blank if user uploaded solved, solved if user uploaded blank) is generated lazily by the Take/Grade flow rather than eagerly at upload — saves tokens for exams nobody ever takes.
+- **Tagging upserts the taxonomy.** When the AI picks a topic or question-type that doesn't exist yet (`topic_new` / `question_type_new` in the model output), the new entry is created with `source='exam_inferred'` and joined to the question. The next exam to be tagged sees the expanded list.
+- **Difficulty is global within a course.** Centroid is computed across ALL questions of the same type in the course, not just within one exam — so question 3 of exam A is calibrated against question 5 of exam B if they share a question type.
+- **Owner-only mutations** (POST/DELETE). Any course reader (owner / member / public-course visitor) can list and read exams.
+- **Roll-back on zero questions.** If extraction returns nothing, the exam row is deleted and a 422 is returned — no zombie cards.
+- **Duplicate detection deferred** (T-015). Re-uploading the same exam currently produces two rows.
+
+### Phase B / Phase C (next commits)
+
+- **Phase B — UI**: Exams tab on the course page; pie/bar charts for question types and topics; difficulty histogram; table of exams; per-exam detail page.
+- **Phase C — Take/Submit/Grade**: `exam_attempts` table; lazy companion-PDF generation; upload-answer form; AI grading using cached `reference_solution`.
+
+---
+
 ## 2026-05-06 (later still) — Course Syllabus + course-scoped chat
 
 **Scope:** Backend + frontend. Adds the Syllabus feature to Courses: upload a syllabus, AI extracts structured fields, the course gets a normalized topic taxonomy + lecturer list, and chats opened with course context get the syllabus injected into the system prompt.

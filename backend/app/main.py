@@ -49,6 +49,7 @@ from app.api.routers import personal_hub as personal_hub_router
 from app.api.routers import courses as courses_router
 from app.api.routers import sessions as sessions_router
 from app.api.routers import library as library_router
+from app.api.routers import exams as exams_router
 from app.api.routers.personas import seed_db as _seed_db
 
 
@@ -137,6 +138,9 @@ app.include_router(personal_hub_router.router,  prefix="/api/v1/profile")
 app.include_router(courses_router.router,       prefix="/api/v1/courses")
 app.include_router(sessions_router.router,      prefix="/api/v1/sessions")
 app.include_router(library_router.router,       prefix="/api/v1/library")
+# Exams use both /api/v1/courses/{id}/exams and /api/v1/exams/{id} so the
+# router declares full paths and is mounted at /api/v1.
+app.include_router(exams_router.router,         prefix="/api/v1")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────
