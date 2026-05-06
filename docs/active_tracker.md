@@ -33,6 +33,8 @@
 | F-002 | Summary tab modes (Current Page / All / Custom) | ✅ Code complete | Backend endpoints: `POST /summary/all`, `POST /summary/custom`. Awaiting user UI confirmation. |
 | F-003 | Threads auto-tab-switch bug fix | ✅ Code complete | Removed `useEffect` that auto-switched to chat on activeThread change. Awaiting user UI confirmation. |
 | F-005 | Token-usage billing — schema only (Phase 1) | ✅ Code complete | `users.subscription_tier`, `users.auth_provider`, `users.google_sub`, `threads.user_id`, and the new `usage_events` table land in migration `i4h5g6f7e8d9`. Tier defs and pricing live in `app/core/quota_config.py`. **No logging/enforcement/UI yet** — phases 2/3/4. |
+| F-006 | Course / Session schema + backend (Phase 1) | ✅ Code complete | New `courses` + `course_memberships` tables and `folders.course_id` FK in migration `j5i6h7g8f9e0`. New routers: `/api/v1/courses` (CRUD + public list + star), `/api/v1/sessions` (list/search/delete root threads), `/api/v1/library/recent` (merged sessions+files lane). **Frontend lands in F-007 next commit.** |
+| F-007 | My Library lane UI + sessions UX (Phase 2) | 🚧 In flight | Sidebar refactor (+New Session button, Communities Coming Soon), lane-based MyLibrary (Sessions&Files / Folders / My Courses), Sessions search page, standalone chat UI, course CRUD modals, public Courses tab with star toggle. |
 
 ---
 

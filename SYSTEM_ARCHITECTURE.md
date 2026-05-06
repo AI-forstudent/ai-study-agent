@@ -191,7 +191,13 @@ AI_Study_Partner/
 
 **`backend/app/api/routers/chat.py`** — Mounted at `/api/v1/chat`. Standalone AI chat (no PDF). `ChatRequest` accepts `ai_provider` (`"openai"` | `"anthropic"` | `"gemini"`). Routes through `llm_providers.call_llm` — falls back to Gemini if requested provider key is absent. Uses `prompt_builder.resolve_system_prompt` and `model_router.resolve_alias` for the DB audit alias.
 
-**`backend/app/api/routers/folders.py`** — Mounted at `/api/v1/folders`. Routes: `GET /` (list caller's folders, starred first then alphabetical), `POST /` (create), `PUT /{id}` (update name / color / `is_starred` / `persona_id`), `DELETE /{id}` (deletes folder; nulls `folder_id` on its documents — they become "unfiled" rather than orphaned). Depends on `get_current_user`.
+**`backend/app/api/routers/folders.py`** — Mounted at `/api/v1/folders`. Routes: `GET /` (list caller's folders — supports `?course_id=N` and `?top_level_only=true` filters), `POST /` (create — accepts optional `course_id` to nest under a course owned by the caller), `PUT /{id}` (update name / color / `is_starred` / `persona_id` / `course_id`), `DELETE /{id}` (deletes folder; nulls `folder_id` on its documents — they become "unfiled" rather than orphaned). Depends on `get_current_user`.
+
+**`backend/app/api/routers/courses.py`** — Mounted at `/api/v1/courses`. Top-level Course entity: `GET /` (list caller's courses — owned + admin-assigned + starred), `GET /public` (public catalog with `is_starred` flag for the caller), `POST /` (create — visibility = `private` / `admin_assigned` / `public`), `GET /{id}` (read with access check), `PUT /{id}` (owner-only), `DELETE /{id}` (owner-only; detaches folders by nulling their `course_id`), `POST /{id}/star` (toggle starred-membership on public courses). Depends on `get_current_user`.
+
+**`backend/app/api/routers/sessions.py`** — Mounted at `/api/v1/sessions`. Read-only session ergonomics: `GET /` (list caller's root threads with first-message preview, message count, and resolved document title — newest first, paginated), `GET /search?q=...` (free-text scan over title + selected_text + message content), `DELETE /{id}` (deletes the root thread + every fork descended from it). Sessions are *created* via `/chat/` and `/threads/` — no creation route here. Depends on `get_current_user`.
+
+**`backend/app/api/routers/library.py`** — Mounted at `/api/v1/library`. Backs the My Library "Sessions & Files" lane: `GET /recent` returns a tagged-union feed (`kind: 'session' | 'file'`) merging the caller's root threads with their unfiled UserDocuments, sorted by recency. Depends on `get_current_user`.
 
 **`backend/app/api/routers/personal_hub.py`** — Mounted at `/api/v1/profile`. Track D — Personal Hub & Academic Roadmap. Routes: `GET/PUT /profile` (auto-creates profile on first read), `GET/POST /profile/courses`, `PUT/DELETE /profile/courses/{record_id}`, `DELETE /profile/courses` (wipe-all), `GET/POST /profile/jobs`, `PUT /profile/jobs/{job_id}`, `POST /profile/transcript` (parses an uploaded BGU-style PDF transcript via `pdfplumber` + `python-bidi` and upserts course records). Depends on `get_current_user`.
 
@@ -209,7 +215,7 @@ AI_Study_Partner/
 
 ### Models
 
-**`backend/app/models/domain.py`** — Single source of truth for all ORM models. Includes: `User` (with `subscription_tier`, `auth_provider`, `google_sub`), `BaseDocument`, `UserDocument`, `Folder`, `Thread` (with direct `user_id` for ownership), `Message`, `Chunk`, `PageSummary`, `Persona` (with `persona_type`, `system_prompt`, `original_persona_id`, `author_id`), `StudySession`, `SessionMemory`, `UserProfile`, `CourseRecord`, `JobApplication`, `LectureVideo`, `VideoSyncIndex`, `UsageEvent` (one row per LLM call, drives future quota enforcement). Alembic autogenerates migrations from this file.
+**`backend/app/models/domain.py`** — Single source of truth for all ORM models. Includes: `User` (with `subscription_tier`, `auth_provider`, `google_sub`), `BaseDocument`, `UserDocument`, `Folder` (with optional `course_id`), `Course`, `CourseMembership`, `Thread` (with direct `user_id` for ownership), `Message`, `Chunk`, `PageSummary`, `Persona` (with `persona_type`, `system_prompt`, `original_persona_id`, `author_id`), `StudySession`, `SessionMemory`, `UserProfile`, `CourseRecord`, `JobApplication`, `LectureVideo`, `VideoSyncIndex`, `UsageEvent` (one row per LLM call, drives future quota enforcement). Alembic autogenerates migrations from this file.
 
 ---
 
@@ -618,3 +624,7 @@ Documenting the engineering dilemmas faced during development and the rationale 
 | `Thread.user_id` is the authoritative ownership field | Both doc-anchored and standalone chat threads carry it; document_id alone is insufficient (NULL for /chat threads) |
 | Personal personas with `author_id IS NULL` are dead data | Pre-existing legacy rows from before ownership enforcement; invisible everywhere by design |
 | `cost_usd_micros` is BIGINT, not INT | INT32 max is 2.147 B micros (~$2,147 aggregate) — overflows fast |
+| Course → Folder → Document/Session hierarchy | Folder.course_id is nullable: a folder is either nested under a course OR top-level in My Library |
+| Session = root Thread (parent_thread_id IS NULL) | No new table; the existing fork tree already represents standalone and document-anchored sessions uniformly |
+| Course visibility: `private`/`admin_assigned`/`public` | Drives the public Courses tab vs My Library lane visibility through `course_memberships` rows |
+| `course_memberships` carries the role | One row per (user, course); role evolves in place — `owner` (auto for creators), `admin_assigned`, `starred` |

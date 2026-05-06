@@ -75,6 +75,12 @@ class User(Base):
     course_records    = relationship("StudentCourseRecord", back_populates="user")
     job_applications  = relationship("JobApplication",     back_populates="user")
     usage_events      = relationship("UsageEvent",         back_populates="user")
+    owned_courses        = relationship(
+        "Course",
+        back_populates="owner",
+        foreign_keys="[Course.owner_id]",
+    )
+    course_memberships   = relationship("CourseMembership", back_populates="user")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -191,6 +197,8 @@ class Folder(Base):
     color      : hex or Tailwind color token for UI theming (e.g. "#6366F1").
     is_starred : user can pin important folders to the top.
     persona_id : default AI persona applied when studying from this folder.
+    course_id  : optional parent Course. NULL = top-level folder; set =
+                 folder lives inside a course in the Library hierarchy.
     """
     __tablename__ = "folders"
 
@@ -200,11 +208,76 @@ class Folder(Base):
     color      = Column(String,  nullable=True)
     is_starred = Column(Boolean, nullable=False, server_default="false")
     persona_id = Column(String,  ForeignKey("personas.id"), nullable=True)
+    course_id  = Column(Integer, ForeignKey("courses.id"),  nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     owner     = relationship("User",         back_populates="folders")
     persona   = relationship("Persona",      back_populates="folders")
+    course    = relationship("Course",       back_populates="folders")
     documents = relationship("UserDocument", back_populates="folder")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COURSES  (top-level container; can hold many Folders)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Course(Base):
+    """
+    A Course groups Folders (and through them, documents and study material)
+    into a coherent academic unit — e.g. "Linear Algebra 1", "Operating Systems".
+
+    Visibility model
+    ────────────────
+    • 'private'        : only the owner sees it.
+    • 'admin_assigned' : visible to users granted membership by an admin
+                         (e.g. a lecturer attaching a class roster).
+    • 'public'         : listed in the global Courses tab; any logged-in user
+                         can star it to add it to their My Library.
+
+    course_metadata is a JSONB grab-bag for forward-compat (semester, code,
+    institution, etc.) so we don't need migrations for cosmetic fields.
+    """
+    __tablename__ = "courses"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    owner_id        = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title           = Column(String,  nullable=False)
+    description     = Column(Text,    nullable=True)
+    visibility      = Column(String,  nullable=False, server_default="private")
+    color           = Column(String,  nullable=True)
+    icon            = Column(String,  nullable=True)
+    course_metadata = Column("course_metadata", JSONB, nullable=False, server_default="{}")
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+    owner       = relationship("User", back_populates="owned_courses", foreign_keys=[owner_id])
+    folders     = relationship("Folder", back_populates="course")
+    memberships = relationship("CourseMembership", back_populates="course")
+
+
+class CourseMembership(Base):
+    """
+    Edge table mapping a user to a course they can see in My Library.
+
+    role values
+    ───────────
+    • 'owner'          : creator of the course (also has a row in Course.owner_id —
+                         this row is bookkeeping for "appears in My Library").
+    • 'admin_assigned' : added by an admin (lecturer / institution operator).
+    • 'starred'        : the user starred a public course themselves.
+
+    A user has at most one membership row per course (composite UNIQUE on
+    (user_id, course_id)).
+    """
+    __tablename__ = "course_memberships"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"),    nullable=False, index=True)
+    course_id  = Column(Integer, ForeignKey("courses.id"),  nullable=False, index=True)
+    role       = Column(String,  nullable=False, server_default="starred")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user   = relationship("User",   back_populates="course_memberships")
+    course = relationship("Course", back_populates="memberships")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

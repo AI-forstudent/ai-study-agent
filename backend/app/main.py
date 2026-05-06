@@ -46,6 +46,9 @@ from app.api.routers import documents as documents_router
 from app.api.routers import threads as threads_router
 from app.api.routers import folders as folders_router
 from app.api.routers import personal_hub as personal_hub_router
+from app.api.routers import courses as courses_router
+from app.api.routers import sessions as sessions_router
+from app.api.routers import library as library_router
 from app.api.routers.personas import seed_db as _seed_db
 
 
@@ -131,6 +134,9 @@ app.include_router(threads_router.router,       prefix="/api/v1/threads")
 app.include_router(personas_router.router,      prefix="/api/v1/personas")
 app.include_router(chat_router.router,          prefix="/api/v1/chat")
 app.include_router(personal_hub_router.router,  prefix="/api/v1/profile")
+app.include_router(courses_router.router,       prefix="/api/v1/courses")
+app.include_router(sessions_router.router,      prefix="/api/v1/sessions")
+app.include_router(library_router.router,       prefix="/api/v1/library")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────

@@ -2,6 +2,66 @@
 
 ---
 
+## 2026-05-06 (later) — Course / Session Architecture (Phase 1: schema + backend)
+
+**Scope:** Backend-only. New top-level Course entity, membership/visibility model, and a read-only Sessions API exposing root threads as first-class objects. The frontend lane-based My Library + new sidebar lands in the next commit.
+
+### Why this change
+
+The existing data model collapsed two distinct concepts: "the document I'm studying" and "the chat I'm having about it." We now model them separately so the user can:
+
+- Open a chat without a document (a Session).
+- See past sessions as a browsable list with previews (My Library lane + Sessions search).
+- Group folders under a Course (Linear Algebra, Operating Systems, …).
+- Make a Course public; other users discover and star it from a Courses catalog tab.
+- Be assigned to a Course by an admin (e.g. lecturer) without that course being public.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/j5i6h7g8f9e0_courses_and_memberships.py` | Migration: `courses`, `course_memberships` (UNIQUE on user+course), `folders.course_id` FK (nullable). |
+| `backend/app/api/routers/courses.py` | CRUD + visibility-aware list endpoints + star toggle. |
+| `backend/app/api/routers/sessions.py` | List/search/delete root threads as first-class objects with previews. |
+| `backend/app/api/routers/library.py` | Tagged-union feed (`kind: 'session' \| 'file'`) for the My Library lane. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | New `Course` and `CourseMembership` models. `Folder` gains `course_id` (nullable). `User` gains `owned_courses` and `course_memberships` relationships. |
+| `backend/app/api/routers/folders.py` | `POST /` and `PUT /{id}` now accept `course_id`; ownership of the target course is enforced. `GET /` accepts `?course_id=N` and `?top_level_only=true` filters. |
+| `backend/app/main.py` | Mounts the three new routers under `/api/v1/courses`, `/api/v1/sessions`, `/api/v1/library`. |
+| `SYSTEM_ARCHITECTURE.md` | New router/model entries, plus four constraints in §12 documenting the hierarchy and Session = root Thread invariant. |
+
+### Visibility model
+
+`Course.visibility` ∈ {`private`, `admin_assigned`, `public`}. A user sees a course in My Library iff:
+
+- `Course.owner_id == user.id`, OR
+- A `CourseMembership` row exists with role `owner` / `admin_assigned` / `starred`.
+
+The public catalog (`GET /courses/public`) lists every public course and computes `is_starred` against the caller's memberships server-side so the frontend can render the toggle without a second round-trip.
+
+### Cross-user safety (consistent with the previous isolation pass)
+
+- All routes 404 (not 403) on cross-user access — no existence leak.
+- `DELETE /courses/{id}` detaches contained folders by nulling `course_id`; never cascade-deletes documents or threads.
+- `POST /courses/{id}/star` refuses to remove `admin_assigned` memberships — those are out-of-band and can only be revoked by an admin (future work).
+
+### Phase 2 (next commit)
+
+Frontend rebuild:
+- Sidebar: `+ New Session` button at top, `Communities (Coming Soon)` placeholder, "Active Session" item removed, "Community" → "Courses" rename.
+- My Library: lane-based dashboard (Sessions & Files / Folders / My Courses).
+- Sessions search page.
+- Standalone chat UI (no PDF panel) for sessions without `document_id`.
+- Course create/edit modals + public Courses tab with star toggle.
+
+---
+
 ## 2026-05-06 — Multi-Tenant Isolation Hardening + Google Sign-In + Billing Schema
 
 **Scope:** Backend ownership enforcement (3 routers), unique guest accounts, real Google OAuth, frontend GIS integration, and the schema groundwork for token-based credit billing.
