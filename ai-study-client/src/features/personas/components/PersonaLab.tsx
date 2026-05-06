@@ -431,8 +431,13 @@ const PersonaLab: React.FC<PersonaLabProps> = ({ onStartWithPersona }) => {
     onStartWithPersona?.(persona.id);
   }
 
-  function handleDeletePersona(persona: Persona) {
-    void deletePersona(persona.id);
+  async function handleDeletePersona(persona: Persona) {
+    if (!confirm(`Delete the AI Teacher "${persona.name}"? This cannot be undone.`)) return;
+    const ok = await deletePersona(persona.id);
+    if (!ok) {
+      alert('Could not delete this AI Teacher. Please try again.');
+      return;
+    }
     setSelectedPersona(null);
   }
 

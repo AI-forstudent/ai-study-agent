@@ -61,8 +61,10 @@ interface AppState {
   createPersona: (persona: Persona) => Promise<Persona | null>;
   /**
    * Deletes a personal persona from the DB and removes it from the local store.
+   * Returns true on success (including 404 phantom cleanup), false otherwise so
+   * the caller can surface a UI error instead of swallowing it silently.
    */
-  deletePersona: (personaId: string) => Promise<void>;
+  deletePersona: (personaId: string) => Promise<boolean>;
   /**
    * Updates an existing personal persona in the DB and syncs the local store.
    */
@@ -206,15 +208,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await api.deletePersona(personaId);
       set(state => ({ personas: state.personas.filter(p => p.id !== personaId) }));
+      return true;
     } catch (err: unknown) {
       // 404 means the persona doesn't exist in the DB (phantom ID) — treat as
       // success and still remove it from the local store to clean up the stale entry.
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 404) {
         set(state => ({ personas: state.personas.filter(p => p.id !== personaId) }));
-        return;
+        return true;
       }
       console.error('[deletePersona] Failed to delete persona', err);
+      return false;
     }
   },
 

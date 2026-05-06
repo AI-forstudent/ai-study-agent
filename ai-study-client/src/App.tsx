@@ -51,10 +51,14 @@ function App() {
   const clonePersona        = useAppStore(state => state.clonePersona);
   const dismissResumePrompt = useAppStore(state => state.dismissResumePrompt);
 
-  // ── Hydrate personas from backend on mount ──────────────────────────────────
+  // ── Hydrate personas whenever auth becomes available ──────────────────────
+  // Depending on `isAuthenticated` (not just on mount) ensures a fresh login
+  // triggers a re-fetch — otherwise personas can stay empty after AuthModal
+  // succeeds because the original mount-effect already ran with no token.
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchPersonas();
-  }, [fetchPersonas]);
+  }, [isAuthenticated, fetchPersonas]);
 
   // ── Pre-flight & persona session state ─────────────────────────────────────
   const [isPreFlightOpen, setPreFlightOpen]               = useState(false);
@@ -65,6 +69,9 @@ function App() {
   /** True when a chat-only (no document) session is active. */
   const [standaloneMode, setStandaloneMode]               = useState(false);
   const [activeCourseId, setActiveCourseId]               = useState<number | null>(null);
+  /** When the user clicks into a public course we star it and stash the id
+   *  here; MyLibrary picks it up, refreshes its course list, and drills in. */
+  const [pendingLibraryCourseId, setPendingLibraryCourseId] = useState<number | null>(null);
   const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
 
   const docs    = useDocuments(isAuthenticated, handleLogout);
@@ -210,6 +217,23 @@ function App() {
    *  will tag the new thread with this course_id so the syllabus is in scope. */
   function handleStartCourseChat(courseId: number) {
     startStandaloneSession(courseId);
+  }
+
+  /** Card click on the public-courses catalog. Auto-stars the course (so it
+   *  appears in My Library's "My Courses" lane) and drills the user straight
+   *  into the course detail view. Owners and already-starred users skip the
+   *  star step. Failures fall back to switching to My Library so the user is
+   *  not stranded with no feedback. */
+  async function handleOpenPublicCourse(course: { id: number; is_starred: boolean }) {
+    try {
+      if (!course.is_starred) {
+        await api.starCourse(course.id, true);
+      }
+    } catch (err) {
+      console.error('[handleOpenPublicCourse] star failed', err);
+    }
+    setPendingLibraryCourseId(course.id);
+    setView('main');
   }
 
   function startStandaloneSession(courseId: number | null) {
@@ -368,7 +392,7 @@ function App() {
   if (view === 'gallery') {
     return (
       <AppLayout sidebar={sidebar}>
-        <PublicCoursesPage />
+        <PublicCoursesPage onOpenCourse={handleOpenPublicCourse} />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}
@@ -417,6 +441,8 @@ function App() {
             onUpdateFolder={folders.updateFolder}
             onDeleteFolder={folders.deleteFolder}
             personas={personas}
+            pendingCourseId={pendingLibraryCourseId}
+            onPendingCourseConsumed={() => setPendingLibraryCourseId(null)}
           />
           <ResumeToastContainer
             personaName={toastPersonaName}

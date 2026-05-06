@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Persona, SessionMemory, StudySession, Thread, User
+from app.models.domain import Folder, Persona, SessionMemory, StudySession, Thread, User
 
 router = APIRouter(tags=["personas"])
 
@@ -399,6 +399,7 @@ def delete_persona(
 
     Before removing the row we null-out every FK that references it so the
     DELETE doesn't hit a PostgreSQL IntegrityError:
+      - Folder.persona_id        (folder loses its default tutor)
       - Thread.persona_id
       - StudySession.persona_id
       - Persona.original_persona_id  (clones of this persona become unlinked)
@@ -407,6 +408,10 @@ def delete_persona(
     persona = _get_owned_personal_persona(persona_id, current_user, db)
 
     # ── Detach all inbound FK references ──────────────────────────────────
+    db.query(Folder).filter(
+        Folder.persona_id == persona_id
+    ).update({"persona_id": None}, synchronize_session=False)
+
     db.query(Thread).filter(
         Thread.persona_id == persona_id
     ).update({"persona_id": None}, synchronize_session=False)

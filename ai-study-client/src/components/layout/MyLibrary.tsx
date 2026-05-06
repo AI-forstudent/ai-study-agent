@@ -60,6 +60,12 @@ interface MyLibraryProps {
   personas: Persona[];
   /** Navigate to the dedicated Sessions search page. */
   onOpenSessionsSearch?: () => void;
+  /** When set (e.g. after the user clicks a public course card), MyLibrary
+   *  refreshes its course list and drills into this course. The parent should
+   *  clear it via `onPendingCourseConsumed` so the same course id can be opened
+   *  again later. */
+  pendingCourseId?: number | null;
+  onPendingCourseConsumed?: () => void;
 }
 
 type CourseTab = 'folders' | 'syllabus' | 'exams';
@@ -86,6 +92,8 @@ export default function MyLibrary({
   onDeleteFolder,
   personas,
   onOpenSessionsSearch,
+  pendingCourseId,
+  onPendingCourseConsumed,
 }: MyLibraryProps) {
   // ── State ────────────────────────────────────────────────────────────────
   const fileInputRef                          = useRef<HTMLInputElement>(null);
@@ -137,6 +145,23 @@ export default function MyLibrary({
 
   useEffect(() => { void refreshFeed(); }, [userDocs.length]);
   useEffect(() => { void refreshCourses(); }, []);
+
+  // ── Drill into a course requested by the parent (e.g. clicked from the
+  //    Public Courses page). We refresh first so the new starred-membership
+  //    is reflected in the local `courses` list and `activeCourse` resolves.
+  useEffect(() => {
+    if (pendingCourseId == null) return;
+    let cancelled = false;
+    (async () => {
+      await refreshCourses();
+      if (cancelled) return;
+      setActiveCourseId(pendingCourseId);
+      setActiveFolderId(null);
+      setCourseTab('folders');
+      onPendingCourseConsumed?.();
+    })();
+    return () => { cancelled = true; };
+  }, [pendingCourseId]);
 
   // ── Drilldown helpers ────────────────────────────────────────────────────
   const activeFolder = activeFolderId != null

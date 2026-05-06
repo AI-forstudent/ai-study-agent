@@ -5,11 +5,19 @@ import PageHeader from '../../../components/layout/PageHeader';
 import type { PublicCourse } from '../../../types/course';
 import { api } from '../../../services/api';
 
-export default function PublicCoursesPage() {
+interface PublicCoursesPageProps {
+  /** Called when the user clicks a course card to open it. The handler is
+   *  expected to ensure the course is reachable from My Library (e.g. by
+   *  starring it first) and then navigate the user there. */
+  onOpenCourse?: (course: PublicCourse) => void;
+}
+
+export default function PublicCoursesPage({ onOpenCourse }: PublicCoursesPageProps = {}) {
   const [courses, setCourses]   = useState<PublicCourse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch]     = useState('');
   const [starringId, setStarringId] = useState<number | null>(null);
+  const [openingId, setOpeningId]   = useState<number | null>(null);
 
   useEffect(() => {
     setIsLoading(true);
@@ -26,6 +34,12 @@ export default function PublicCoursesPage() {
            (c.description ?? '').toLowerCase().includes(q) ||
            c.owner_email.toLowerCase().includes(q);
   });
+
+  function handleOpen(course: PublicCourse) {
+    if (!onOpenCourse) return;
+    setOpeningId(course.id);
+    onOpenCourse(course);
+  }
 
   async function toggleStar(course: PublicCourse) {
     setStarringId(course.id);
@@ -86,7 +100,11 @@ export default function PublicCoursesPage() {
             return (
               <div
                 key={course.id}
-                className="group relative bg-white border border-[#E8E8E6] rounded-xl p-5 hover:border-[#C4C4C4] hover:shadow-sm transition-all duration-150 flex flex-col gap-3 overflow-hidden"
+                onClick={() => handleOpen(course)}
+                role={onOpenCourse ? 'button' : undefined}
+                tabIndex={onOpenCourse ? 0 : undefined}
+                onKeyDown={onOpenCourse ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpen(course); } }) : undefined}
+                className={`group relative bg-white border border-[#E8E8E6] rounded-xl p-5 hover:border-[#C4C4C4] hover:shadow-sm transition-all duration-150 flex flex-col gap-3 overflow-hidden ${onOpenCourse ? 'cursor-pointer' : ''} ${openingId === course.id ? 'opacity-60 pointer-events-none' : ''}`}
               >
                 <div className="absolute top-0 inset-x-0 h-1" style={{ backgroundColor: accent }} />
 
@@ -107,7 +125,7 @@ export default function PublicCoursesPage() {
                     </p>
                   </div>
                   <button
-                    onClick={() => toggleStar(course)}
+                    onClick={e => { e.stopPropagation(); toggleStar(course); }}
                     disabled={starringId === course.id}
                     title={course.is_starred ? 'Unstar — removes from My Library' : 'Star — adds to My Library'}
                     className={`p-2 rounded-md transition-colors duration-150 ${
