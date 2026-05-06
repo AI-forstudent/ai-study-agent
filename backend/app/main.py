@@ -35,9 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from datetime import datetime, timedelta, timezone
+
 from app.core.config import ALLOWED_ORIGINS
 from app.core.database import SessionLocal, engine
-from app.models.domain import BaseDocument
+from app.models.domain import BaseDocument, Exam
 from app.services.model_router import list_manifest, route_llm_request
 from app.api.routers import personas as personas_router
 from app.api.routers import chat as chat_router
@@ -93,6 +95,36 @@ async def lifespan(app: FastAPI):
             print(f"[startup] Removed {deleted} orphaned upload file(s).")
         else:
             print("[startup] Upload directory is in sync with DB.")
+
+        # ── Stuck-processing sweep ────────────────────────────────────────
+        # Exam processing runs in a FastAPI BackgroundTask. If the worker
+        # process dies (deploy, OOM, crash) while a task is mid-flight, the
+        # exam stays in `processing` forever — there's no other recovery
+        # path because BackgroundTasks have no durability.
+        #
+        # On every fresh boot we sweep the table: any row that's been in
+        # `pending`/`processing` for >15 minutes is by definition stuck
+        # (real processing finishes in <3 min for normal exam sizes).
+        # We mark those as `failed` with a recovery hint so the user can
+        # click Retry from the UI.
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+        stuck = (
+            db.query(Exam)
+            .filter(
+                Exam.processing_status.in_(("pending", "processing")),
+                Exam.created_at < cutoff,
+            )
+            .all()
+        )
+        for exam in stuck:
+            exam.processing_status = "failed"
+            exam.processing_error = (
+                "Processing was interrupted (likely a server restart). "
+                "Click Retry to run the AI extraction again."
+            )
+        if stuck:
+            db.commit()
+            print(f"[startup] Recovered {len(stuck)} stuck exam(s) → status=failed.")
     except Exception as exc:
         print(f"[startup] ERROR during startup: {exc}")
     finally:

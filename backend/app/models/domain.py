@@ -390,6 +390,11 @@ class Exam(Base):
     has_solutions            = Column(Boolean, nullable=False, server_default="false")
     aggregate_difficulty     = Column(Float,   nullable=True)
     reference_solutions      = Column(JSONB,   nullable=True)
+    # Denormalized cache so the polling list endpoint can sort/display
+    # without lazy-loading every exam's questions. Updated at the end of
+    # `process_exam` and reset by the retry endpoint; cascades take care
+    # of the delete path.
+    question_count           = Column(Integer, nullable=False, server_default="0")
     # Async-processing state machine. POST /exams creates rows with
     # status='pending', a FastAPI BackgroundTask flips to 'processing' and
     # then to 'completed' or 'failed'. The frontend polls while any exam in

@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-05-06 (overnight) — Exam processing infrastructure for scale
+
+**Scope:** Backend perf + reliability upgrades sized for 20-30 exams per course (with headroom). User confirmed the basic flow works and asked me to focus on infrastructure — this is that.
+
+### Why this change
+
+Three real bottlenecks at the target scale, all visible in production traces:
+
+1. **Polling latency** — the table polls `GET /courses/{id}/exams` every 5 seconds while anything is in flight. The previous serializer lazy-loaded `exam.questions`, then per-question lazy-loaded `q.topics`, then per-exam lazy-loaded `exam.lecturers`. At 30 exams × 25 questions, that's ~30 + 30×(25 + 1) = ~810 SQL round-trips per poll. With selectinload, it's a fixed 4 round-trips no matter the size.
+2. **Upload duration** — 25 sequential per-question tagging calls × ~2s each = ~50 seconds of LLM time. Sequential because the original tagger touched the DB session (which isn't thread-safe).
+3. **Stuck `processing`** — BackgroundTasks die with the worker; a deploy mid-upload leaves an exam in `processing` forever. No recovery short of editing the row by hand.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/n9m0l1k2j3i4_exam_question_count.py` | Adds `Exam.question_count` (Integer, NOT NULL, default 0) and backfills from `COUNT(*) FROM exam_questions`. The list serializer now reads this column instead of forcing a question load to call `len(...)`. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | `Exam.question_count` column. |
+| `backend/app/services/exam_processor.py` | New `CourseSnapshot` dataclass (frozen) and `tag_question_pure(question_text, snapshot)` — a thread-safe pure function that performs ONE Gemini call and returns raw decisions (`topic_ids_existing`, `topic_names_new`, `type_id_existing`, `type_name_new`, `reference_solution`) without touching the DB. `process_exam` now snapshots the course, runs `executor.map(tag_question_pure, …)` over a 5-worker `ThreadPoolExecutor`, then on the main thread aggregates results, upserts new topics / question-types into the course taxonomy (with a running name→id map so two workers proposing the same name share one upserted row), and persists ExamQuestion records. Sets `exam.question_count` at the end. |
+| `backend/app/api/routers/exams.py` | `selectinload(Exam.lecturers)` + `selectinload(Exam.questions).selectinload(ExamQuestion.topics)` on `list_course_exams`. `get_exam` adds the same plus `selectinload(ExamQuestion.question_type)`. `_serialize_card` uses `exam.question_count` instead of `len(exam.questions)`. `retry_exam_processing` resets `question_count` to 0 along with the other fields. |
+| `backend/app/main.py` | Lifespan stuck-processing sweeper. On boot, any `Exam` in `pending`/`processing` older than 15 min is flipped to `failed` with the message *"Processing was interrupted (likely a server restart). Click Retry to run the AI extraction again."* — gives users a clear path forward when a deploy lands mid-upload. |
+
+### Numbers
+
+| Operation | Before | After | Notes |
+|---|---|---|---|
+| GET /courses/{id}/exams (30 exams) | ~810 SQL queries | ~4 SQL queries | `selectinload` collapses the lazy-load N+1 cascade. |
+| Tag 25 questions during upload | ~50s sequential | ~10s parallel | 5-worker `ThreadPoolExecutor`, snapshot-based, no DB in workers. |
+| List endpoint, count column | full questions load | denormalized read | Removes one of the most expensive lazy-loads from the hot path. |
+| Stuck-processing recovery | manual SQL by hand | automatic at boot | Bounded by 15 min sweep window. |
+
+### Concurrency notes
+
+- **SQLAlchemy session stays single-threaded** by design — the workers operate on a frozen `CourseSnapshot` and return plain Python objects. The main thread holds the session and does all upserts sequentially after the futures resolve.
+- **Topic / question-type race** within a single exam is handled by a running `topic_id_by_name` / `type_id_by_name` map: two workers proposing the same new name converge on one upserted row.
+- **Cross-exam concurrency** (two simultaneous uploads on the same course) is still subject to the existing `UNIQUE (course_id, name)` constraint — the loser of a topic-insert race fails the INSERT, the catch-and-fall-through pattern in the upsert handles it gracefully.
+- **`_TAG_PARALLELISM = 5`** is a deliberate trade-off: enough to make a 25-question exam feel snappy, low enough to leave Gemini quota for other concurrent users.
+
+### What's still ahead (T-018, T-020..T-026)
+
+T-018 — incremental difficulty recompute (only re-cluster types touched by the new exam) — not needed below ~50 exams; queued for when the course library grows past that. The other deferred items (granular metadata split, folder upload, batched review UI, topic-relevance check, OCR, content-based dedup) are unchanged.
+
+---
+
 ## 2026-05-06 (very late) — Async exam processing + Retry
 
 **Scope:** Backend + frontend. Replaces the synchronous exam upload flow with a queued BackgroundTask pattern.

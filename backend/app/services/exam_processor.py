@@ -35,7 +35,10 @@ Embeddings for new questions are produced via Gemini text-embedding-004
 
 from __future__ import annotations
 
+import logging
 import math
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -49,6 +52,14 @@ from app.models.domain import (
     ExamQuestion,
 )
 from app.services.llm_json import LLMJsonError, call_llm_for_json
+
+log = logging.getLogger(__name__)
+
+# Per-exam cap on concurrent Gemini calls during tagging. Five is a deliberate
+# trade-off: high enough to make 25-question exams take ~10s instead of ~50s,
+# low enough to leave headroom for other concurrent uploads on the same
+# Gemini quota.
+_TAG_PARALLELISM = 5
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -176,60 +187,83 @@ Hard rules
 """
 
 
-def _topics_block(course: Course) -> str:
-    if not course.topics:
+@dataclass(frozen=True)
+class CourseSnapshot:
+    """Read-only view of a course's tagging-relevant state.
+
+    Captured BEFORE spawning tagging worker threads so worker code never
+    touches the SQLAlchemy session (sessions are not thread-safe).
+    The main thread then applies the workers' decisions to the DB after
+    they all return.
+    """
+    title:          str
+    course_code:    str | None
+    institution:    str | None
+    topic_pairs:    tuple[tuple[int, str], ...]   # (id, name)
+    type_pairs:     tuple[tuple[int, str], ...]   # (id, name)
+
+
+def _topics_block_from_pairs(pairs: tuple[tuple[int, str], ...]) -> str:
+    if not pairs:
         return "(none yet)"
-    return "\n".join(f"- {t.id}: {t.name}" for t in course.topics)
+    return "\n".join(f"- {tid}: {name}" for tid, name in pairs)
 
 
-def _types_block(course: Course) -> str:
-    if not course.question_types:
+def _types_block_from_pairs(pairs: tuple[tuple[int, str], ...]) -> str:
+    if not pairs:
         return "(none yet)"
-    return "\n".join(f"- {qt.id}: {qt.name}" for qt in course.question_types)
+    return "\n".join(f"- {qid}: {name}" for qid, name in pairs)
 
 
-def _course_context_block(course: Course) -> str:
+def _course_context_block_from_snapshot(snapshot: CourseSnapshot) -> str:
     """Compact course header so the tagger knows the subject without bloat."""
-    bits: list[str] = [f"Course: {course.title}"]
-    extracted = course.syllabus_extracted or {}
-    if extracted.get("course_code"):
-        bits.append(f"Code: {extracted['course_code']}")
-    if extracted.get("institution"):
-        bits.append(extracted["institution"])
+    bits: list[str] = [f"Course: {snapshot.title}"]
+    if snapshot.course_code:
+        bits.append(f"Code: {snapshot.course_code}")
+    if snapshot.institution:
+        bits.append(snapshot.institution)
     return " · ".join(bits)
 
 
-def tag_question(
+def _snapshot_course(course: Course) -> CourseSnapshot:
+    extracted = course.syllabus_extracted or {}
+    return CourseSnapshot(
+        title=course.title,
+        course_code=extracted.get("course_code"),
+        institution=extracted.get("institution"),
+        topic_pairs=tuple((t.id, t.name) for t in course.topics),
+        type_pairs=tuple((qt.id, qt.name) for qt in course.question_types),
+    )
+
+
+def tag_question_pure(
     question_text: str,
-    course: Course,
-    db: Session,
+    snapshot: CourseSnapshot,
 ) -> dict[str, Any]:
-    """
-    Tag one question. Upserts new topics / types into the course taxonomy
-    when the model returns `topic_new` / `question_type_new`. Returns a dict:
+    """Thread-safe tagger. Performs ONE Gemini call; touches NO database.
+
+    Returns the model's raw decisions in a serialisable shape:
 
       {
-        "topic_ids":          [int, ...],     // resolved (existing + newly created)
-        "question_type_id":   int|None,       // resolved
-        "reference_solution": str
+        "topic_ids_existing": list[int],   ids picked from the snapshot
+        "topic_names_new":    list[str],   names not present in the snapshot
+        "type_id_existing":   int | None,
+        "type_name_new":      str | None,
+        "reference_solution": str,
       }
 
-    The caller writes these onto the ExamQuestion row.
-
-    Failure tolerance
-    ─────────────────
-    The tagger runs once per question, so a single failure should not
-    abort the whole exam. If `call_llm_for_json` exhausts its retries we
-    return empty tags and an empty reference_solution — the question still
-    gets saved, just without metadata. The user can re-tag manually later
-    once the per-question edit UI lands.
+    The CALLER (running on the main thread, holding the DB session) is
+    responsible for resolving these into final IDs and upserting any new
+    topic / question-type rows. That sequencing keeps SQLAlchemy session
+    access single-threaded, which is the only thread-safety story the ORM
+    actually offers.
     """
     from app.services.document_service import ask_gemini_json
 
     base_prompt = _TAGGING_PROMPT.format(
-        topics_block=_topics_block(course),
-        types_block=_types_block(course),
-        course_context=_course_context_block(course),
+        topics_block=_topics_block_from_pairs(snapshot.topic_pairs),
+        types_block=_types_block_from_pairs(snapshot.type_pairs),
+        course_context=_course_context_block_from_snapshot(snapshot),
         question=question_text[:2_000],   # cap so tagging stays cheap
     )
 
@@ -237,63 +271,52 @@ def tag_question(
         parsed = call_llm_for_json(
             llm_call=lambda p: ask_gemini_json(p, use_smart_model=False),
             base_prompt=base_prompt,
-            max_attempts=2,         # cheap step; one retry is enough
+            max_attempts=2,
             expected_type=dict,
             label="exam_tag_question",
         )
     except LLMJsonError:
-        return {"topic_ids": [], "question_type_id": None, "reference_solution": ""}
+        # Single-question failure is non-fatal — return empty tags so the
+        # main thread can still persist the question without metadata.
+        return {
+            "topic_ids_existing": [],
+            "topic_names_new":    [],
+            "type_id_existing":   None,
+            "type_name_new":      None,
+            "reference_solution": "",
+        }
 
-    # ── Resolve topic_ids: keep only ids that actually live in this course ─
-    existing_topic_ids = {t.id for t in course.topics}
+    # Filter against the snapshot: ids the model invents that aren't in the
+    # snapshot are dropped, names go through the "new" path instead.
+    existing_topic_ids = {tid for tid, _ in snapshot.topic_pairs}
     chosen_topic_ids: list[int] = [
         int(i) for i in (parsed.get("topic_ids") or [])
         if isinstance(i, int) and i in existing_topic_ids
     ]
 
-    # ── Upsert any newly introduced topics ────────────────────────────────
+    new_topic_names: list[str] = []
     for new_name in (parsed.get("topic_new") or []):
         nm = str(new_name).strip()
-        if not nm:
-            continue
-        existing = next((t for t in course.topics if t.name == nm), None)
-        if existing:
-            chosen_topic_ids.append(existing.id)
-            continue
-        new_topic = CourseTopic(course_id=course.id, name=nm, source="exam_inferred")
-        db.add(new_topic)
-        db.flush()  # populate id
-        chosen_topic_ids.append(new_topic.id)
-        course.topics.append(new_topic)
+        if nm:
+            new_topic_names.append(nm)
 
-    # ── Resolve / upsert question type ────────────────────────────────────
     qt_id_raw = parsed.get("question_type_id")
-    qt_id: int | None = None
-    if isinstance(qt_id_raw, int):
-        if any(qt.id == qt_id_raw for qt in course.question_types):
-            qt_id = qt_id_raw
-    if qt_id is None:
-        new_qt_name = (parsed.get("question_type_new") or "").strip() if parsed.get("question_type_new") else ""
-        if new_qt_name:
-            existing_qt = next(
-                (qt for qt in course.question_types if qt.name == new_qt_name),
-                None,
-            )
-            if existing_qt:
-                qt_id = existing_qt.id
-            else:
-                new_qt = CourseQuestionType(
-                    course_id=course.id, name=new_qt_name, source="inferred",
-                )
-                db.add(new_qt)
-                db.flush()
-                qt_id = new_qt.id
-                course.question_types.append(new_qt)
+    type_id_existing: int | None = None
+    if isinstance(qt_id_raw, int) and any(qid == qt_id_raw for qid, _ in snapshot.type_pairs):
+        type_id_existing = qt_id_raw
+
+    type_name_new: str | None = None
+    if type_id_existing is None:
+        raw_new = parsed.get("question_type_new")
+        if isinstance(raw_new, str) and raw_new.strip():
+            type_name_new = raw_new.strip()
 
     return {
-        "topic_ids":           chosen_topic_ids,
-        "question_type_id":    qt_id,
-        "reference_solution":  str(parsed.get("reference_solution") or ""),
+        "topic_ids_existing": chosen_topic_ids,
+        "topic_names_new":    new_topic_names,
+        "type_id_existing":   type_id_existing,
+        "type_name_new":      type_name_new,
+        "reference_solution": str(parsed.get("reference_solution") or ""),
     }
 
 
@@ -404,10 +427,21 @@ def process_exam(
     db: Session,
 ) -> int:
     """
-    End-to-end: extract → embed → tag → calibrate. Persists everything to
-    the DB. Returns the number of questions that ended up on the exam.
+    End-to-end: extract → embed → tag (in parallel) → persist → calibrate.
 
-    Caller is responsible for committing the session afterwards.
+    Concurrency model
+    ─────────────────
+    All Gemini calls are I/O-bound, so we run the per-question tagging step
+    in a `ThreadPoolExecutor` (max `_TAG_PARALLELISM` workers). The workers
+    are pure functions that take a `CourseSnapshot` and return raw decisions
+    — they NEVER touch the SQLAlchemy session, which is single-threaded.
+    The main thread aggregates the workers' decisions, upserts new topics
+    / question-types into the course taxonomy, and persists ExamQuestion
+    rows. This collapses a 25-question exam from ~50 s sequential to ~10 s
+    while keeping ORM access safe.
+
+    Returns the number of questions that ended up on the exam.
+    Caller commits the session afterwards.
     """
     # Lazy import to avoid pulling document_service into module load order.
     from app.services.document_service import get_embedding_model
@@ -418,15 +452,36 @@ def process_exam(
 
     course = exam.course
 
-    # Batch-embed every question text in one call — Gemini's
-    # langchain wrapper handles the batching internally.
+    # ── Step 1: batch embeddings (one provider call) ─────────────────────
     embedding_model = get_embedding_model()
     texts = [q["text"] for q in questions_data]
     vectors = embedding_model.embed_documents(texts)
 
-    # ── Persist questions, then tag + reference solution per question ────
+    # ── Step 2: parallel tagging (LLM calls in threads, no DB access) ───
+    snapshot = _snapshot_course(course)
+    log.info(
+        "[process_exam] starting parallel tagging: exam=%d, questions=%d, workers=%d",
+        exam.id, len(questions_data), _TAG_PARALLELISM,
+    )
+
+    with ThreadPoolExecutor(max_workers=_TAG_PARALLELISM) as ex:
+        # `executor.map` preserves input order, so tag_results aligns with
+        # questions_data without needing explicit index tracking.
+        tag_results = list(ex.map(
+            lambda q: tag_question_pure(q["text"], snapshot),
+            questions_data,
+        ))
+
+    # ── Step 3: apply tags + persist questions (single-threaded DB writes) ─
+    # Newly-introduced topics and question-types are added to running maps
+    # so that two workers proposing the same name in the same batch share
+    # a single upserted row.
+    topic_id_by_name: dict[str, int] = {name: tid for tid, name in snapshot.topic_pairs}
+    type_id_by_name:  dict[str, int] = {name: qid for qid, name in snapshot.type_pairs}
+
     has_any_solution = False
-    for q_data, vec in zip(questions_data, vectors):
+    persisted = 0
+    for q_data, vec, tags in zip(questions_data, vectors, tag_results):
         eq = ExamQuestion(
             exam_id=exam.id,
             question_number=q_data["number"],
@@ -437,27 +492,66 @@ def process_exam(
         db.add(eq)
         db.flush()  # need eq.id for the M2M topic insert
 
-        tags = tag_question(q_data["text"], course, db)
-        eq.question_type_id   = tags["question_type_id"]
+        # Resolve topic ids: existing-from-snapshot + names upserted into the
+        # course taxonomy on the fly.
+        final_topic_ids: list[int] = list(tags["topic_ids_existing"])
+        for new_name in tags["topic_names_new"]:
+            tid = topic_id_by_name.get(new_name)
+            if tid is None:
+                new_topic = CourseTopic(
+                    course_id=course.id, name=new_name, source="exam_inferred",
+                )
+                db.add(new_topic)
+                db.flush()
+                tid = new_topic.id
+                topic_id_by_name[new_name] = tid
+                course.topics.append(new_topic)
+            final_topic_ids.append(tid)
+
+        # Resolve question_type id with the same upsert pattern.
+        qt_id: int | None = tags["type_id_existing"]
+        if qt_id is None and tags["type_name_new"]:
+            type_name = tags["type_name_new"]
+            qt_id = type_id_by_name.get(type_name)
+            if qt_id is None:
+                new_qt = CourseQuestionType(
+                    course_id=course.id, name=type_name, source="inferred",
+                )
+                db.add(new_qt)
+                db.flush()
+                qt_id = new_qt.id
+                type_id_by_name[type_name] = qt_id
+                course.question_types.append(new_qt)
+
+        eq.question_type_id   = qt_id
         eq.reference_solution = (
             q_data["solution_text"]
             or tags["reference_solution"]
             or None
         )
-        for tid in tags["topic_ids"]:
+        # Attach topics. Topics ORM list `course.topics` is the in-memory
+        # collection; we look up by id rather than fetching extra rows.
+        for tid in final_topic_ids:
             topic = next((t for t in course.topics if t.id == tid), None)
             if topic is not None:
                 eq.topics.append(topic)
 
         if q_data["has_solution_inline"]:
             has_any_solution = True
+        persisted += 1
 
     # If the source carried solutions, surface that on the Exam row so the
     # Take flow knows whether the companion blank-PDF needs generating.
     if has_any_solution:
         exam.has_solutions = True
 
-    # ── Recalibrate difficulty across the whole course ───────────────────
+    # Update the denormalized cache so the list endpoint can avoid loading
+    # questions just to count them.
+    exam.question_count = persisted
+
+    # ── Step 4: recalibrate difficulty across the whole course ──────────
+    # TODO (T-018): incremental recompute when the course grows past ~50
+    # exams; right now we recompute every cluster on every upload.
     compute_difficulty_scores(course.id, db)
 
-    return len(questions_data)
+    return persisted

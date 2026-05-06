@@ -23,7 +23,7 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.routers.auth import get_current_user
 from app.core.database import SessionLocal, get_db
@@ -152,7 +152,13 @@ def _ensure_course_readable(course_id: int, user: User, db: Session) -> Course:
 
 
 def _aggregate_topics_for_exam(exam: Exam) -> list[TopicOut]:
-    """Distinct list of topics across an exam's questions."""
+    """Distinct list of topics across an exam's questions.
+
+    Relies on the caller having pre-loaded `exam.questions` and each
+    `question.topics` via `selectinload` — otherwise we'd lazily fire one
+    query per question, which is the N+1 problem this whole helper exists
+    to avoid in list views.
+    """
     seen: dict[int, TopicOut] = {}
     for q in exam.questions:
         for t in q.topics:
@@ -168,7 +174,10 @@ def _serialize_card(exam: Exam) -> ExamCardOut:
         semester=exam.semester,
         has_solutions=exam.has_solutions,
         aggregate_difficulty=exam.aggregate_difficulty,
-        question_count=len(exam.questions),
+        # Read the denormalized cache rather than lazy-loading questions.
+        # Re-counting via len(exam.questions) here would force a SELECT
+        # against the questions table per exam in the list view.
+        question_count=exam.question_count,
         topics=_aggregate_topics_for_exam(exam),
         lecturers=[LecturerOut(id=l.id, name=l.name, role=l.role) for l in exam.lecturers],
         processing_status=exam.processing_status,
@@ -213,10 +222,22 @@ def list_course_exams(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List exams in a course (any reader can see them)."""
+    """List exams in a course (any reader can see them).
+
+    Hot path — the frontend polls this endpoint every 5 seconds while any
+    exam is in `pending`/`processing`. We use `selectinload` to fetch all
+    related rows in a fixed number of queries (exams + lecturers + questions
+    + question_topics = 4 queries) regardless of how many exams the course
+    has, instead of the lazy-loading default that fires N+1 queries per
+    relationship per exam.
+    """
     _ensure_course_readable(course_id, current_user, db)
     exams = (
         db.query(Exam)
+        .options(
+            selectinload(Exam.lecturers),
+            selectinload(Exam.questions).selectinload(ExamQuestion.topics),
+        )
         .filter(Exam.course_id == course_id)
         .order_by(Exam.created_at.desc())
         .all()
@@ -426,6 +447,7 @@ def retry_exam_processing(
     exam.processing_error      = None
     exam.processed_at          = None
     exam.aggregate_difficulty  = None
+    exam.question_count        = 0
     db.commit()
     db.refresh(exam)
 
@@ -442,8 +464,21 @@ def get_exam(
     """Return a single exam plus all extracted questions, tags, and stats.
 
     Read access follows the parent course — owner / member / public.
+
+    Same `selectinload` pattern as the list endpoint: question_type and
+    topics are batch-loaded for the question grid, lecturers for the
+    header. ~4 queries total instead of N+1 over question count.
     """
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    exam = (
+        db.query(Exam)
+        .options(
+            selectinload(Exam.lecturers),
+            selectinload(Exam.questions).selectinload(ExamQuestion.topics),
+            selectinload(Exam.questions).selectinload(ExamQuestion.question_type),
+        )
+        .filter(Exam.id == exam_id)
+        .first()
+    )
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     _ensure_course_readable(exam.course_id, current_user, db)
