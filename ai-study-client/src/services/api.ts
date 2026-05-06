@@ -173,6 +173,50 @@ export const api = {
     });
   },
 
+  // ── Courses ───────────────────────────────────────────────────────────────
+  // Returns the caller's courses (owned + admin-assigned + starred).
+  listCourses: () => apiClient.get('/api/v1/courses/'),
+
+  // Public catalog for the Courses tab. Each row has `is_starred` for the caller.
+  listPublicCourses: () => apiClient.get('/api/v1/courses/public'),
+
+  getCourse: (id: number) => apiClient.get(`/api/v1/courses/${id}`),
+
+  createCourse: (payload: {
+    title: string;
+    description?: string | null;
+    visibility?: 'private' | 'admin_assigned' | 'public';
+    color?: string | null;
+    icon?: string | null;
+  }) => apiClient.post('/api/v1/courses/', payload),
+
+  updateCourse: (id: number, payload: {
+    title?: string;
+    description?: string | null;
+    visibility?: 'private' | 'admin_assigned' | 'public';
+    color?: string | null;
+    icon?: string | null;
+  }) => apiClient.put(`/api/v1/courses/${id}`, payload),
+
+  deleteCourse: (id: number) => apiClient.delete(`/api/v1/courses/${id}`),
+
+  // Toggle the caller's "starred" membership on a public course.
+  starCourse: (id: number, isStarred: boolean) =>
+    apiClient.post(`/api/v1/courses/${id}/star`, { is_starred: isStarred }),
+
+  // ── Sessions (read-only — sessions are created via /chat or /threads) ────
+  listSessions: (limit = 50, offset = 0) =>
+    apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),
+
+  searchSessions: (q: string, limit = 50) =>
+    apiClient.get(`/api/v1/sessions/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  deleteSession: (id: number) => apiClient.delete(`/api/v1/sessions/${id}`),
+
+  // ── Library — merged sessions + unfiled-files feed for the My Library lane.
+  getLibraryRecent: (limit = 40) =>
+    apiClient.get(`/api/v1/library/recent?limit=${limit}`),
+
   // Deletes every StudentCourseRecord for the authenticated user (clean re-import).
   resetCourseRecords: () =>
     apiClient.delete('/api/v1/profile/courses'),

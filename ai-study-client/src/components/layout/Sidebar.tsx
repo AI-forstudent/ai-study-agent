@@ -1,12 +1,15 @@
 import React from 'react';
-import { Sparkles, Library, FlaskConical, Globe, LogOut, Settings, BookOpen, GraduationCap } from 'lucide-react';
+import {
+  Sparkles, Library, FlaskConical, Globe, LogOut, Settings,
+  GraduationCap, Plus, Users,
+} from 'lucide-react';
 
 interface SidebarProps {
   activeView: 'main' | 'lab' | 'gallery' | 'settings' | 'hub';
   onNavigate: (view: 'main' | 'lab' | 'gallery' | 'settings' | 'hub') => void;
   onLogout: () => void;
-  hasActiveSession?: boolean;
-  onResumeSession?: () => void;
+  /** Called when the user clicks the prominent "+ New Session" button. */
+  onNewSession?: () => void;
 }
 
 // ── Reusable sub-components ─────────────────────────────────────────────────
@@ -23,24 +26,30 @@ interface NavItemProps {
   icon: React.ElementType;
   label: string;
   active?: boolean;
-  badge?: boolean;
+  disabled?: boolean;
+  badge?: string;
   onClick: () => void;
 }
 
-function NavItem({ icon: Icon, label, active, badge, onClick }: NavItemProps) {
+function NavItem({ icon: Icon, label, active, disabled, badge, onClick }: NavItemProps) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
       className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm transition-colors duration-150 text-start ${
-        active
-          ? 'bg-[#EFEFED] text-[#37352F] font-medium'
-          : 'text-[#787774] hover:bg-[#EFEFED] hover:text-[#37352F]'
+        disabled
+          ? 'text-[#C4C4C4] cursor-not-allowed'
+          : active
+            ? 'bg-[#EFEFED] text-[#37352F] font-medium'
+            : 'text-[#787774] hover:bg-[#EFEFED] hover:text-[#37352F]'
       }`}
     >
       <Icon className="w-4 h-4 shrink-0" />
       <span className="flex-1">{label}</span>
       {badge && (
-        <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />
+        <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-md bg-[#F7F7F5] text-[#C4C4C4] border border-[#E8E8E6]">
+          {badge}
+        </span>
       )}
     </button>
   );
@@ -48,7 +57,7 @@ function NavItem({ icon: Icon, label, active, badge, onClick }: NavItemProps) {
 
 // ── Main sidebar ────────────────────────────────────────────────────────────
 
-export default function Sidebar({ activeView, onNavigate, onLogout, hasActiveSession, onResumeSession }: SidebarProps) {
+export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession }: SidebarProps) {
   return (
     <aside className="w-60 h-screen flex flex-col bg-[#F7F7F5] border-e border-[#E8E8E6] shrink-0 overflow-hidden">
 
@@ -65,17 +74,20 @@ export default function Sidebar({ activeView, onNavigate, onLogout, hasActiveSes
 
       <div className="border-t border-[#E8E8E6] shrink-0" />
 
+      {/* ── + New Session — prominent CTA above the nav ────────────────── */}
+      <div className="px-3 pt-3 shrink-0">
+        <button
+          onClick={onNewSession}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium shadow-sm transition-colors duration-150"
+        >
+          <Plus className="w-4 h-4" />
+          New Session
+        </button>
+      </div>
+
       {/* ── Navigation ─────────────────────────────────────────────────── */}
       <div className="px-1 shrink-0">
         <SectionLabel>Workspace</SectionLabel>
-
-        {/* Active Session — always visible; badge shows only when a session is live */}
-        <NavItem
-          icon={BookOpen}
-          label="Active Session"
-          badge={!!hasActiveSession}
-          onClick={onResumeSession ?? (() => {})}
-        />
 
         <NavItem
           icon={Library}
@@ -85,9 +97,16 @@ export default function Sidebar({ activeView, onNavigate, onLogout, hasActiveSes
         />
         <NavItem
           icon={Globe}
-          label="Community"
+          label="Courses"
           active={activeView === 'gallery'}
           onClick={() => onNavigate('gallery')}
+        />
+        <NavItem
+          icon={Users}
+          label="Communities"
+          disabled
+          badge="Soon"
+          onClick={() => {}}
         />
         <NavItem
           icon={FlaskConical}

@@ -7,6 +7,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
+import PublicCoursesPage    from './features/courses/components/PublicCoursesPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -17,6 +18,7 @@ import AppLayout      from './components/layout/AppLayout';
 import Sidebar        from './components/layout/Sidebar';
 import Settings       from './components/layout/Settings';
 import AuthModal      from './components/ui/AuthModal';
+import { api }        from './services/api';
 import { ResumeToastContainer } from './features/sessions/components/ResumeToast';
 import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
 
@@ -196,6 +198,54 @@ function App() {
     setView('main');
   }
 
+  /** Sidebar "+ New Session" — open a fresh standalone chat with a sensible
+   *  default AI Teacher and clear any previous document/thread state. */
+  function handleStartNewSession() {
+    docs.clearDocument();
+    chat.reset();
+    const defaultPersona =
+      personas.find(p => p.type === 'personal')?.id ??
+      personas.find(p => p.type === 'global')?.id ??
+      null;
+    setActivePersonaId(defaultPersona);
+    setActiveSession({ documentId: null, personaId: defaultPersona });
+    setStandaloneMode(true);
+    dismissResumePrompt();
+    setView('main');
+  }
+
+  /** Open a past session by id — load its document if present, else go
+   *  standalone. The thread payload itself becomes the active thread so the
+   *  chat tab opens with full message history. */
+  async function handleOpenSession(sessionId: number) {
+    try {
+      const res = await api.getThread(sessionId);
+      const thread = res.data;
+      if (!thread) {
+        alert('Could not load that session.');
+        return;
+      }
+      setActivePersonaId(thread.persona_id ?? null);
+
+      if (thread.document_id) {
+        await docs.handleSelectDocument({ id: thread.document_id });
+        setStandaloneMode(false);
+      } else {
+        docs.clearDocument();
+        setStandaloneMode(true);
+      }
+      setActiveSession({
+        documentId: thread.document_id ?? null,
+        personaId: thread.persona_id ?? null,
+      });
+      useAppStore.getState().setActiveThread(thread);
+      setView('main');
+    } catch (err) {
+      console.error('[handleOpenSession]', err);
+      alert('Could not load that session.');
+    }
+  }
+
   function handleOpenWrapUp() {
     setWrapUpOpen(true);
   }
@@ -247,8 +297,7 @@ function App() {
         setView(v);
       }}
       onLogout={handleLogout}
-      hasActiveSession={!!activeSession}
-      onResumeSession={handleResumeSession}
+      onNewSession={handleStartNewSession}
     />
   );
 
@@ -303,12 +352,7 @@ function App() {
   if (view === 'gallery') {
     return (
       <AppLayout sidebar={sidebar}>
-        <PublicGallery
-          isAuthenticated={true}
-          inAppLayout
-          onBack={() => setView('main')}
-          onGetStarted={() => {}}
-        />
+        <PublicCoursesPage />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}
@@ -346,13 +390,12 @@ function App() {
             setEnableGlobalSummary={docs.setEnableGlobalSummary}
             onUploadFile={docs.handleFileChange}
             onSelectDocument={handleOpenPreFlight}
+            onSelectSession={handleOpenSession}
+            onStartNewSession={handleStartNewSession}
             onDeleteRequest={docs.setDocToDelete}
-            onToggleVisibility={docs.toggleVisibilityById}
             onStarDocument={docs.handleStarDocument}
             onMoveDocument={docs.handleMoveDocument}
             folders={folders.folders}
-            activeFolderId={folders.activeFolderId}
-            setActiveFolderId={folders.setActiveFolderId}
             onCreateFolder={folders.createFolder}
             onUpdateFolder={folders.updateFolder}
             onDeleteFolder={folders.deleteFolder}
