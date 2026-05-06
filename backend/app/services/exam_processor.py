@@ -35,7 +35,6 @@ Embeddings for new questions are produced via Gemini text-embedding-004
 
 from __future__ import annotations
 
-import json
 import math
 from typing import Any
 
@@ -49,6 +48,7 @@ from app.models.domain import (
     Exam,
     ExamQuestion,
 )
+from app.services.llm_json import LLMJsonError, call_llm_for_json
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -84,33 +84,34 @@ Exam text
 
 
 def extract_questions(text: str) -> list[dict[str, Any]]:
-    """Run a single Gemini call to break an exam PDF into structured questions."""
+    """Run Gemini in JSON mode to break an exam PDF into structured questions.
+
+    Routes through `services.llm_json.call_llm_for_json`, which enforces:
+      • Native JSON output (`ask_gemini_json` sets `response_mime_type`).
+      • Up to 3 retries with stricter "JSON only" reminders on failure.
+      • Type validation (we expect a `list`).
+
+    Raises `LLMJsonError` if every attempt fails — the router translates
+    that into a user-friendly 502 with `services.llm_json.user_message_for`.
+    """
     if not text or not text.strip():
         return []
 
     # Lazy import — see syllabus_extractor for the same circular-import note.
-    from app.services.document_service import ask_gemini
+    from app.services.document_service import ask_gemini_json
 
     # Same length cap as syllabus extractor — keeps cost predictable; longer
     # exams are rare and can be split client-side if needed.
     capped = text[:20_000]
+    base_prompt = _EXTRACTION_PROMPT.format(text=capped)
 
-    raw = ask_gemini(
-        _EXTRACTION_PROMPT.format(text=capped),
-        use_smart_model=True,
+    parsed = call_llm_for_json(
+        llm_call=lambda p: ask_gemini_json(p, use_smart_model=True),
+        base_prompt=base_prompt,
+        max_attempts=3,
+        expected_type=list,
+        label="exam_extract_questions",
     )
-
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-
-    try:
-        parsed = json.loads(cleaned)
-    except (json.JSONDecodeError, IndexError, ValueError) as exc:
-        raise ValueError(f"Question extraction returned unparseable JSON: {exc}") from exc
-
-    if not isinstance(parsed, list):
-        return []
 
     out: list[dict[str, Any]] = []
     for q in parsed:
@@ -214,27 +215,33 @@ def tag_question(
       }
 
     The caller writes these onto the ExamQuestion row.
-    """
-    from app.services.document_service import ask_gemini
 
-    prompt = _TAGGING_PROMPT.format(
+    Failure tolerance
+    ─────────────────
+    The tagger runs once per question, so a single failure should not
+    abort the whole exam. If `call_llm_for_json` exhausts its retries we
+    return empty tags and an empty reference_solution — the question still
+    gets saved, just without metadata. The user can re-tag manually later
+    once the per-question edit UI lands.
+    """
+    from app.services.document_service import ask_gemini_json
+
+    base_prompt = _TAGGING_PROMPT.format(
         topics_block=_topics_block(course),
         types_block=_types_block(course),
         course_context=_course_context_block(course),
         question=question_text[:2_000],   # cap so tagging stays cheap
     )
 
-    raw = ask_gemini(prompt, use_smart_model=False)
-
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-
     try:
-        parsed = json.loads(cleaned)
-    except (json.JSONDecodeError, IndexError, ValueError):
-        # If the tagger hiccups, return empty tags rather than blowing up
-        # the whole upload — the caller can still persist the question.
+        parsed = call_llm_for_json(
+            llm_call=lambda p: ask_gemini_json(p, use_smart_model=False),
+            base_prompt=base_prompt,
+            max_attempts=2,         # cheap step; one retry is enough
+            expected_type=dict,
+            label="exam_tag_question",
+        )
+    except LLMJsonError:
         return {"topic_ids": [], "question_type_id": None, "reference_solution": ""}
 
     # ── Resolve topic_ids: keep only ids that actually live in this course ─

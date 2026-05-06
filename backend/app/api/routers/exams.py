@@ -32,6 +32,7 @@ from app.models.domain import (
 )
 from app.services.document_service import extract_text
 from app.services.exam_processor import process_exam
+from app.services.llm_json import LLMJsonError, user_message_for
 
 router = APIRouter(tags=["exams"])
 
@@ -294,9 +295,14 @@ def create_course_exam(
 
     try:
         n_questions = process_exam(exam, full_text, db)
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except LLMJsonError as exc:
+        # Roll back the empty exam shell so we don't leave a zombie row.
+        db.delete(exam)
+        db.commit()
+        raise HTTPException(status_code=502, detail=user_message_for(exc))
     except Exception as exc:
+        db.delete(exam)
+        db.commit()
         raise HTTPException(status_code=503, detail=f"Exam processing failed: {exc}")
 
     if n_questions == 0:

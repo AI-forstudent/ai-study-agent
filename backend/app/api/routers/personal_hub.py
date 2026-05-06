@@ -23,7 +23,6 @@ POST /profile/transcript            — parse a PDF transcript and upsert course
 from __future__ import annotations
 
 import io
-import json
 from typing import List, Optional
 
 import pdfplumber
@@ -55,7 +54,8 @@ from app.schemas.personal_hub import (
     JobApplicationUpdate,
     TranscriptUpsertResponse,
 )
-from app.services.document_service import ask_gemini
+from app.services.document_service import ask_gemini_json
+from app.services.llm_json import LLMJsonError, call_llm_for_json, user_message_for
 
 router = APIRouter(tags=["personal-hub"])
 
@@ -405,29 +405,20 @@ def parse_transcript(
     # no LLM required for this step.
     raw_text = "\n".join(get_display(line) for line in raw_text.splitlines())
 
-    # Ask Gemini to parse the transcript into structured JSON
+    # Ask Gemini to parse the transcript. Routed through `call_llm_for_json`
+    # which handles fence stripping, prose preambles, retries on empty/parse
+    # failures, and translates errors to user-friendly messages.
+    base_prompt = _TRANSCRIPT_PROMPT.format(text=raw_text[:8000])
     try:
-        raw_json = ask_gemini(
-            _TRANSCRIPT_PROMPT.format(text=raw_text[:8000]),  # cap context to avoid token overflow
-            use_smart_model=True,
+        parsed_courses: list[dict] = call_llm_for_json(
+            llm_call=lambda p: ask_gemini_json(p, use_smart_model=True),
+            base_prompt=base_prompt,
+            max_attempts=3,
+            expected_type=list,
+            label="transcript_parser",
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"AI service unavailable — please try again in a moment: {exc}",
-        )
-
-    # Strip markdown fences if Gemini wraps the output, then parse JSON
-    try:
-        clean = raw_json.strip()
-        if clean.startswith("```"):
-            clean = clean.split("\n", 1)[1].rsplit("```", 1)[0]
-        parsed_courses: list[dict] = json.loads(clean)
-    except (json.JSONDecodeError, IndexError, ValueError):
-        raise HTTPException(
-            status_code=502,
-            detail="AI returned unparseable JSON — try again",
-        )
+    except LLMJsonError as exc:
+        raise HTTPException(status_code=502, detail=user_message_for(exc))
 
     upserted = 0
     skipped  = 0

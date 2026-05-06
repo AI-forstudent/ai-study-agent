@@ -34,11 +34,12 @@ syllabus doesn't contain that information rather than guessing.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-# NOTE: `ask_gemini` is imported lazily inside `extract_syllabus` to break a
-# circular import. document_service imports prompt_builder, which now imports
+from app.services.llm_json import call_llm_for_json
+
+# NOTE: `ask_gemini_json` is imported lazily inside `extract_syllabus` to break
+# a circular import. document_service imports prompt_builder, which now imports
 # this module — a top-level `from app.services.document_service import ...`
 # would close the cycle. Lazy import keeps each module's top-level imports
 # acyclic.
@@ -79,35 +80,32 @@ Syllabus text
 def extract_syllabus(text: str) -> dict[str, Any]:
     """Run a single Gemini call and return the parsed structured dict.
 
-    Raises ValueError if Gemini returns text that can't be parsed as JSON —
-    the caller should surface this as a 502/503 to the user with a "try again"
-    hint, since transient model misbehaviour is the typical cause.
+    Routes through `services.llm_json.call_llm_for_json` which:
+      • Forces native JSON mode at the API level (`ask_gemini_json`).
+      • Strips fences / prose preambles defensively.
+      • Retries up to 3 times with a stricter "JSON only" reminder.
+      • Raises `LLMJsonError` (caught and translated to user-friendly
+        404/502 by the courses router) if every attempt fails.
     """
     if not text or not text.strip():
         return _empty_extraction()
 
     # Lazy import — see top-of-file note about the document_service cycle.
-    from app.services.document_service import ask_gemini
+    from app.services.document_service import ask_gemini_json
 
     # Cap the syllabus body at a generous-but-bounded token budget. Most
     # syllabi are 3-10 pages; 12k characters comfortably covers that without
     # blowing past the model's context window or our cost expectations.
     capped = text[:12_000]
+    base_prompt = _EXTRACTION_PROMPT.format(text=capped)
 
-    raw = ask_gemini(
-        _EXTRACTION_PROMPT.format(text=capped),
-        use_smart_model=True,
+    parsed = call_llm_for_json(
+        llm_call=lambda p: ask_gemini_json(p, use_smart_model=True),
+        base_prompt=base_prompt,
+        max_attempts=3,
+        expected_type=dict,
+        label="syllabus_extractor",
     )
-
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        # Strip ```json … ``` fences if Gemini ignores the "no markdown" rule.
-        cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-
-    try:
-        parsed = json.loads(cleaned)
-    except (json.JSONDecodeError, IndexError, ValueError) as exc:
-        raise ValueError(f"Syllabus extraction returned unparseable JSON: {exc}") from exc
 
     return _normalize_extraction(parsed)
 

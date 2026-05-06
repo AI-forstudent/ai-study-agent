@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-05-06 (late evening) — Robust LLM-JSON parsing
+
+**Scope:** Backend bug-fix. Frontend gets a small retry-clarity tweak.
+
+### Why this change
+
+Exam upload was crashing with:
+
+> `Question extraction returned unparseable JSON: Expecting value: line 1 column 0 (char 0)`
+
+Two bugs collided:
+
+1. **`ask_gemini` swallowed every exception and returned a Hebrew apology string.** When safety filters blanked Gemini's response (the empty `char 0` case), or a timeout/quota error fired, JSON callers got plain Hebrew text and tried to parse it as JSON — failed every time.
+2. **Every JSON caller had its own ad-hoc `cleaned.strip().lstrip('```json').rstrip('```')` then `json.loads(...)`.** No retries, no logging of the actual model output, no schema validation, no centralised handling.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/app/services/llm_json.py` | Single source of truth for "LLM-must-return-JSON" calls. `safe_json_parse(raw)` — defensive strip of fences and prose preambles, then `json.loads`. `call_llm_for_json(...)` — N-attempt retry loop with progressively stricter "JSON only, no markdown" reminders, type validation, structured logging. `LLMJsonError` — single exception type carrying `reason`, `raw`, `attempts`. `user_message_for(error)` — translates technical reasons (`empty`, `parse_error`, `wrong_type`, `call_error`) into a user-friendly UI string. **Code-review rule: no raw `json.loads` on model output anywhere else.** |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/services/document_service.py` | New `ask_gemini_json(prompt, use_smart_model=False)` — uses the genai SDK's `response_mime_type="application/json"` to force structured output at the API level, not just by prompt instruction. Exceptions propagate (no Hebrew apology fallback) so the retry loop can react. |
+| `backend/app/services/syllabus_extractor.py` | Routes through `call_llm_for_json` instead of bespoke `json.loads`. |
+| `backend/app/services/exam_processor.py` | Both `extract_questions` (3 retries, `expected_type=list`) and `tag_question` (2 retries, tolerates failure by returning empty tags) now go through `call_llm_for_json`. |
+| `backend/app/api/routers/personal_hub.py` | The transcript parser uses `call_llm_for_json` and returns `user_message_for(...)` on failure. |
+| `backend/app/api/routers/courses.py` | `attach_course_syllabus` catches `LLMJsonError` and returns a 502 with the user-friendly message. |
+| `backend/app/api/routers/exams.py` | `create_course_exam` rolls back the empty exam shell and returns the friendly message on `LLMJsonError`; same on the broader `Exception` catch. |
+| `ai-study-client/src/features/courses/components/ExamCreateModal.tsx` | Caches the `userDocumentId` after a successful upload so retrying just re-runs the AI extraction (skipping the second upload that would otherwise hit CAS 409). The error banner now hints "Your file is already uploaded — clicking will retry just the AI extraction." when in that state. |
+
+### Behaviour notes
+
+- **Native JSON mode is the primary defense.** With `response_mime_type="application/json"` set, Gemini refuses to emit prose or markdown fences in the first place, so the safe-parse + retry path mostly catches edge cases (safety filters blanking output, transient SDK errors).
+- **Tagging tolerates failure per question.** A single failed tag returns empty tags rather than aborting the whole 25-question exam — the question is still saved, just without metadata; the user can re-tag manually once that UI lands.
+- **Logs are now actionable.** `[llm_json:exam_extract_questions] parse failed attempt 1/3: reason=empty, raw_first_200='…'` — grep-friendly per caller, with the first 200 chars of raw output for debugging.
+
+### What's still ahead (deferred from the user's larger spec)
+
+The user's spec covered much more than the bug fix — granular metadata (split semester/moed/exam_type), folder upload, batched review UI, topic-relevance check, OCR for scanned PDFs, content-based duplicate detection, multi-lecturer pickers. All tracked in `docs/active_tracker.md` as T-020 through T-026. They're separate commits because each is its own scope; the JSON-parse blocker had to land first or none of the rest could be tested.
+
+---
+
 ## 2026-05-06 (later evening) — Exams Phase B: course-detail UI
 
 **Scope:** Frontend only. Adds the Exams tab inside the course drilldown, the upload-and-process flow, and the per-exam detail view.

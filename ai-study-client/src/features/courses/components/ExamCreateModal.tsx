@@ -35,6 +35,10 @@ export default function ExamCreateModal({
   // ── Step state ──────────────────────────────────────────────────────────
   const [phase, setPhase]   = useState<'idle' | 'uploading' | 'processing'>('idle');
   const [error, setError]   = useState<string | null>(null);
+  // When upload succeeded but the processing pipeline failed, we cache the
+  // userDocumentId so the retry button can skip re-uploading (which would
+  // otherwise hit the CAS 409 dedup) and just re-run the AI pipeline.
+  const [uploadedDocId, setUploadedDocId] = useState<number | null>(null);
 
   // Reset on open + close on Esc.
   useEffect(() => {
@@ -47,6 +51,7 @@ export default function ExamCreateModal({
     setLecturerIds(new Set());
     setPhase('idle');
     setError(null);
+    setUploadedDocId(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [isOpen]);
 
@@ -79,34 +84,36 @@ export default function ExamCreateModal({
     }
   };
 
-  const canSubmit = !!file && !!title.trim() && phase === 'idle';
+  const canSubmit = (!!file || uploadedDocId !== null) && !!title.trim() && phase === 'idle';
 
   const handleSubmit = async () => {
-    if (!file || !title.trim()) {
+    if ((!file && uploadedDocId === null) || !title.trim()) {
       setError('Pick a file and give the exam a title.');
       return;
     }
     setError(null);
 
-    // ── Step 1: upload the file into the user's library ────────────────
-    setPhase('uploading');
-    let userDocumentId: number;
-    try {
-      const upload = await api.uploadDocument(file, false);
-      userDocumentId = upload.data.id;
-    } catch (err: any) {
-      // 409 = same SHA already exists in this user's library; we don't have
-      // its id from the error response, so guide the user.
-      if (err?.response?.status === 409) {
-        setError(
-          "You already have this exam file in your library. Delete it from My Library first, " +
-          "or pick a different version of the PDF.",
-        );
-      } else {
-        setError(err?.response?.data?.detail ?? 'Upload failed.');
+    // ── Step 1: upload the file (skipped on a retry where the upload
+    //            already succeeded last time — `uploadedDocId` is cached). ─
+    let userDocumentId = uploadedDocId;
+    if (userDocumentId === null) {
+      setPhase('uploading');
+      try {
+        const upload = await api.uploadDocument(file!, false);
+        userDocumentId = upload.data.id;
+        setUploadedDocId(userDocumentId);
+      } catch (err: any) {
+        if (err?.response?.status === 409) {
+          setError(
+            "You already have this exam file in your library. Delete it from My Library first, " +
+            "or pick a different version of the PDF.",
+          );
+        } else {
+          setError(err?.response?.data?.detail ?? 'Upload failed.');
+        }
+        setPhase('idle');
+        return;
       }
-      setPhase('idle');
-      return;
     }
 
     // ── Step 2: attach as exam → triggers extraction + tagging pipeline ─
@@ -114,7 +121,7 @@ export default function ExamCreateModal({
     try {
       const yearInt = year.trim() ? parseInt(year, 10) : null;
       const res = await api.createCourseExam(courseId, {
-        user_document_id: userDocumentId,
+        user_document_id: userDocumentId!,
         title:            title.trim(),
         year:             Number.isFinite(yearInt) ? yearInt : null,
         semester:         semester || null,
@@ -124,7 +131,10 @@ export default function ExamCreateModal({
       onCreated(res.data);
       onClose();
     } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Could not process the exam — check the file and try again.');
+      // Backend now returns user-friendly messages from llm_json.user_message_for.
+      // The processing step failed but the upload succeeded — keep
+      // `uploadedDocId` so a retry skips re-upload and just re-runs the AI.
+      setError(err?.response?.data?.detail ?? 'Could not process the exam — please try again.');
       setPhase('idle');
     }
   };
@@ -161,7 +171,14 @@ export default function ExamCreateModal({
           {error && (
             <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+              <div className="flex-1">
+                <p>{error}</p>
+                {uploadedDocId !== null && (
+                  <p className="mt-1 text-[11px] text-red-500">
+                    Your file is already uploaded — clicking "Upload &amp; Process" will retry just the AI extraction.
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

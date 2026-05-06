@@ -30,6 +30,7 @@ from app.models.domain import (
     Folder, User, UserDocument,
 )
 from app.services.document_service import extract_text
+from app.services.llm_json import LLMJsonError, user_message_for
 from app.services.syllabus_extractor import extract_syllabus
 
 router = APIRouter(tags=["courses"])
@@ -539,8 +540,10 @@ def attach_course_syllabus(
 
     try:
         extracted = extract_syllabus(full_text)
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except LLMJsonError as exc:
+        # The technical reason (`exc.reason`) is logged inside llm_json; here
+        # we only show the user a human-readable explanation with retry hint.
+        raise HTTPException(status_code=502, detail=user_message_for(exc))
 
     course.syllabus_user_document_id = user_doc.id
     course.syllabus_extracted        = extracted
