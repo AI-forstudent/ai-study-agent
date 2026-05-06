@@ -100,6 +100,8 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
         title:                created.title,
         year:                 created.year,
         semester:             created.semester,
+        moed:                 created.moed,
+        exam_type:            created.exam_type,
         has_solutions:        created.has_solutions,
         aggregate_difficulty: created.aggregate_difficulty,
         question_count:       created.question_count,
