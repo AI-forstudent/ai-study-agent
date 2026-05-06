@@ -57,19 +57,24 @@ class MessageResponse(BaseModel):
 # ── Threads ────────────────────────────────────────────────────────────────
 
 class ThreadCreate(BaseModel):
-    # document_id now refers to userdocuments.id
-    document_id: int
-    page_number: int
+    # document_id refers to userdocuments.id; nullable for standalone chat
+    # threads created without an attached document.
+    document_id: Optional[int] = None
+    # page_number is meaningless without a document; nullable for the same reason.
+    page_number: Optional[int] = None
     selected_text: Optional[str] = None
     coordinates: Optional[Any] = None
     initial_message: Optional[str] = None
     persona_id: Optional[str] = None
+    # Optional course scoping — when set, the prompt builder injects the
+    # course's cached syllabus extraction into the system prompt.
+    course_id: Optional[int] = None
 
 
 class ThreadResponse(BaseModel):
     id: int
     document_id: Optional[int] = None   # userdocuments.id
-    page_number: int
+    page_number: Optional[int] = None   # null for standalone chat threads
     selected_text: Optional[str] = None
     coordinates: Optional[Any] = None
     emoji: Optional[str] = "💬"
@@ -78,6 +83,7 @@ class ThreadResponse(BaseModel):
     parent_thread_id: Optional[int] = None
     forked_from_message_id: Optional[int] = None
     persona_id: Optional[str] = None
+    course_id: Optional[int] = None
     messages: List[MessageResponse] = []
 
     class Config:
@@ -182,3 +188,12 @@ class PageSummaryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FullSummaryResponse(BaseModel):
+    summary: str
+
+
+class CustomSummaryRequest(BaseModel):
+    custom_prompt: str
+    page_number:   int | None = None

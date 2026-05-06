@@ -1,0 +1,136 @@
+# Active Tracker — AI Study Partner
+
+> **Read at session start. Update at session end. Never leave stale.**
+>
+> ⚠️ **STANDING RULE:** A bug CANNOT be marked `✅ Fixed` and CANNOT be removed from this file
+> until the **user explicitly confirms** it works in the real UI. LLM self-assessment does not count.
+> Logic-only fixes with deterministic tests are the only exception.
+
+---
+
+## 🔄 Awaiting User Confirmation
+
+> Bugs the AI thinks it fixed but the user hasn't verified in UI yet.
+> Move to git history (delete from here) only after user says "confirmed."
+
+| ID | Component | Description | Fix Applied |
+|----|-----------|-------------|-------------|
+| B-003 | Transcript / pdfplumber | Hebrew RTL text extracted in visual (reversed) order | `python-bidi` `get_display()` applied per-line before Gemini call |
+| B-004 | Transcript upsert | Blind overwrite of `status`/`grade` could erase completed-course records | Safe-merge: skip update if existing record is already `completed` + graded; fill catalog fields only when null |
+| B-005 | Multi-tenant isolation | All users could see/modify each other's threads, personas, and (via summary endpoints) documents — no auth enforcement on those routers | All four `threads.py` routes, `chat.py`, four `documents.py` summary endpoints, and all six `personas.py` mutation routes now require `get_current_user` and filter on ownership. Cross-user access returns 404 (no existence leak). See migration `i4h5g6f7e8d9`. |
+| B-006 | Guest accounts shared | Every "Continue as guest" reviewer was issued a token for the same `guest@studyagent.ai` user, so all guests saw each other's data | Each `/auth/guest-login` call now mints a unique `guest-<uuid>@studyagent.ai` user with `subscription_tier='guest'`. |
+| B-007 | Personas (AI Teachers) | Cannot delete an AI Teacher — DELETE silently failed when any folder used the persona as its default tutor (FK violation), and the frontend swallowed every non-404 error without surfacing it | (1) Backend `DELETE /personas/{id}` now nulls `Folder.persona_id` references alongside Thread/StudySession (Folder was the missing FK; SessionMemory rows are still hard-deleted because that column is NOT NULL). (2) Store `deletePersona` returns a boolean; PersonaLab's PreviewPanel now confirms before deleting and shows an error alert when the delete fails. |
+| B-008 | Personas (AI Teachers) | AI Teachers sometimes appeared, sometimes didn't — the `fetchPersonas` effect in `App.tsx` depended on `[fetchPersonas]` (a stable Zustand reference) and ran exactly once on mount, so a fresh login via `AuthModal` left the list empty | `useEffect` now depends on `[isAuthenticated, fetchPersonas]` so personas re-fetch whenever auth flips to true. |
+| B-009 | Public Courses | Cannot enter a course through the Public Courses view — the cards had no click-to-enter handler; only the star toggle was wired | Cards are now clickable (role/tabIndex/keydown for accessibility); App.tsx's `handleOpenPublicCourse` auto-stars the course (so it joins "My Courses") then sets a `pendingLibraryCourseId`; MyLibrary watches for it, refreshes its course list, and drills the user into the course detail view. The star button stops propagation so it stays a separate action. |
+| F-016 | Chat rendering | Assistant messages rendered inside an 85%-wide bordered card with `prose-sm` tight spacing — fine for short replies, wrong for long-form learning content | Split user vs. assistant rendering in `ChatPanel.renderMessage`: user keeps the compact gray bubble (right-aligned, `max-w-[85%]`, whitespace-pre-wrap); assistant renders document-style — full-width `<article>` with `prose prose-base`, comfortable spacing, no card chrome. New `assistantMdComponents` map styles H1-H4, lists, blockquotes, HR, tables consistently. New `CodeBlockWithCopy` component wraps fenced code blocks with a chrome strip showing the language label + a copy-to-clipboard button (uses `navigator.clipboard`; silently no-ops on insecure contexts). KaTeX/math, GFM tables, and remarkGfm were already wired and continue to work. **Syntax highlighting for code blocks is intentionally deferred** — no `react-syntax-highlighter` dep added; landing it later just needs the install + plugging the highlighter into `CodeBlockWithCopy`. |
+| F-004 | Google Sign-In | The Google button in `AuthModal` was a `console.log` placeholder | New backend `POST /api/v1/auth/google` (verifies the ID token via `google-auth`); frontend renders the live Google Identity Services button when `VITE_GOOGLE_OAUTH_CLIENT_ID` is set. Requires `GOOGLE_OAUTH_CLIENT_ID` (backend) + `VITE_GOOGLE_OAUTH_CLIENT_ID` (frontend) — see `.env.example`. |
+
+---
+
+## 🚧 In Flight
+
+> What is being actively worked on right now. One-line description + branch/file pointer.
+
+| ID | Feature | Status | Notes |
+|----|---------|--------|-------|
+| F-001 | Multi-provider AI (ChatGPT / Claude / Gemini) | ✅ Code complete | Needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` in `.env` before providers work. Gemini fallback always active. |
+| F-002 | Summary tab modes (Current Page / All / Custom) | ✅ Code complete | Backend endpoints: `POST /summary/all`, `POST /summary/custom`. Awaiting user UI confirmation. |
+| F-003 | Threads auto-tab-switch bug fix | ✅ Code complete | Removed `useEffect` that auto-switched to chat on activeThread change. Awaiting user UI confirmation. |
+| F-005 | Token-usage billing — schema only (Phase 1) | ✅ Code complete | `users.subscription_tier`, `users.auth_provider`, `users.google_sub`, `threads.user_id`, and the new `usage_events` table land in migration `i4h5g6f7e8d9`. Tier defs and pricing live in `app/core/quota_config.py`. **No logging/enforcement/UI yet** — phases 2/3/4. |
+| F-006 | Course / Session schema + backend (Phase 1) | ✅ Code complete | New `courses` + `course_memberships` tables and `folders.course_id` FK in migration `j5i6h7g8f9e0`. New routers: `/api/v1/courses` (CRUD + public list + star), `/api/v1/sessions` (list/search/delete root threads), `/api/v1/library/recent` (merged sessions+files lane). **Frontend lands in F-007 next commit.** |
+| F-007 | My Library lane UI + sessions UX (Phase 2) | ✅ Code complete | Sidebar refactor (+ New Session at top, Communities "Soon" placeholder, "Active Session" removed, "Community" → "Courses" rename), lane-based MyLibrary (Sessions & Files mixed by recency / Folders / My Courses), course CRUD modal, public Courses tab with star toggle, +New dropdown (Session/Folder/Course). Sessions search dedicated page deferred — search affordance in the lane is hidden for now (would require expanding the useAuth view enum). Standalone chat UI reuses `MainWorkspace` standalone branch. |
+| F-008 | Course Syllabus + course-scoped chat | ✅ Code complete | New migration `k6j7i8h9g0f1`: `courses.syllabus_user_document_id` (ON DELETE SET NULL), `courses.syllabus_extracted` JSONB, `course_topics`, `course_lecturers`, `threads.course_id`. New service `syllabus_extractor.py` runs ONE Gemini pass to extract structured fields; prompt_builder grew a `course_id` argument that appends a compact "## COURSE CONTEXT" block from the cached extraction. Frontend: course detail page now has Folders/Syllabus tabs, syllabus upload + extraction display, and a "Chat about this course" button that opens a standalone session pinned to the course (its syllabus enters every turn). Anthropic prompt-caching deferred — see T-011. Standalone-chat fetch in useChat now sends the Bearer token (was missing since auth was added to /chat). Circular-import fix in `3fde828` — `syllabus_extractor` lazy-imports `ask_gemini`. |
+| F-009 | Exams — schema + processing pipeline (Phase A) | ✅ Code complete | Migration `l7k8j9i0h1g2` (fixed in `a1bd907` after a duplicate-index error): `exams`, `exam_questions` (with `Vector(768)` embeddings), `exam_question_topics` (M2M), `exam_lecturers` (M2M, Q1=b), `course_question_types`. New service `exam_processor.py` does the three-pass pipeline (extract → embed+tag → no-LLM difficulty calibration) — ~12-15k tokens for a typical 25-question exam. New router `exams.py` (mounted at /api/v1; routes use full paths to live under both /courses/{id}/exams and /exams/{id}). Companion blank/solved PDF intentionally generated lazily by the Take flow (Phase C) rather than eagerly at upload. |
+| F-010 | Exams UI (Phase B) | ✅ Code complete | New "Exams" tab inside the course drilldown. Stats header with three inline-SVG visualisations (no chart-lib dep): a question-types donut, a top-topics horizontal bar list, and a difficulty histogram. Table view with title / period / lecturers / question count / difficulty badges. Click a row → ExamDetailView with the per-question breakdown (number, type chip, topic chips, difficulty badge, page number, markdown question text, collapsible reference solution). Upload modal handles the two-step flow: POST /documents/ → POST /courses/{id}/exams; tags lecturers from the syllabus extraction. Take/Submit/Grade flow is F-011. |
+| F-012 | Async exam processing + retry | ✅ Code complete | Migration `m8l9k0j1i2h3` adds `exams.processing_status` ('pending'/'processing'/'completed'/'failed') + `processing_error`. POST /exams now returns 202 immediately with the row in 'pending' state; a FastAPI BackgroundTask runs the AI pipeline outside the request lifecycle (own DB session). New `/exams/{id}/retry` endpoint requeues failed exams. Failed exams are NEVER deleted — they stay visible with a red "Failed" badge + the friendly error message + a Retry button. Frontend `CourseExamsTab` polls the list every 5s while any exam is in 'pending'/'processing'; rows render as non-clickable while in flight. Solves the "upload got stuck" / "can't re-upload after refresh" / "where do I see the questions" trifecta caused by nginx 60s timeout cutting off synchronous 60-150s processing. |
+| F-013 | Exam infrastructure for 20-30 exams/course | ✅ Code complete | Three perf + reliability upgrades sized for the user's expected scale. (1) Migration `n9m0l1k2j3i4` adds `Exam.question_count` denormalized cache so the polling list endpoint stops loading every exam's questions just to call `len(...)`. (2) `process_exam` now runs per-question tagging in a `ThreadPoolExecutor` (5 workers); a new `tag_question_pure` thread-safe helper takes a `CourseSnapshot` and returns raw decisions, the main thread does all DB upserts after — collapses 25-question exams from ~50s to ~10s while keeping the SQLAlchemy session single-threaded. (3) `selectinload` on `list_course_exams` and `get_exam` drops queries-per-request from N+1 (~30 queries × N exams) to a fixed ~4 regardless of course size. (4) Lifespan stuck-processing sweeper marks any exam stuck in `pending`/`processing` for >15 min as `failed` with a recovery hint — covers BackgroundTasks lost to deploys / OOM / crashes. |
+| F-014 | Two-axis tagging + real stats aggregation | ✅ Code complete | Three improvements: (1) `_TAGGING_PROMPT` rewritten with explicit Topic-vs-QuestionType axis definitions, illustrative examples, and "never cross-contaminate" hard rules — fixes the bug where Gemini sometimes put question-type names into `topic_new`. (2) `tag_question_pure` now accepts an optional `solution_text`; when the source PDF carried an inline solution we pass it so the tagger picks up topics named only in the answer (Hall's theorem case). (3) New `GET /api/v1/courses/{id}/exam-stats` endpoint returns full sorted topic + question-type histograms (per-question + per-exam reach) and a 5-bucket difficulty distribution, scoped to completed exams only. ExamStatsHeader now renders REAL question-type data instead of a topic stand-in, plus an expandable "View all (N)" toggle on each card so users can see the full taxonomy, not just the top 5/6. |
+| F-015 | Granular exam metadata (T-020) | ✅ Code complete | Migration `o0n1m2l3k4j5` splits the overloaded `Exam.semester` field into THREE independent columns per the user spec: `semester` (Fall/Spring/Summer/Other), `moed` (A/B/C/D/Special), `exam_type` (midterm/final/quiz/practice/other). Backfill regex-extracts any "Moed X" string from existing `semester` rows into the new `moed` column. The question-extraction prompt now also returns a `metadata` section auto-detecting all four axes from the PDF; `process_exam` applies these to the Exam row only when the user left the corresponding field on "Auto-detect" (user input always wins). The upload modal replaces the single semester dropdown with four small "Auto-detect"-defaulting selects so users can defer to AI for any axis. Card + detail rendering joins the four fields with ` · ` so they're visually together but never concatenated in the data layer. |
+
+---
+
+## 📥 Roadmap Backlog (2026-05-06 dump)
+
+> Captured from a single roadmap message. Tackling in three rounds in this order:
+> **A.** Critical bugs (B-007 / B-008 / B-009) → **B.** Chat rich rendering (F-016) → **C.** Multi-tenancy plan deliverable (F-017, plan-only, no code).
+> Everything else stays queued below.
+
+### Round A — Critical Bugs
+
+> ✅ Code shipped — see B-007 / B-008 / B-009 entries in **🔄 Awaiting User Confirmation** above. Do not remove from this file until the user has verified each in the real UI.
+
+### Round B — Critical UX
+
+> ✅ Code shipped — see F-016 in **🔄 Awaiting User Confirmation** above. Syntax highlighting for code blocks intentionally deferred (no new npm dep added).
+
+### Round C — Multi-Tenancy & Permissions (plan-first deliverable)
+
+> ✅ Plan **locked 2026-05-06** at [docs/plans/multi_tenancy.md](plans/multi_tenancy.md). All 13 Open Questions answered (see §6 Decisions Log in the doc). Ready for Phase-1 implementation when the user gives the go-ahead.
+>
+> **Notable locks:** single `Default` org (no `bgu` pre-created); Default is a parking lot — `can()` suppresses cross-user visibility inside it; super-user bootstrap for `lior.livovsky213@gmail.com` runs in the Phase-1 migration itself; **no email or link invitations in v1** (Phase 5 = centralized admin UI with scope-bounded management; Phase 7 post-launch = shareable invitation links); env-var feature flags read dynamically at call time with first-hour dense logging.
+
+| ID | Area | Description |
+|----|------|-------------|
+| F-017 | Permissions hierarchy | Plan locked — see [docs/plans/multi_tenancy.md](plans/multi_tenancy.md). **Phase 1 code complete** (data model + Lior super-user bootstrap, zero behaviour change): new ORM models in `domain.py` (`Organization`, `Community`, `RoleAssignment` + three native PG ENUMs), scope columns on `users/courses/folders/userdocuments/threads/exams`, and migration `p1o2n3m4l5k6_phase1_multitenancy_scaffolding` does the DDL + backfill. Migration aborts loudly if `lior.livovsky213@gmail.com` is not in the `users` table — sign in with that email at least once before running. **Awaiting:** local migration run + user UI sanity check that nothing regressed. Phase 2 (`can()` + write enforcement behind `PERMISSIONS_ENFORCE_WRITES`) is the next implementation step. |
+
+### Queued Backlog (post-A/B/C)
+
+| ID | Area | Description | Priority |
+|----|------|-------------|----------|
+| F-018 | Sessions & Files | Drag-and-drop documents into folders + right-click context menu to assign to folder | High |
+| F-019 | Library display | Show **only ROOTS** in main lane (recent), with a dedicated "View All" / searchable screen — applies to Folders and Courses too | High |
+| F-020 | Chat | Document upload from inside a New Session / chat (currently library-only) | High |
+| F-021 | AI / Personas | Remove the Auto-Summarize feature entirely | Medium |
+| F-022 | AI / Personas | Remove all default AI Teachers — nothing should ship preinstalled | Medium |
+| F-023 | Naming sweep | Rename "Personal Hub" → "My Space" — UI labels, routes (`/personal-hub` → `/my-space`), i18n files, docs/onboarding/empty states, analytics event names | Medium |
+| F-024 | Courses | Move course deletion out of main course view → Course Settings → Danger Zone with confirmation | High (safety) |
+| F-025 | Courses | Topic extraction — primary source syllabus, secondary source lectures/materials; auto-run on course create or new-material upload; user-editable list (refines F-008) | Medium |
+| F-026 | Courses | Lecturers list — auto-extract from syllabus, exam headers, lecture slides; structured items with role (professor/TA/guest); user-editable (refines F-008) | Medium |
+| F-027 | Polish | Landing page refresh — content + design | Low |
+| F-028 | AI section | "General bug" reported but vague — needs reproduction before triage | Investigate |
+| T-027 | Global pattern | Deletion-safety audit — every "create/add" feature must have a thoughtfully designed delete (confirmation dialogs, Danger Zone). Default to safer patterns app-wide | High |
+| T-028 | Global pattern | LLM-output-parsing audit — find every `JSON.parse` / `json.loads` on model output not routed through `services/llm_json`; enforce structured outputs / JSON mode where supported; log raw on failure | High |
+| T-029 | Smart Model Routing | **Research phase first:** survey RouteLLM, OpenRouter auto-routing, Martian, Not Diamond — signals used (task type, complexity, cost, latency, domain), trade-offs of trained classifier vs. rule-based vs. embedding-similarity. Deliverables: research summary + recommendation + proposed architecture + minimal v1 (rule-based OK) | Medium |
+
+---
+
+## 📋 Known Tech Debt
+
+> Deliberately deferred. **Do not "discover" these as new bugs** — they are tracked.
+
+| ID | Area | Description | Priority |
+|----|------|-------------|----------|
+| T-003 | Study Commons | `POST /documents/{id}/clone` endpoint not yet implemented — `PublicGallery` clone button is wired to `console.log` only | High |
+| T-004 | Study Commons | `GET /documents/public` is not paginated — will degrade at scale | Low |
+| T-005 | Session Memory | `saveSessionMemory` in Zustand appends to local state only — never PUT to DB on session wrap-up | Medium |
+| T-006 | Observability | Sentry SDK placeholder present in `main.py` but not wired to a real DSN | Low |
+| T-007 | Multi-tenant orphans | Pre-existing personal personas with `author_id IS NULL` and standalone threads with `user_id IS NULL` (after migration `i4h5g6f7e8d9`) are invisible to all users by design. Clean up by hand if desired (`DELETE FROM personas WHERE persona_type='personal' AND author_id IS NULL;` and `DELETE FROM threads WHERE user_id IS NULL;`). | Low |
+| T-008 | Billing — Phase 2 (logging) | Thread `user_id` through `call_llm` / `ask_gemini`; write a `UsageEvent` per LLM call using each provider's `usage_metadata`. | Medium |
+| T-009 | Billing — Phase 3 (enforcement) | Pre-call check `SUM(credits) >= TIER_QUOTAS[user.subscription_tier]['credits_per_period']` over the last `PERIOD_SECONDS` window → 429 if over. | Medium |
+| T-010 | Billing — Phase 4 (Settings UI) | `GET /api/v1/profile/usage` + `<UsageBar />` showing used / limit / reset-time. | Medium |
+| T-011 | Anthropic prompt caching for syllabus block | Q3=(c) was chosen but full `cache_control` plumbing requires `prompt_builder` to return structured blocks (persona/memory/course separately) instead of one string, plus a special path in `_call_anthropic` to mark the course block as `ephemeral`. Currently the syllabus is part of the inline string — cheap on every turn (~500 tokens) but not cached. | Low |
+| T-012 | Doc-anchored threads ignore course context | `chat.py` (standalone) uses prompt_builder's new `course_id` arg, but `document_service.get_chat_response_for_thread` (doc-anchored) builds its own prompt and doesn't yet read `Thread.course_id`. Add when a real user opens a doc inside a course context. | Medium |
+| T-013 | Folder→course move from FolderModal | Backend supports `PUT /folders/{id}` with `course_id`, but the FolderModal UI doesn't expose the picker. Trivial follow-up. | Low |
+| T-014 | Set existing library doc as syllabus | The Syllabus tab uploads a fresh file. If the user already has the file in their library, they get a 409 with a "use 'Set as syllabus' menu option (TODO)" message — that menu option doesn't exist yet. | Low |
+| T-015 | Exam duplicate detection | Phase A doesn't check whether an uploaded exam is the same paper as an existing one. Plan: SHA-256 (already covered by CAS dedup of the underlying file), then content match — compare extracted question-text embeddings against existing exams in the course; warn if a high % overlap. Add when the user starts seeing duplicates in their library. | Medium |
+| ~~T-016~~ | ~~Exam UI (Phase B of F-009)~~ | ✅ Shipped as F-010. | — |
+| ~~T-019~~ | ~~Real per-question-type aggregation~~ | ✅ Shipped as F-014 — new `GET /courses/{id}/exam-stats` endpoint returns sorted topic + question-type histograms separately. | — |
+| ~~T-020~~ | ~~Granular exam metadata~~ | ✅ Shipped as F-015 — see CHANGES.md. | — |
+| T-021 | Folder / multi-file exam upload | Drop a folder containing many past papers; the system filters out non-exam files, groups answer keys with their corresponding exam, and processes them in batch. | High |
+| T-022 | Batched review UI for AI uncertainty | At end of batch processing, show a single review screen for fields the AI flagged "low confidence" or "couldn't determine" — with the relevant doc snippet for context. Confidence levels: `high` (auto-fill quietly) / `verify` (auto-fill but ask) / `unknown` (ask). | High |
+| T-023 | Topic-relevance check on exam upload | Cross-reference extracted question topics against the course's `course_topics` taxonomy; warn the user if an exam doesn't seem to match the course. Don't auto-reject — let them override. | Medium |
+| T-024 | OCR for image-only exam PDFs | Some past papers are scanned images; pdfplumber returns empty text for those. Detect `len(pages) == 0 or all empty text` and run OCR (Tesseract) before the LLM extractor. | Medium |
+| T-025 | Exam content-based duplicate detection | Phase A only does SHA-256 (CAS) dedup. Per user spec: also detect "this is the same exam, just a different scan" via question-text embeddings; warn before adding. Same approach as T-015. | Medium |
+| T-026 | Multi-lecturer support is already there but UI doesn't expose | `exam_lecturers` is M2M and the upload modal already handles lists, but the lecturer roster comes only from the syllabus extraction — needs a "+ add lecturer" affordance for cases where the syllabus doesn't carry the full list. | Low |
+| T-017 | Exam Take/Submit/Grade (Phase C of F-009) | "Take this exam" button → companion blank-PDF generation (lazy) + download; upload-answer form; AI grading using the cached `reference_solution` per question. New `exam_attempts` table. | High |
+| T-018 | Recompute difficulty asynchronously | `compute_difficulty_scores` runs synchronously on every new exam upload — that's fine for ~10s of exams but will block the request as the course grows. Move to a background task or a periodic recompute job once a course has >50 exams. | Low |
+
+---
+
+## How to use this file (for the AI)
+
+1. **At session start:** read this file. Note what's in flight and what's already known tech debt.
+2. **When fixing a bug:** if you believe it's fixed, add it to "Awaiting User Confirmation" — do NOT remove it from "In Flight" until the user confirms.
+3. **When discovering a new issue:** check first whether it's already in "Known Tech Debt." If yes, do not propose to fix it without explicit user request.
+4. **At session end:** update the "In Flight" section. Add anything new you discovered to the appropriate section.
+5. **Never** silently delete items — the user must confirm.

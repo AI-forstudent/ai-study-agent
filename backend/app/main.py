@@ -35,9 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from datetime import datetime, timedelta, timezone
+
 from app.core.config import ALLOWED_ORIGINS
 from app.core.database import SessionLocal, engine
-from app.models.domain import BaseDocument
+from app.models.domain import BaseDocument, Exam
 from app.services.model_router import list_manifest, route_llm_request
 from app.api.routers import personas as personas_router
 from app.api.routers import chat as chat_router
@@ -46,6 +48,10 @@ from app.api.routers import documents as documents_router
 from app.api.routers import threads as threads_router
 from app.api.routers import folders as folders_router
 from app.api.routers import personal_hub as personal_hub_router
+from app.api.routers import courses as courses_router
+from app.api.routers import sessions as sessions_router
+from app.api.routers import library as library_router
+from app.api.routers import exams as exams_router
 from app.api.routers.personas import seed_db as _seed_db
 
 
@@ -89,6 +95,36 @@ async def lifespan(app: FastAPI):
             print(f"[startup] Removed {deleted} orphaned upload file(s).")
         else:
             print("[startup] Upload directory is in sync with DB.")
+
+        # ── Stuck-processing sweep ────────────────────────────────────────
+        # Exam processing runs in a FastAPI BackgroundTask. If the worker
+        # process dies (deploy, OOM, crash) while a task is mid-flight, the
+        # exam stays in `processing` forever — there's no other recovery
+        # path because BackgroundTasks have no durability.
+        #
+        # On every fresh boot we sweep the table: any row that's been in
+        # `pending`/`processing` for >15 minutes is by definition stuck
+        # (real processing finishes in <3 min for normal exam sizes).
+        # We mark those as `failed` with a recovery hint so the user can
+        # click Retry from the UI.
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+        stuck = (
+            db.query(Exam)
+            .filter(
+                Exam.processing_status.in_(("pending", "processing")),
+                Exam.created_at < cutoff,
+            )
+            .all()
+        )
+        for exam in stuck:
+            exam.processing_status = "failed"
+            exam.processing_error = (
+                "Processing was interrupted (likely a server restart). "
+                "Click Retry to run the AI extraction again."
+            )
+        if stuck:
+            db.commit()
+            print(f"[startup] Recovered {len(stuck)} stuck exam(s) → status=failed.")
     except Exception as exc:
         print(f"[startup] ERROR during startup: {exc}")
     finally:
@@ -106,6 +142,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    redirect_slashes=False,
     lifespan=lifespan,
 )
 
@@ -130,6 +167,12 @@ app.include_router(threads_router.router,       prefix="/api/v1/threads")
 app.include_router(personas_router.router,      prefix="/api/v1/personas")
 app.include_router(chat_router.router,          prefix="/api/v1/chat")
 app.include_router(personal_hub_router.router,  prefix="/api/v1/profile")
+app.include_router(courses_router.router,       prefix="/api/v1/courses")
+app.include_router(sessions_router.router,      prefix="/api/v1/sessions")
+app.include_router(library_router.router,       prefix="/api/v1/library")
+# Exams use both /api/v1/courses/{id}/exams and /api/v1/exams/{id} so the
+# router declares full paths and is mounted at /api/v1.
+app.include_router(exams_router.router,         prefix="/api/v1")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────

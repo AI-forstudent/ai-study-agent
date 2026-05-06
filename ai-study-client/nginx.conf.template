@@ -1,7 +1,7 @@
 # Redirect HTTP → HTTPS
 server {
     listen 80;
-    server_name ai-study-agent.com www.ai-study-agent.com;
+    server_name ${DOMAIN} www.${DOMAIN};
     location / {
         return 301 https://$host$request_uri;
     }
@@ -9,10 +9,10 @@ server {
 
 server {
     listen 443 ssl;
-    server_name ai-study-agent.com www.ai-study-agent.com;
+    server_name ${DOMAIN} www.${DOMAIN};
 
-    ssl_certificate     /etc/letsencrypt/live/ai-study-agent.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/ai-study-agent.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 

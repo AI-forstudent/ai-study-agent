@@ -1,0 +1,44 @@
+{
+  "$comment_setup": "Project-scoped MCP servers for Claude Code. Commit this file to git. Secrets come from environment variables — never hardcode tokens here. See README at the bottom for env vars to set.",
+
+  "mcpServers": {
+    "postgres": {
+      "$comment": "Postgres MCP Pro by Crystal DBA. Read-only by default — safe for vibe coding. The official @modelcontextprotocol/server-postgres was deprecated July 2025 due to a SQL injection CVE; do NOT use it.",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "${POSTGRES_MCP_URI}"
+      }
+    },
+
+    "github": {
+      "$comment": "Official GitHub MCP server. PRs, issues, repo navigation. Needs a fine-grained PAT with repo access.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+
+    "context7": {
+      "$comment": "Pulls live, version-correct docs for libraries (React 19, FastAPI, LangChain, etc). Kills hallucinated APIs.",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+
+    "playwright": {
+      "$comment": "Browser automation for verifying UI changes end-to-end. Pairs with the existing Playwright e2e tests in tests/e2e/.",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}

@@ -1,12 +1,11 @@
 import { create } from 'zustand';
+import { api } from '../services/api';
 import type { Thread } from '../types';
 import type { Persona } from '../types/persona';
 
-// ── API base for the Grand Vision backend ─────────────────────────────────
-// Uses VITE_AI_API_URL (env var) so the correct URL is picked up in every
-// environment: local dev → http://localhost:8001, Docker/prod → nginx proxy.
-const AI_API_BASE = import.meta.env.VITE_AI_API_URL || 'http://localhost:8001';
-const PERSONAS_API = `${AI_API_BASE}/api/v1/personas`;
+// All persona traffic now goes through `api` (Axios with the auth interceptor).
+// Raw fetch() calls do not attach the Bearer token and would 401 against the
+// per-user-scoped backend.
 
 // ── localStorage persistence helpers ──────────────────────────────────────
 
@@ -62,8 +61,10 @@ interface AppState {
   createPersona: (persona: Persona) => Promise<Persona | null>;
   /**
    * Deletes a personal persona from the DB and removes it from the local store.
+   * Returns true on success (including 404 phantom cleanup), false otherwise so
+   * the caller can surface a UI error instead of swallowing it silently.
    */
-  deletePersona: (personaId: string) => Promise<void>;
+  deletePersona: (personaId: string) => Promise<boolean>;
   /**
    * Updates an existing personal persona in the DB and syncs the local store.
    */
@@ -85,6 +86,11 @@ interface AppState {
   selectedModelTier: 'flash-lite' | 'flash' | 'pro';
   setSelectedModelTier: (tier: 'flash-lite' | 'flash' | 'pro') => void;
 
+  // ── AI Provider ─────────────────────────────────────────────────────────────
+  /** Which LLM provider to use: openai (ChatGPT), anthropic (Claude), gemini. */
+  selectedAIProvider: 'openai' | 'anthropic' | 'gemini';
+  setSelectedAIProvider: (provider: 'openai' | 'anthropic' | 'gemini') => void;
+
   // ── Resume prompt (shown once per app load if a session was persisted) ──────
   showResumePrompt: boolean;
   dismissResumePrompt: () => void;
@@ -103,9 +109,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   fetchPersonas: async () => {
     try {
-      const res = await fetch(PERSONAS_API);
-      if (!res.ok) throw new Error(`GET /personas failed: ${res.status}`);
-      const data: Persona[] = await res.json();
+      const res = await api.getPersonas();
+      const data: Persona[] = res.data;
       set({ personas: data });
 
       // ── Stale-session guard ────────────────────────────────────────────────
@@ -128,9 +133,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (err) {
       console.error(
-        `[fetchPersonas] Failed to load personas from ${PERSONAS_API}. ` +
-        'Make sure the Grand Vision API (port 8001) is running. ' +
-        'If it just started, call POST /api/v1/personas/seed to force-seed the DB.',
+        '[fetchPersonas] Failed to load personas. ' +
+        'Make sure the API (port 8001) is running and the user is authenticated.',
         err,
       );
     }
@@ -141,12 +145,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     // page-reload race (store not yet populated) never silently falls back
     // to the shared global ID and attaches session memory to the wrong persona.
     try {
-      const res = await fetch(`${PERSONAS_API}/${originalId}/clone`, { method: 'POST' });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Clone request failed ${res.status}: ${body}`);
-      }
-      const serverClone: Persona = await res.json();
+      const res = await api.clonePersona(originalId);
+      const serverClone: Persona = res.data;
       // Replace any existing entry with the same ID (avoids phantoms from rapid clones)
       set(state => ({
         personas: [...state.personas.filter(p => p.id !== serverClone.id), serverClone],
@@ -160,25 +160,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createPersona: async (persona) => {
     try {
-      const res = await fetch(PERSONAS_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: persona.id,
-          display_name: persona.name,
-          description: persona.description ?? '',
-          persona_type: 'personal',
-          system_prompt: persona.systemPrompt,
-          tags: persona.tags,
-          icon: persona.icon,
-          original_persona_id: persona.originalPersonaId ?? null,
-        }),
+      const res = await api.createPersona({
+        id: persona.id,
+        display_name: persona.name,
+        description: persona.description ?? '',
+        persona_type: 'personal',
+        system_prompt: persona.systemPrompt,
+        tags: persona.tags,
+        icon: persona.icon,
+        original_persona_id: persona.originalPersonaId ?? null,
       });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Create persona failed ${res.status}: ${body}`);
-      }
-      const saved: Persona = await res.json();
+      const saved: Persona = res.data;
       set(state => ({
         personas: [...state.personas.filter(p => p.id !== persona.id), saved],
         activeSession: state.activeSession?.personaId === persona.id
@@ -194,22 +186,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   updatePersona: async (id, updates) => {
     try {
-      const res = await fetch(`${PERSONAS_API}/${encodeURIComponent(id)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          display_name:  updates.name,
-          description:   updates.description,
-          system_prompt: updates.systemPrompt,
-          tags:          updates.tags,
-          icon:          updates.icon,
-        }),
+      const res = await api.updatePersona(id, {
+        display_name:  updates.name,
+        description:   updates.description,
+        system_prompt: updates.systemPrompt,
+        tags:          updates.tags,
+        icon:          updates.icon,
       });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Update persona failed ${res.status}: ${body}`);
-      }
-      const updated: Persona = await res.json();
+      const updated: Persona = res.data;
       set(state => ({
         personas: state.personas.map(p => p.id === id ? updated : p),
       }));
@@ -222,15 +206,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   deletePersona: async (personaId) => {
     try {
-      const res = await fetch(`${PERSONAS_API}/${encodeURIComponent(personaId)}`, { method: 'DELETE' });
-      // 404 means the persona doesn't exist in the DB (phantom ID) — treat as success
-      // and still remove it from the local store to clean up the stale entry.
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`Delete persona failed: ${res.status}`);
-      }
+      await api.deletePersona(personaId);
       set(state => ({ personas: state.personas.filter(p => p.id !== personaId) }));
-    } catch (err) {
+      return true;
+    } catch (err: unknown) {
+      // 404 means the persona doesn't exist in the DB (phantom ID) — treat as
+      // success and still remove it from the local store to clean up the stale entry.
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        set(state => ({ personas: state.personas.filter(p => p.id !== personaId) }));
+        return true;
+      }
       console.error('[deletePersona] Failed to delete persona', err);
+      return false;
     }
   },
 
@@ -271,6 +259,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── Model tier ──────────────────────────────────────────────────────────────
   selectedModelTier:    'flash',
   setSelectedModelTier: (tier) => set({ selectedModelTier: tier }),
+
+  // ── AI Provider ─────────────────────────────────────────────────────────────
+  selectedAIProvider:    'openai',
+  setSelectedAIProvider: (provider) => set({ selectedAIProvider: provider }),
 
   // ── Resume prompt ───────────────────────────────────────────────────────────
   showResumePrompt:    _savedSession !== null,

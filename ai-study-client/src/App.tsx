@@ -7,6 +7,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
+import PublicCoursesPage    from './features/courses/components/PublicCoursesPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -17,6 +18,7 @@ import AppLayout      from './components/layout/AppLayout';
 import Sidebar        from './components/layout/Sidebar';
 import Settings       from './components/layout/Settings';
 import AuthModal      from './components/ui/AuthModal';
+import { api }        from './services/api';
 import { ResumeToastContainer } from './features/sessions/components/ResumeToast';
 import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
 
@@ -49,10 +51,14 @@ function App() {
   const clonePersona        = useAppStore(state => state.clonePersona);
   const dismissResumePrompt = useAppStore(state => state.dismissResumePrompt);
 
-  // ── Hydrate personas from backend on mount ──────────────────────────────────
+  // ── Hydrate personas whenever auth becomes available ──────────────────────
+  // Depending on `isAuthenticated` (not just on mount) ensures a fresh login
+  // triggers a re-fetch — otherwise personas can stay empty after AuthModal
+  // succeeds because the original mount-effect already ran with no token.
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchPersonas();
-  }, [fetchPersonas]);
+  }, [isAuthenticated, fetchPersonas]);
 
   // ── Pre-flight & persona session state ─────────────────────────────────────
   const [isPreFlightOpen, setPreFlightOpen]               = useState(false);
@@ -62,11 +68,15 @@ function App() {
   const [preFlightPersonaId, setPreFlightPersonaId]       = useState<string | null | undefined>(undefined);
   /** True when a chat-only (no document) session is active. */
   const [standaloneMode, setStandaloneMode]               = useState(false);
+  const [activeCourseId, setActiveCourseId]               = useState<number | null>(null);
+  /** When the user clicks into a public course we star it and stash the id
+   *  here; MyLibrary picks it up, refreshes its course list, and drills in. */
+  const [pendingLibraryCourseId, setPendingLibraryCourseId] = useState<number | null>(null);
   const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
 
   const docs    = useDocuments(isAuthenticated, handleLogout);
   const folders = useFolders(isAuthenticated);
-  const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId);
+  const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId, activeCourseId);
 
   // ── Derived state ───────────────────────────────────────────────────────────
   const activePersonaName: string | null = activePersonaId
@@ -96,6 +106,7 @@ function App() {
     chat.reset();
     setActivePersonaId(null);
     setActiveSession(null);
+    setActiveCourseId(null);
     setPreFlightPersonaId(undefined);
     setStandaloneMode(false);
     dismissResumePrompt();
@@ -108,12 +119,37 @@ function App() {
     setAuthModalOpen(false);
   }
 
-  /** Intercepts MyLibrary's onSelectDocument — opens PreFlight (from-doc mode). */
+  /** Intercepts MyLibrary's onSelectDocument.
+   *
+   * The user does not want a per-click "pick an agent" modal anymore — they
+   * just want the document to open. We auto-pick an AI Teacher in this order:
+   *   1. The folder's default `persona_id`, if the doc lives in a folder that has one.
+   *   2. The previously-active session's persona (continuity).
+   *   3. The first personal AI Teacher the user owns.
+   *   4. The first global AI Teacher (Socratic Mentor seed) as a final fallback.
+   *
+   * The user can swap teachers mid-session via SwitchPersonaModal.
+   */
   function handleOpenPreFlight(doc: { id: number }) {
-    const fullDoc = docs.userDocs.find((d: { id: number; title: string }) => d.id === doc.id);
-    setSelectedDocForSession({ id: doc.id, title: fullDoc?.title ?? 'Document' });
-    setPreFlightPersonaId(undefined);
-    setPreFlightOpen(true);
+    const fullDoc = docs.userDocs.find((d: { id: number; title: string; folder_id?: number | null }) => d.id === doc.id);
+
+    // Resolve a sensible persona without opening a modal.
+    const folder = fullDoc?.folder_id != null
+      ? folders.folders.find(f => f.id === fullDoc.folder_id)
+      : null;
+    const folderDefault = folder?.persona_id ?? null;
+    const previousPersona = activeSession?.personaId ?? null;
+    const ownPersonal = personas.find(p => p.type === 'personal')?.id ?? null;
+    const globalFallback = personas.find(p => p.type === 'global')?.id ?? null;
+
+    const autoPersonaId =
+      folderDefault   ??
+      previousPersona ??
+      ownPersonal     ??
+      globalFallback  ??
+      null;
+
+    void handleStartSession(autoPersonaId, doc.id);
   }
 
   /** Called from PersonaLab "Use for Session" / hover "Start Session". */
@@ -171,6 +207,85 @@ function App() {
     setView('main');
   }
 
+  /** Sidebar "+ New Session" — open a fresh standalone chat with a sensible
+   *  default AI Teacher and clear any previous document/thread state. */
+  function handleStartNewSession() {
+    startStandaloneSession(null);
+  }
+
+  /** "Chat about this course" — same as a new session but the next chat call
+   *  will tag the new thread with this course_id so the syllabus is in scope. */
+  function handleStartCourseChat(courseId: number) {
+    startStandaloneSession(courseId);
+  }
+
+  /** Card click on the public-courses catalog. Auto-stars the course (so it
+   *  appears in My Library's "My Courses" lane) and drills the user straight
+   *  into the course detail view. Owners and already-starred users skip the
+   *  star step. Failures fall back to switching to My Library so the user is
+   *  not stranded with no feedback. */
+  async function handleOpenPublicCourse(course: { id: number; is_starred: boolean }) {
+    try {
+      if (!course.is_starred) {
+        await api.starCourse(course.id, true);
+      }
+    } catch (err) {
+      console.error('[handleOpenPublicCourse] star failed', err);
+    }
+    setPendingLibraryCourseId(course.id);
+    setView('main');
+  }
+
+  function startStandaloneSession(courseId: number | null) {
+    docs.clearDocument();
+    chat.reset();
+    const defaultPersona =
+      personas.find(p => p.type === 'personal')?.id ??
+      personas.find(p => p.type === 'global')?.id ??
+      null;
+    setActivePersonaId(defaultPersona);
+    setActiveSession({ documentId: null, personaId: defaultPersona });
+    setActiveCourseId(courseId);
+    setStandaloneMode(true);
+    dismissResumePrompt();
+    // No active thread yet — the first message creates the thread server-side
+    // and the chat hook attaches course_id at that moment.
+    useAppStore.getState().setActiveThread(null);
+    setView('main');
+  }
+
+  /** Open a past session by id — load its document if present, else go
+   *  standalone. The thread payload itself becomes the active thread so the
+   *  chat tab opens with full message history. */
+  async function handleOpenSession(sessionId: number) {
+    try {
+      const res = await api.getThread(sessionId);
+      const thread = res.data;
+      if (!thread) {
+        alert('Could not load that session.');
+        return;
+      }
+      setActivePersonaId(thread.persona_id ?? null);
+
+      if (thread.document_id) {
+        await docs.handleSelectDocument({ id: thread.document_id });
+        setStandaloneMode(false);
+      } else {
+        docs.clearDocument();
+        setStandaloneMode(true);
+      }
+      setActiveSession({
+        documentId: thread.document_id ?? null,
+        personaId: thread.persona_id ?? null,
+      });
+      useAppStore.getState().setActiveThread(thread);
+      setView('main');
+    } catch (err) {
+      console.error('[handleOpenSession]', err);
+      alert('Could not load that session.');
+    }
+  }
+
   function handleOpenWrapUp() {
     setWrapUpOpen(true);
   }
@@ -222,8 +337,7 @@ function App() {
         setView(v);
       }}
       onLogout={handleLogout}
-      hasActiveSession={!!activeSession}
-      onResumeSession={handleResumeSession}
+      onNewSession={handleStartNewSession}
     />
   );
 
@@ -278,12 +392,7 @@ function App() {
   if (view === 'gallery') {
     return (
       <AppLayout sidebar={sidebar}>
-        <PublicGallery
-          isAuthenticated={true}
-          inAppLayout
-          onBack={() => setView('main')}
-          onGetStarted={() => {}}
-        />
+        <PublicCoursesPage onOpenCourse={handleOpenPublicCourse} />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}
@@ -321,17 +430,19 @@ function App() {
             setEnableGlobalSummary={docs.setEnableGlobalSummary}
             onUploadFile={docs.handleFileChange}
             onSelectDocument={handleOpenPreFlight}
+            onSelectSession={handleOpenSession}
+            onStartNewSession={handleStartNewSession}
+            onStartCourseChat={handleStartCourseChat}
             onDeleteRequest={docs.setDocToDelete}
-            onToggleVisibility={docs.toggleVisibilityById}
             onStarDocument={docs.handleStarDocument}
             onMoveDocument={docs.handleMoveDocument}
             folders={folders.folders}
-            activeFolderId={folders.activeFolderId}
-            setActiveFolderId={folders.setActiveFolderId}
             onCreateFolder={folders.createFolder}
             onUpdateFolder={folders.updateFolder}
             onDeleteFolder={folders.deleteFolder}
             personas={personas}
+            pendingCourseId={pendingLibraryCourseId}
+            onPendingCourseConsumed={() => setPendingLibraryCourseId(null)}
           />
           <ResumeToastContainer
             personaName={toastPersonaName}

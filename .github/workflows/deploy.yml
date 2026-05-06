@@ -1,0 +1,60 @@
+name: Deploy to Droplet
+
+on:
+  push:
+    branches:
+      - Lior
+  workflow_dispatch:  # also allow manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          port: ${{ secrets.DROPLET_PORT }}
+          envs: GOOGLE_API_KEY,ANTHROPIC_API_KEY,OPENAI_API_KEY,SECRET_KEY,DOMAIN,GOOGLE_OAUTH_CLIENT_ID,VITE_GOOGLE_OAUTH_CLIENT_ID
+          script_stop: true
+          script: |
+            set -e
+            cd /opt/ai-study-agent
+
+            echo "==> Writing .env from GitHub secrets..."
+            {
+              printf 'GOOGLE_API_KEY=%s\n'              "$GOOGLE_API_KEY"
+              printf 'ANTHROPIC_API_KEY=%s\n'           "$ANTHROPIC_API_KEY"
+              printf 'OPENAI_API_KEY=%s\n'              "$OPENAI_API_KEY"
+              printf 'SECRET_KEY=%s\n'                  "$SECRET_KEY"
+              printf 'DOMAIN=%s\n'                      "$DOMAIN"
+              printf 'GOOGLE_OAUTH_CLIENT_ID=%s\n'      "$GOOGLE_OAUTH_CLIENT_ID"
+              printf 'VITE_GOOGLE_OAUTH_CLIENT_ID=%s\n' "$VITE_GOOGLE_OAUTH_CLIENT_ID"
+            } > .env
+            chmod 600 .env
+
+            echo "==> Resetting working directory to match origin/Lior..."
+            git fetch origin Lior
+            git reset --hard origin/Lior
+            git clean -fd -e .env -e backend/uploads
+
+            echo "==> Building and starting containers..."
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+            echo "==> Running database migrations..."
+            docker exec ai_study_backend uv run alembic upgrade head
+
+            echo "==> Pruning old images..."
+            docker image prune -f
+
+            echo "==> Deploy complete!"
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          GOOGLE_OAUTH_CLIENT_ID:      ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.VITE_GOOGLE_OAUTH_CLIENT_ID }}

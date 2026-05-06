@@ -22,7 +22,13 @@ services:
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://ai-study-agent.com,https://www.ai-study-agent.com
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      # Used by /api/v1/auth/google to verify Google ID tokens. Empty disables
+      # the endpoint (returns 503) — frontend falls back to the disabled button.
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
+      - ALLOWED_ORIGINS=http://localhost,http://localhost:5173,https://${DOMAIN},https://www.${DOMAIN}
     volumes:
       - ./backend/uploads:/app/uploads
     depends_on:
@@ -35,6 +41,8 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: ai_study_frontend
     restart: "on-failure:3"
+    environment:
+      - DOMAIN=${DOMAIN}
     depends_on:
       - backend
 

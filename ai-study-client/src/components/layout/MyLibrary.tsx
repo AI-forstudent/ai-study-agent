@@ -1,26 +1,28 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Upload, Globe, LockKeyhole, Trash2, Library,
-  Loader2, AlertCircle, Calendar, CheckCircle2, Star,
-  Search, ChevronDown, FolderPlus, ArrowLeft, MoreVertical,
-  FolderOpen,
+  Upload, Library, Loader2, AlertCircle, CheckCircle2,
+  Plus, FolderPlus, GraduationCap, MessageSquare, ArrowLeft,
+  Trash2, Star, FolderOpen, FileText,
 } from 'lucide-react';
 import PageContainer from './PageContainer';
 import PageHeader from './PageHeader';
-import FolderGrid from '../../features/documents/components/FolderGrid';
+import LibraryLane from './LibraryLane';
+import FolderCard from '../../features/documents/components/FolderCard';
 import FolderModal from '../../features/documents/components/FolderModal';
 import MoveToFolderModal from '../../features/documents/components/MoveToFolderModal';
+import SessionCard from '../../features/sessions/components/SessionCard';
+import FileCardCompact from '../../features/sessions/components/FileCardCompact';
+import CourseCard from '../../features/courses/components/CourseCard';
+import CourseModal from '../../features/courses/components/CourseModal';
+import CourseSyllabusTab from '../../features/courses/components/CourseSyllabusTab';
+import CourseExamsTab from '../../features/courses/components/CourseExamsTab';
 import type { Folder } from '../../features/documents/hooks/useFolders';
 import type { Persona } from '../../types/persona';
-import { FileIcon, ACCEPTED_FILE_TYPES } from '../../utils/fileIcons';
+import type { Course, LibraryFeedItem } from '../../types/course';
+import { ACCEPTED_FILE_TYPES, FileIcon } from '../../utils/fileIcons';
+import { api } from '../../services/api';
 
-type SortMode = 'newest' | 'name' | 'starred';
-
-const SORT_LABELS: Record<SortMode, string> = {
-  newest:  'Newest',
-  name:    'Name',
-  starred: 'Starred first',
-};
+type CreateMenu = 'session' | 'folder' | 'course';
 
 interface Doc {
   id: number;
@@ -31,6 +33,8 @@ interface Doc {
   folder_id: number | null;
   shared_at: string | null;
   created_at?: string | null;
+  doc_type?: string;
+  file_path?: string;
 }
 
 interface MyLibraryProps {
@@ -41,172 +45,30 @@ interface MyLibraryProps {
   setEnableGlobalSummary: (val: boolean) => void;
   onUploadFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onSelectDocument: (doc: { id: number }) => void;
+  onSelectSession: (sessionId: number) => void;
+  onStartNewSession: () => void;
+  /** Start a new chat session scoped to a specific course (its syllabus
+   *  becomes part of the AI Teacher's system prompt). */
+  onStartCourseChat: (courseId: number) => void;
   onDeleteRequest: (doc: { id: number; title: string }) => void;
-  onToggleVisibility: (id: number) => void;
   onStarDocument: (id: number, isStarred: boolean) => void;
   onMoveDocument: (docId: number, folderId: number | null) => void;
   folders: Folder[];
-  activeFolderId: number | null;
-  setActiveFolderId: (id: number | null) => void;
   onCreateFolder: (p: { name: string; color: string | null; is_starred: boolean; persona_id: string | null }) => Promise<Folder>;
   onUpdateFolder: (id: number, p: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null }) => Promise<Folder>;
   onDeleteFolder: (id: number) => Promise<void>;
   personas: Persona[];
+  /** Navigate to the dedicated Sessions search page. */
+  onOpenSessionsSearch?: () => void;
+  /** When set (e.g. after the user clicks a public course card), MyLibrary
+   *  refreshes its course list and drills into this course. The parent should
+   *  clear it via `onPendingCourseConsumed` so the same course id can be opened
+   *  again later. */
+  pendingCourseId?: number | null;
+  onPendingCourseConsumed?: () => void;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatDate(iso: string | null | undefined) {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-// ── Document card ─────────────────────────────────────────────────────────────
-
-interface DocCardProps {
-  doc: Doc;
-  folders: Folder[];
-  onOpen: (doc: Doc) => void;
-  onDeleteRequest: (doc: { id: number; title: string }) => void;
-  onToggleVisibility: (id: number) => void;
-  onStarDocument: (id: number, isStarred: boolean) => void;
-  onMoveDocument: (docId: number, folderId: number | null) => void;
-}
-
-function DocCard({
-  doc, folders, onOpen, onDeleteRequest, onToggleVisibility, onStarDocument, onMoveDocument,
-}: DocCardProps) {
-  const [menuOpen, setMenuOpen]       = useState(false);
-  const [showMove, setShowMove]       = useState(false);
-  const menuRef                       = useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  const folder = doc.folder_id ? folders.find(f => f.id === doc.folder_id) : null;
-
-  return (
-    <>
-      <div className="group bg-white border border-[#E8E8E6] rounded-xl p-5 shadow-sm flex flex-col gap-3 hover:border-[#C4C4C4] hover:shadow-md transition-all duration-150">
-
-        {/* Thumbnail + title */}
-        <div className="flex items-start gap-3 cursor-pointer" onClick={() => onOpen(doc)}>
-          <div className="w-10 h-10 rounded-lg bg-slate-50 flex items-center justify-center shrink-0 mt-0.5">
-            <FileIcon filename={doc.title} className="w-5 h-5" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-[#37352F] leading-snug line-clamp-2">{doc.title}</h3>
-            {doc.summary && (
-              <p className="text-xs text-[#787774] mt-1 line-clamp-2 leading-relaxed">{doc.summary}</p>
-            )}
-            {folder && (
-              <div className="flex items-center gap-1 mt-1.5">
-                <div
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: folder.color ?? '#6366F1' }}
-                />
-                <span className="text-[10px] text-[#787774] truncate">{folder.name}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between pt-2 border-t border-[#E8E8E6]">
-          {/* Visibility pill */}
-          <button
-            onClick={e => { e.stopPropagation(); onToggleVisibility(doc.id); }}
-            title={doc.is_public ? 'Public — click to make private' : 'Private — click to publish'}
-            className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-md border transition-colors duration-150 ${
-              doc.is_public
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                : 'bg-white text-[#787774] border-[#E8E8E6] hover:bg-[#EFEFED]'
-            }`}
-          >
-            {doc.is_public
-              ? <><Globe className="w-3 h-3" />Public</>
-              : <><LockKeyhole className="w-3 h-3" />Private</>
-            }
-          </button>
-
-          <div className="flex items-center gap-0.5">
-            {(doc.shared_at || doc.created_at) && (
-              <span className="flex items-center gap-1 text-xs text-[#C4C4C4] me-1">
-                <Calendar className="w-3 h-3" />
-                {formatDate(doc.shared_at ?? doc.created_at)}
-              </span>
-            )}
-
-            {/* Star */}
-            <button
-              onClick={e => { e.stopPropagation(); onStarDocument(doc.id, !doc.is_starred); }}
-              title={doc.is_starred ? 'Remove star' : 'Star this document'}
-              className="p-1.5 rounded-md hover:bg-amber-50 transition-colors duration-150"
-            >
-              <Star
-                className={`w-3.5 h-3.5 transition-colors ${
-                  doc.is_starred ? 'text-amber-400 fill-amber-400' : 'text-[#C4C4C4] hover:text-amber-300'
-                }`}
-              />
-            </button>
-
-            {/* Open */}
-            <button
-              onClick={() => onOpen(doc)}
-              className="text-xs font-medium text-[#787774] hover:text-indigo-600 px-2 py-1 rounded-md hover:bg-indigo-50 transition-colors duration-150"
-            >
-              Open
-            </button>
-
-            {/* 3-dot menu */}
-            <div ref={menuRef} className="relative">
-              <button
-                onClick={e => { e.stopPropagation(); setMenuOpen(v => !v); }}
-                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md text-[#C4C4C4] hover:text-[#787774] hover:bg-[#EFEFED] transition-all duration-150"
-              >
-                <MoreVertical className="w-3.5 h-3.5" />
-              </button>
-
-              {menuOpen && (
-                <div className="absolute bottom-full right-0 mb-1 w-40 bg-white rounded-lg border border-[#E8E8E6] shadow-lg z-50 overflow-hidden">
-                  <button
-                    onClick={e => { e.stopPropagation(); setShowMove(true); setMenuOpen(false); }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#37352F] hover:bg-[#F7F7F5] transition-colors"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-[#787774]" />
-                    Move to…
-                  </button>
-                  <div className="h-px bg-[#E8E8E6] mx-2" />
-                  <button
-                    onClick={e => { e.stopPropagation(); onDeleteRequest(doc); setMenuOpen(false); }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <MoveToFolderModal
-        isOpen={showMove}
-        docTitle={doc.title}
-        folders={folders}
-        currentFolderId={doc.folder_id}
-        onMove={folderId => onMoveDocument(doc.id, folderId)}
-        onClose={() => setShowMove(false)}
-      />
-    </>
-  );
-}
+type CourseTab = 'folders' | 'syllabus' | 'exams';
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -218,59 +80,148 @@ export default function MyLibrary({
   setEnableGlobalSummary,
   onUploadFile,
   onSelectDocument,
+  onSelectSession,
+  onStartNewSession,
+  onStartCourseChat,
   onDeleteRequest,
-  onToggleVisibility,
   onStarDocument,
   onMoveDocument,
   folders,
-  activeFolderId,
-  setActiveFolderId,
   onCreateFolder,
   onUpdateFolder,
   onDeleteFolder,
   personas,
+  onOpenSessionsSearch,
+  pendingCourseId,
+  onPendingCourseConsumed,
 }: MyLibraryProps) {
+  // ── State ────────────────────────────────────────────────────────────────
   const fileInputRef                          = useRef<HTMLInputElement>(null);
-  const sortMenuRef                           = useRef<HTMLDivElement>(null);
-  const [searchQuery, setSearchQuery]         = useState('');
-  const [sortMode, setSortMode]               = useState<SortMode>('newest');
-  const [sortMenuOpen, setSortMenuOpen]       = useState(false);
+  const createMenuRef                         = useRef<HTMLDivElement>(null);
+
+  const [createMenuOpen, setCreateMenuOpen]   = useState(false);
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [editingFolder, setEditingFolder]     = useState<Folder | null>(null);
+  const [courseModalOpen, setCourseModalOpen] = useState(false);
+  const [editingCourse, setEditingCourse]     = useState<Course | null>(null);
 
-  React.useEffect(() => {
+  // Drilldown — when set we're viewing the contents of a Folder or a Course.
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
+  const [activeCourseId, setActiveCourseId] = useState<number | null>(null);
+  const [courseTab, setCourseTab]           = useState<CourseTab>('folders');
+
+  const [recentFeed, setRecentFeed] = useState<LibraryFeedItem[]>([]);
+  const [courses, setCourses]       = useState<Course[]>([]);
+  const [moveDoc, setMoveDoc]       = useState<Doc | null>(null);
+
+  // ── Click-outside for the +New menu ─────────────────────────────────────
+  useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) setSortMenuOpen(false);
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) {
+        setCreateMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  const activeFolder = activeFolderId != null ? folders.find(f => f.id === activeFolderId) : null;
-
-  // Filter: at root show unfiled docs; inside a folder show that folder's docs
-  const visibleDocs = useMemo(() => {
-    let list = activeFolderId != null
-      ? userDocs.filter(d => d.folder_id === activeFolderId)
-      : userDocs.filter(d => d.folder_id === null);
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(d => d.title.toLowerCase().includes(q));
+  // ── Fetch lanes ───────────────────────────────────────────────────────────
+  const refreshFeed = async () => {
+    try {
+      const res = await api.getLibraryRecent();
+      setRecentFeed(res.data);
+    } catch (err) {
+      console.error('[MyLibrary] failed to load recent feed', err);
     }
+  };
+  const refreshCourses = async () => {
+    try {
+      const res = await api.listCourses();
+      setCourses(res.data);
+    } catch (err) {
+      console.error('[MyLibrary] failed to load courses', err);
+    }
+  };
 
-    return [...list].sort((a, b) => {
-      if (sortMode === 'newest') {
-        return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime();
-      }
-      if (sortMode === 'name')    return a.title.localeCompare(b.title);
-      if (sortMode === 'starred') return (b.is_starred ? 1 : 0) - (a.is_starred ? 1 : 0);
-      return 0;
-    });
-  }, [userDocs, activeFolderId, searchQuery, sortMode]);
+  useEffect(() => { void refreshFeed(); }, [userDocs.length]);
+  useEffect(() => { void refreshCourses(); }, []);
 
-  // ── Header actions ───────────────────────────────────────────────────────
+  // ── Drill into a course requested by the parent (e.g. clicked from the
+  //    Public Courses page). We refresh first so the new starred-membership
+  //    is reflected in the local `courses` list and `activeCourse` resolves.
+  useEffect(() => {
+    if (pendingCourseId == null) return;
+    let cancelled = false;
+    (async () => {
+      await refreshCourses();
+      if (cancelled) return;
+      setActiveCourseId(pendingCourseId);
+      setActiveFolderId(null);
+      setCourseTab('folders');
+      onPendingCourseConsumed?.();
+    })();
+    return () => { cancelled = true; };
+  }, [pendingCourseId]);
 
+  // ── Drilldown helpers ────────────────────────────────────────────────────
+  const activeFolder = activeFolderId != null
+    ? folders.find(f => f.id === activeFolderId) ?? null
+    : null;
+  const activeCourse = activeCourseId != null
+    ? courses.find(c => c.id === activeCourseId) ?? null
+    : null;
+
+  const visibleDocs = useMemo(() => {
+    if (activeFolderId != null) {
+      return userDocs.filter(d => d.folder_id === activeFolderId);
+    }
+    return [];
+  }, [userDocs, activeFolderId]);
+
+  const courseFolders = useMemo(() => {
+    if (activeCourseId == null) return [];
+    return folders.filter(f => f.course_id === activeCourseId);
+  }, [folders, activeCourseId]);
+
+  const topLevelFolders = useMemo(
+    () => folders.filter(f => f.course_id == null),
+    [folders],
+  );
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+  function openFolder(id: number) {
+    setActiveFolderId(id);
+    setActiveCourseId(null);
+  }
+  function openCourse(id: number) {
+    setActiveCourseId(id);
+    setActiveFolderId(null);
+    setCourseTab('folders');
+  }
+  function backToRoot() {
+    setActiveFolderId(null);
+    setActiveCourseId(null);
+  }
+
+  function openCreate(kind: CreateMenu) {
+    setCreateMenuOpen(false);
+    if (kind === 'session')    onStartNewSession();
+    else if (kind === 'folder') { setEditingFolder(null); setFolderModalOpen(true); }
+    else if (kind === 'course') { setEditingCourse(null); setCourseModalOpen(true); }
+  }
+
+  async function handleDeleteSession(sessionId: number) {
+    if (!confirm('Delete this session and its branches?')) return;
+    try {
+      await api.deleteSession(sessionId);
+      await refreshFeed();
+    } catch (err) {
+      console.error('[deleteSession]', err);
+      alert('Failed to delete session.');
+    }
+  }
+
+  // ── Header ───────────────────────────────────────────────────────────────
   const headerActions = (
     <>
       <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -288,12 +239,12 @@ export default function MyLibrary({
       </label>
 
       <label
-        className={`flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors duration-150 cursor-pointer ${
+        className={`flex items-center gap-2 bg-white hover:bg-[#F7F7F5] text-[#37352F] text-sm font-medium px-3 py-2 rounded-lg border border-[#E8E8E6] transition-colors duration-150 cursor-pointer ${
           isUploading ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''
         }`}
       >
         {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-        {isUploading ? 'Uploading…' : 'Upload'}
+        {isUploading ? 'Uploading…' : 'Upload file'}
         <input
           ref={fileInputRef}
           type="file"
@@ -303,14 +254,252 @@ export default function MyLibrary({
           disabled={isUploading}
         />
       </label>
+
+      {/* + New (session / folder / course) — the dropdown the user asked for */}
+      <div ref={createMenuRef} className="relative">
+        <button
+          onClick={() => setCreateMenuOpen(v => !v)}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-2 rounded-lg transition-colors duration-150"
+        >
+          <Plus className="w-4 h-4" />
+          New
+        </button>
+        {createMenuOpen && (
+          <div className="absolute top-full mt-1 right-0 w-56 bg-white rounded-lg border border-[#E8E8E6] shadow-lg z-50 overflow-hidden">
+            <button
+              onClick={() => openCreate('session')}
+              className="w-full flex items-start gap-2 px-3 py-2.5 hover:bg-[#F7F7F5] text-start"
+            >
+              <MessageSquare className="w-4 h-4 mt-0.5 text-indigo-500 shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-[#37352F]">New Session</p>
+                <p className="text-[10px] text-[#787774]">Start a chat — no document needed</p>
+              </div>
+            </button>
+            <button
+              onClick={() => openCreate('folder')}
+              className="w-full flex items-start gap-2 px-3 py-2.5 hover:bg-[#F7F7F5] text-start border-t border-[#E8E8E6]"
+            >
+              <FolderPlus className="w-4 h-4 mt-0.5 text-amber-500 shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-[#37352F]">New Folder</p>
+                <p className="text-[10px] text-[#787774]">Group documents and sessions</p>
+              </div>
+            </button>
+            <button
+              onClick={() => openCreate('course')}
+              className="w-full flex items-start gap-2 px-3 py-2.5 hover:bg-[#F7F7F5] text-start border-t border-[#E8E8E6]"
+            >
+              <GraduationCap className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-[#37352F]">New Course</p>
+                <p className="text-[10px] text-[#787774]">Top-level container for folders</p>
+              </div>
+            </button>
+          </div>
+        )}
+      </div>
     </>
   );
 
+  // ── Drilldown (folder OR course) ─────────────────────────────────────────
+  if (activeFolder) {
+    return (
+      <PageContainer>
+        <div className="flex items-center gap-2 mb-5">
+          <button onClick={backToRoot} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F]">
+            <ArrowLeft className="w-4 h-4" /> My Library
+          </button>
+          <span className="text-[#C4C4C4]">/</span>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: activeFolder.color ?? '#6366F1' }} />
+            <span className="text-sm font-semibold text-[#37352F]">{activeFolder.name}</span>
+          </div>
+        </div>
+
+        {visibleDocs.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
+            <FolderOpen className="w-8 h-8 opacity-30" />
+            <p className="text-sm">This folder is empty.</p>
+            <label className="mt-1 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg cursor-pointer">
+              <Upload className="w-4 h-4" />
+              Upload a document
+              <input type="file" accept={ACCEPTED_FILE_TYPES} className="hidden" onChange={onUploadFile} />
+            </label>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {visibleDocs.map(doc => (
+              <div
+                key={doc.id}
+                onClick={() => onSelectDocument({ id: doc.id })}
+                className="group bg-white border border-[#E8E8E6] rounded-xl p-4 cursor-pointer hover:border-[#C4C4C4] hover:shadow-sm transition-all duration-150 flex items-start gap-3"
+              >
+                <div className="w-10 h-10 rounded-lg bg-slate-50 flex items-center justify-center shrink-0">
+                  <FileIcon filename={doc.title} className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-[#37352F] truncate">{doc.title}</p>
+                  {doc.summary && <p className="text-xs text-[#787774] line-clamp-2 mt-1">{doc.summary}</p>}
+                </div>
+                <button
+                  onClick={e => { e.stopPropagation(); onStarDocument(doc.id, !doc.is_starred); }}
+                  className="p-1 rounded-md hover:bg-amber-50"
+                  title={doc.is_starred ? 'Remove star' : 'Star'}
+                >
+                  <Star className={`w-4 h-4 ${doc.is_starred ? 'text-amber-400 fill-amber-400' : 'text-[#C4C4C4]'}`} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); setMoveDoc(doc); }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#C4C4C4] hover:text-indigo-600 hover:bg-indigo-50"
+                  title="Move to…"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onDeleteRequest(doc); }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#C4C4C4] hover:text-red-500 hover:bg-red-50"
+                  title="Delete"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <MoveToFolderModal
+          isOpen={!!moveDoc}
+          docTitle={moveDoc?.title ?? ''}
+          folders={folders}
+          currentFolderId={moveDoc?.folder_id ?? null}
+          onMove={folderId => moveDoc && onMoveDocument(moveDoc.id, folderId)}
+          onClose={() => setMoveDoc(null)}
+        />
+      </PageContainer>
+    );
+  }
+
+  if (activeCourse) {
+    const courseAccent = activeCourse.color ?? '#6366F1';
+    const isOwner = activeCourse.role === 'owner';
+
+    return (
+      <PageContainer>
+        {/* Breadcrumb + actions */}
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <div className="flex items-center gap-2">
+            <button onClick={backToRoot} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F]">
+              <ArrowLeft className="w-4 h-4" /> My Library
+            </button>
+            <span className="text-[#C4C4C4]">/</span>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: courseAccent }} />
+              <span className="text-sm font-semibold text-[#37352F]">{activeCourse.title}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onStartCourseChat(activeCourse.id)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
+              title="Open a chat that knows this course's syllabus"
+            >
+              <MessageSquare className="w-4 h-4" />
+              Chat about this course
+            </button>
+            {isOwner && (
+              <button
+                onClick={() => { setEditingCourse(activeCourse); setCourseModalOpen(true); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[#787774] border border-[#E8E8E6] rounded-lg hover:bg-[#F7F7F5]"
+              >
+                Edit course
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-[#E8E8E6] mb-5">
+          <button
+            onClick={() => setCourseTab('folders')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+              courseTab === 'folders'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-[#787774] hover:text-[#37352F]'
+            }`}
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            Folders
+            <span className="text-[10px] text-[#C4C4C4]">({courseFolders.length})</span>
+          </button>
+          <button
+            onClick={() => setCourseTab('syllabus')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+              courseTab === 'syllabus'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-[#787774] hover:text-[#37352F]'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Syllabus
+          </button>
+          <button
+            onClick={() => setCourseTab('exams')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+              courseTab === 'exams'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-[#787774] hover:text-[#37352F]'
+            }`}
+          >
+            <GraduationCap className="w-3.5 h-3.5" />
+            Exams
+          </button>
+        </div>
+
+        {/* Tab body */}
+        {courseTab === 'folders' && (
+          courseFolders.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
+              <FolderOpen className="w-8 h-8 opacity-30" />
+              <p className="text-sm">This course has no folders yet.</p>
+              <p className="text-xs text-[#C4C4C4]">
+                Create a folder from the library and assign it to this course (folder→course move comes next).
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {courseFolders.map(folder => (
+                <FolderCard
+                  key={folder.id}
+                  folder={folder}
+                  docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+                  personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
+                  onOpen={openFolder}
+                  onEdit={f => { setEditingFolder(f); setFolderModalOpen(true); }}
+                  onDelete={f => onDeleteFolder(f.id)}
+                />
+              ))}
+            </div>
+          )
+        )}
+
+        {courseTab === 'syllabus' && (
+          <CourseSyllabusTab courseId={activeCourse.id} isOwner={isOwner} />
+        )}
+
+        {courseTab === 'exams' && (
+          <CourseExamsTab courseId={activeCourse.id} isOwner={isOwner} />
+        )}
+      </PageContainer>
+    );
+  }
+
+  // ── Root view: lanes ─────────────────────────────────────────────────────
   return (
     <PageContainer>
       <PageHeader
         title="My Library"
-        subtitle="Your academic documents and courses."
+        subtitle="Sessions, files, folders, and courses — everything in one place."
         icon={<Library className="w-5 h-5 text-indigo-600" />}
         actions={headerActions}
       />
@@ -336,173 +525,120 @@ export default function MyLibrary({
         </div>
       )}
 
-      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 mb-6 flex-wrap">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[160px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#C4C4C4] pointer-events-none" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search documents…"
-            className="w-full pl-8 pr-3 py-2 text-sm text-[#37352F] border border-[#E8E8E6] rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors placeholder:text-[#C4C4C4]"
-          />
-        </div>
-
-        {/* Sort dropdown */}
-        <div ref={sortMenuRef} className="relative">
-          <button
-            onClick={() => setSortMenuOpen(v => !v)}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-[#787774] border border-[#E8E8E6] rounded-lg hover:bg-[#F7F7F5] transition-colors"
-          >
-            {SORT_LABELS[sortMode]}
-            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-150 ${sortMenuOpen ? 'rotate-180' : ''}`} />
-          </button>
-          {sortMenuOpen && (
-            <div className="absolute top-full mt-1 right-0 w-40 bg-white rounded-lg border border-[#E8E8E6] shadow-lg z-50 overflow-hidden">
-              {(Object.entries(SORT_LABELS) as [SortMode, string][]).map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => { setSortMode(key); setSortMenuOpen(false); }}
-                  className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                    sortMode === key
-                      ? 'bg-indigo-50 text-indigo-700 font-medium'
-                      : 'text-[#37352F] hover:bg-[#F7F7F5]'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* New Folder — hidden when inside a folder */}
-        {activeFolderId == null && (
-          <button
-            onClick={() => { setEditingFolder(null); setFolderModalOpen(true); }}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-[#787774] border border-[#E8E8E6] rounded-lg hover:bg-[#F7F7F5] transition-colors"
-          >
-            <FolderPlus className="w-4 h-4" />
-            New folder
-          </button>
-        )}
-      </div>
-
-      {/* ── Uploading spinner ────────────────────────────────────────────── */}
-      {isUploading && (
-        <div className="flex items-center justify-center py-16 gap-3 text-[#787774]">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          <span className="text-sm">Processing document…</span>
-        </div>
-      )}
-
-      {!isUploading && (
-        <>
-          {/* ── Folder breadcrumb ─────────────────────────────────────── */}
-          {activeFolderId != null && activeFolder && (
-            <div className="flex items-center gap-2 mb-5">
-              <button
-                onClick={() => setActiveFolderId(null)}
-                className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F] transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                My Library
-              </button>
-              <span className="text-[#C4C4C4]">/</span>
-              <div className="flex items-center gap-2">
-                <div
-                  className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: activeFolder.color ?? '#6366F1' }}
-                />
-                <span className="text-sm font-semibold text-[#37352F]">{activeFolder.name}</span>
-              </div>
-            </div>
-          )}
-
-          {/* ── Folders section (root only) ───────────────────────────── */}
-          {activeFolderId == null && (
-            <FolderGrid
-              folders={folders}
-              docs={userDocs}
-              personas={personas}
-              onOpen={setActiveFolderId}
-              onEdit={folder => { setEditingFolder(folder); setFolderModalOpen(true); }}
-              onDelete={folder => onDeleteFolder(folder.id)}
-            />
-          )}
-
-          {/* ── Documents section ─────────────────────────────────────── */}
-          <div>
-            <p className="text-xs text-[#787774] font-semibold uppercase tracking-widest mb-3">
-              {activeFolderId != null
-                ? `Files in ${activeFolder?.name ?? 'folder'}`
-                : folders.length > 0
-                  ? 'Unfiled documents'
-                  : 'Documents'
-              }
-              {visibleDocs.length > 0 && (
-                <span className="ms-2 font-normal normal-case tracking-normal">
-                  ({visibleDocs.length})
-                </span>
-              )}
-            </p>
-
-            {/* Empty state */}
-            {visibleDocs.length === 0 && (
-              <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
-                {searchQuery ? (
-                  <>
-                    <Search className="w-8 h-8 opacity-30" />
-                    <p className="text-sm">No results for "{searchQuery}"</p>
-                  </>
-                ) : activeFolderId != null ? (
-                  <>
-                    <FolderOpen className="w-8 h-8 opacity-30" />
-                    <p className="text-sm">This folder is empty.</p>
-                    <label className="mt-1 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg cursor-pointer">
-                      <Upload className="w-4 h-4" />
-                      Upload a document
-                      <input type="file" accept={ACCEPTED_FILE_TYPES} className="hidden" onChange={onUploadFile} />
-                    </label>
-                  </>
-                ) : (
-                  <>
-                    <Library className="w-8 h-8 opacity-30" />
-                    <p className="text-sm">No documents yet. Upload a PDF to get started.</p>
-                    <label className="mt-1 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg cursor-pointer">
-                      <Upload className="w-4 h-4" />
-                      Upload Document
-                      <input type="file" accept={ACCEPTED_FILE_TYPES} className="hidden" onChange={onUploadFile} />
-                    </label>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Document grid */}
-            {visibleDocs.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {visibleDocs.map(doc => (
-                  <DocCard
-                    key={doc.id}
-                    doc={doc}
-                    folders={folders}
-                    onOpen={d => onSelectDocument({ id: d.id })}
-                    onDeleteRequest={onDeleteRequest}
-                    onToggleVisibility={onToggleVisibility}
-                    onStarDocument={onStarDocument}
-                    onMoveDocument={onMoveDocument}
-                  />
-                ))}
-              </div>
-            )}
+      {/* ── Lane 1: Sessions & Files (mixed) ────────────────────────────── */}
+      <LibraryLane
+        title="Sessions & Files"
+        count={recentFeed.length}
+        onSearchClick={onOpenSessionsSearch}
+        isEmpty={recentFeed.length === 0}
+        emptyState={
+          <div className="flex flex-col items-center gap-2 text-[#787774]">
+            <MessageSquare className="w-7 h-7 opacity-30" />
+            <p className="text-sm">No sessions yet — start one with the “+ New Session” button on the left.</p>
+            <button
+              onClick={onStartNewSession}
+              className="mt-1 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg"
+            >
+              <Plus className="w-4 h-4" />
+              Start a session
+            </button>
           </div>
-        </>
-      )}
+        }
+      >
+        {recentFeed.map(item =>
+          item.kind === 'session' ? (
+            <SessionCard
+              key={`s${item.session_id}`}
+              session={item}
+              onOpen={onSelectSession}
+              onDelete={handleDeleteSession}
+            />
+          ) : (
+            <FileCardCompact
+              key={`f${item.file_id}`}
+              file={item}
+              sortAt={item.sort_at}
+              onOpen={id => onSelectDocument({ id })}
+              onDelete={(id, title) => onDeleteRequest({ id, title })}
+              onStar={(id, isStarred) => onStarDocument(id, isStarred)}
+            />
+          ),
+        )}
+      </LibraryLane>
 
-      {/* Folder create / edit modal */}
+      {/* ── Lane 2: Folders (top-level only) ─────────────────────────────── */}
+      <LibraryLane
+        title="Folders"
+        count={topLevelFolders.length}
+        isEmpty={topLevelFolders.length === 0}
+        emptyState={
+          <div className="flex flex-col items-center gap-2 text-[#787774]">
+            <FolderPlus className="w-7 h-7 opacity-30" />
+            <p className="text-sm">No folders yet.</p>
+            <button
+              onClick={() => { setEditingFolder(null); setFolderModalOpen(true); }}
+              className="mt-1 flex items-center gap-2 bg-white text-[#37352F] hover:bg-[#F7F7F5] text-sm font-medium px-4 py-2 rounded-lg border border-[#E8E8E6]"
+            >
+              <FolderPlus className="w-4 h-4" />
+              New folder
+            </button>
+          </div>
+        }
+      >
+        {topLevelFolders.map(folder => (
+          <div key={folder.id} className="shrink-0 w-64">
+            <FolderCard
+              folder={folder}
+              docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+              personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
+              onOpen={openFolder}
+              onEdit={f => { setEditingFolder(f); setFolderModalOpen(true); }}
+              onDelete={f => onDeleteFolder(f.id)}
+            />
+          </div>
+        ))}
+      </LibraryLane>
+
+      {/* ── Lane 3: My Courses ────────────────────────────────────────────── */}
+      <LibraryLane
+        title="My Courses"
+        count={courses.length}
+        isEmpty={courses.length === 0}
+        emptyState={
+          <div className="flex flex-col items-center gap-2 text-[#787774]">
+            <GraduationCap className="w-7 h-7 opacity-30" />
+            <p className="text-sm">No courses yet.</p>
+            <button
+              onClick={() => { setEditingCourse(null); setCourseModalOpen(true); }}
+              className="mt-1 flex items-center gap-2 bg-white text-[#37352F] hover:bg-[#F7F7F5] text-sm font-medium px-4 py-2 rounded-lg border border-[#E8E8E6]"
+            >
+              <GraduationCap className="w-4 h-4" />
+              New course
+            </button>
+          </div>
+        }
+      >
+        {courses.map(course => (
+          <CourseCard
+            key={course.id}
+            course={course}
+            onOpen={openCourse}
+            onEdit={c => { setEditingCourse(c); setCourseModalOpen(true); }}
+            onDelete={async c => {
+              if (!confirm(`Delete "${c.title}"?`)) return;
+              try {
+                await api.deleteCourse(c.id);
+                await refreshCourses();
+              } catch (err) {
+                console.error('[deleteCourse]', err);
+                alert('Failed to delete course.');
+              }
+            }}
+          />
+        ))}
+      </LibraryLane>
+
+      {/* Folder modal */}
       <FolderModal
         isOpen={folderModalOpen}
         editing={editingFolder}
@@ -515,6 +651,15 @@ export default function MyLibrary({
             await onCreateFolder(payload);
           }
         }}
+      />
+
+      {/* Course modal */}
+      <CourseModal
+        isOpen={courseModalOpen}
+        editing={editingCourse}
+        onClose={() => { setCourseModalOpen(false); setEditingCourse(null); }}
+        onSaved={async () => { await refreshCourses(); }}
+        onDeleted={async () => { await refreshCourses(); }}
       />
     </PageContainer>
   );

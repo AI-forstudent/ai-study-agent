@@ -15,13 +15,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
-from google.genai import types as genai_types
 
+from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Message, Thread
-from app.services.genai_client import get_client
+from app.models.domain import Message, Thread, User
 from app.services.prompt_builder import resolve_system_prompt
-from app.services.model_router import MODEL_MANIFEST, resolve_alias
+from app.services.model_router import resolve_alias
+from app.services.llm_providers import call_llm
 
 router = APIRouter(tags=["chat"])
 
@@ -29,10 +29,14 @@ router = APIRouter(tags=["chat"])
 # ── Request / Response schemas ─────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    message:    str
-    thread_id:  int | None  = None   # null → create a new thread
-    persona_id: str | None  = None   # null → default system prompt
-    model_tier: str | None  = None   # "flash-lite" | "flash" | "pro"
+    message:     str
+    thread_id:   int | None  = None   # null → create a new thread
+    persona_id:  str | None  = None   # null → default system prompt
+    model_tier:  str | None  = None   # "flash-lite" | "flash" | "pro"
+    ai_provider: str | None  = None   # "gemini" | "openai" | "anthropic"
+    # Optional course scoping. When set on a new thread, the syllabus
+    # extraction for that course is injected into the system prompt.
+    course_id:   int | None  = None
 
 
 class MessageOut(BaseModel):
@@ -52,11 +56,16 @@ class ChatResponse(BaseModel):
 # ── Route ──────────────────────────────────────────────────────────────────
 
 @router.post("/", response_model=ChatResponse)
-def chat(payload: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    payload: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Send a message and receive an AI reply.
 
     Flow:
-      1. Resolve or create a Thread (standalone: document_id = NULL).
+      1. Resolve or create a Thread (standalone: document_id = NULL). Existing
+         threads are looked up under the current user — cross-user lookups 404.
       2. Persist the user Message.
       3. Load full conversation history for the thread.
       4. Resolve the Persona's system prompt (with session memories appended).
@@ -69,7 +78,9 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     # ── 1. Thread ───────────────────────────────────────────────────────────
     if payload.thread_id is not None:
         thread: Thread | None = (
-            db.query(Thread).filter(Thread.id == payload.thread_id).first()
+            db.query(Thread)
+            .filter(Thread.id == payload.thread_id, Thread.user_id == current_user.id)
+            .first()
         )
         if not thread:
             raise HTTPException(
@@ -78,8 +89,10 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
             )
     else:
         thread = Thread(
+            user_id=current_user.id,
             document_id=None,
             persona_id=payload.persona_id,
+            course_id=payload.course_id,
             selected_text="",
             emoji="💬",
         )
@@ -105,34 +118,34 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     )
 
     # ── 4. Resolve system prompt ────────────────────────────────────────────
+    # Course scoping flows from the thread (set on creation) — payload.course_id
+    # is only meaningful for the very first message in a new thread.
     effective_persona_id = payload.persona_id or thread.persona_id
-    system_prompt = resolve_system_prompt(effective_persona_id, db)
+    effective_course_id  = thread.course_id or payload.course_id
+    system_prompt = resolve_system_prompt(
+        effective_persona_id,
+        db,
+        course_id=effective_course_id,
+    )
 
-    # ── 5. Resolve model alias + string ────────────────────────────────────
-    alias        = resolve_alias("chat", payload.model_tier)
-    model_string = MODEL_MANIFEST[alias]
+    # ── 5. Resolve alias for DB audit trail ────────────────────────────────
+    alias = resolve_alias("chat", payload.model_tier)
 
-    # ── 6. Build contents list and call GenAI ──────────────────────────────
-    contents = [
-        genai_types.Content(
-            role="user" if msg.role == "user" else "model",
-            parts=[genai_types.Part.from_text(text=msg.content)],
-        )
+    # ── 6. Build history and call the appropriate LLM provider ────────────
+    msg_history = [
+        {"role": msg.role if msg.role != "assistant" else "assistant", "content": msg.content}
         for msg in history
     ]
 
     try:
-        client   = get_client()
-        response = client.models.generate_content(
-            model=model_string,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
+        reply_text: str = call_llm(
+            provider=payload.ai_provider,
+            model_tier=payload.model_tier,
+            system_prompt=system_prompt,
+            history=msg_history,
         )
-        reply_text: str = response.text
     except Exception as exc:
-        print(f"[chat] GenAI error (model={model_string}, alias={alias}): {exc}")
+        print(f"[chat] LLM error (provider={payload.ai_provider}, tier={payload.model_tier}): {exc}")
         raise HTTPException(
             status_code=503,
             detail="AI service temporarily unavailable. Please try again in a moment.",

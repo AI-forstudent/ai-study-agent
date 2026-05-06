@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
-from app.models.domain import Folder, User, UserDocument
+from app.models.domain import Course, Folder, User, UserDocument
 
 router = APIRouter(tags=["folders"])
 
@@ -33,6 +33,7 @@ class FolderCreate(BaseModel):
     name: str
     color: Optional[str] = None
     persona_id: Optional[str] = None
+    course_id: Optional[int] = None   # nest under a course; null = top-level
 
 
 class FolderUpdate(BaseModel):
@@ -40,6 +41,12 @@ class FolderUpdate(BaseModel):
     color: Optional[str] = None
     is_starred: Optional[bool] = None
     persona_id: Optional[str] = None
+    # Use Optional[int] with a sentinel-aware setter below: None means
+    # "don't change", but the caller can also send null in JSON to detach.
+    # The router treats both as no-op, and uses a separate flag via
+    # `course_id_explicit` in the request body for "set to NULL" if needed
+    # in future. Phase 1: skip detach via PUT; use POST move endpoint instead.
+    course_id: Optional[int] = None
 
 
 class FolderResponse(BaseModel):
@@ -49,6 +56,7 @@ class FolderResponse(BaseModel):
     color: Optional[str] = None
     is_starred: bool = False
     persona_id: Optional[str] = None
+    course_id: Optional[int] = None
     created_at: str
 
     class Config:
@@ -63,23 +71,48 @@ def _to_response(f: Folder) -> FolderResponse:
         color=f.color,
         is_starred=f.is_starred,
         persona_id=f.persona_id,
+        course_id=f.course_id,
         created_at=f.created_at.isoformat() if f.created_at else "",
     )
+
+
+def _assert_owns_course(course_id: int, user: User, db: Session) -> None:
+    """A folder can only be nested under a course the caller owns."""
+    course = (
+        db.query(Course)
+        .filter(Course.id == course_id, Course.owner_id == user.id)
+        .first()
+    )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[FolderResponse])
 def list_folders(
+    course_id: Optional[int] = None,
+    top_level_only: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    folders = (
-        db.query(Folder)
-        .filter(Folder.user_id == current_user.id)
-        .order_by(Folder.is_starred.desc(), Folder.name)
-        .all()
-    )
+    """List the caller's folders.
+
+    Optional filters
+    ────────────────
+    • course_id      — return only folders nested under the given course.
+    • top_level_only — return only folders with course_id IS NULL
+                       (the My Library "Folders" lane).
+    The two filters are mutually exclusive in spirit; if both are passed,
+    `course_id` wins.
+    """
+    q = db.query(Folder).filter(Folder.user_id == current_user.id)
+    if course_id is not None:
+        q = q.filter(Folder.course_id == course_id)
+    elif top_level_only:
+        q = q.filter(Folder.course_id.is_(None))
+
+    folders = q.order_by(Folder.is_starred.desc(), Folder.name).all()
     return [_to_response(f) for f in folders]
 
 
@@ -89,11 +122,15 @@ def create_folder(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if payload.course_id is not None:
+        _assert_owns_course(payload.course_id, current_user, db)
+
     folder = Folder(
         user_id=current_user.id,
         name=payload.name,
         color=payload.color,
         persona_id=payload.persona_id,
+        course_id=payload.course_id,
     )
     db.add(folder)
     db.commit()
@@ -124,6 +161,9 @@ def update_folder(
         folder.is_starred = payload.is_starred
     if payload.persona_id is not None:
         folder.persona_id = payload.persona_id
+    if payload.course_id is not None:
+        _assert_owns_course(payload.course_id, current_user, db)
+        folder.course_id = payload.course_id
 
     db.commit()
     db.refresh(folder)

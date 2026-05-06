@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Mail, Lock, LogIn, UserPlus, Sparkles, Loader2, AlertCircle } from 'lucide-react';
 import { api } from '../../services/api';
 
@@ -8,7 +8,46 @@ interface AuthModalProps {
   onLoginSuccess: () => void;
 }
 
+// Vite injects this at build time. Empty string means Google Sign-In is
+// disabled — the button falls back to a help message instead of rendering.
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID || '';
+
+// Minimal type for the `google.accounts.id` namespace we use here. The full
+// d.ts ships with `@types/google.accounts` which we deliberately do NOT add
+// — staying script-only keeps the npm dep list short.
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: { credential: string }) => void;
+            ux_mode?: 'popup' | 'redirect';
+            auto_select?: boolean;
+          }) => void;
+          renderButton: (
+            element: HTMLElement,
+            options: {
+              type?: 'standard' | 'icon';
+              theme?: 'outline' | 'filled_blue' | 'filled_black';
+              size?: 'large' | 'medium' | 'small';
+              text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
+              shape?: 'rectangular' | 'pill' | 'circle' | 'square';
+              logo_alignment?: 'left' | 'center';
+              width?: number;
+            }
+          ) => void;
+          prompt: () => void;
+        };
+      };
+    };
+  }
+}
+
 // ── Google "G" SVG logo ──────────────────────────────────────────────────────
+// Used only as a fallback when GOOGLE_CLIENT_ID is unset; the live GIS button
+// renders its own brand-compliant logo via accounts.id.renderButton.
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -26,6 +65,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
   const [password, setPassword]       = useState('');
   const [isLoading, setIsLoading]     = useState(false);
   const [error, setError]             = useState<string | null>(null);
+  const googleBtnRef                   = useRef<HTMLDivElement | null>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -44,6 +84,61 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
       setIsLoginMode(true);
     }
   }, [isOpen]);
+
+  // ── Google Sign-In handshake ───────────────────────────────────────────────
+  // Mounts the GIS button once the modal is open AND the GIS script has loaded.
+  // The script tag in index.html loads async, so we poll for window.google
+  // briefly. Initialize is idempotent across re-mounts.
+  useEffect(() => {
+    if (!isOpen || !GOOGLE_CLIENT_ID) return;
+
+    const handleCredential = async (response: { credential: string }) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const res = await api.googleLogin(response.credential);
+        localStorage.setItem('access_token', res.data.access_token);
+        onLoginSuccess();
+      } catch (err) {
+        const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        setError(detail || 'Google sign-in failed. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    let cancelled = false;
+
+    const tryRender = () => {
+      if (cancelled) return;
+      const gid = window.google?.accounts?.id;
+      const target = googleBtnRef.current;
+      if (!gid || !target) {
+        // Script not ready yet — retry until modal closes
+        setTimeout(tryRender, 100);
+        return;
+      }
+      gid.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback:  handleCredential,
+        ux_mode:   'popup',
+      });
+      // Clear any previous render (e.g. modal was reopened)
+      target.innerHTML = '';
+      gid.renderButton(target, {
+        type: 'standard',
+        theme: 'outline',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'rectangular',
+        logo_alignment: 'left',
+        width: 360,
+      });
+    };
+
+    tryRender();
+    return () => { cancelled = true; };
+  }, [isOpen, onLoginSuccess]);
 
   if (!isOpen) return null;
 
@@ -130,16 +225,20 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
             </div>
           )}
 
-          {/* Google placeholder */}
-          <button
-            type="button"
-            onClick={() => console.log('Google Auth coming soon')}
-            disabled={isLoading}
-            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-[#F7F7F5] text-[#37352F] text-sm font-medium py-2.5 px-4 rounded-lg border border-[#E8E8E6] transition-colors duration-150 disabled:opacity-50"
-          >
-            <GoogleIcon />
-            Continue with Google
-          </button>
+          {/* Google Sign-In — GIS button mounts here when configured */}
+          {GOOGLE_CLIENT_ID ? (
+            <div ref={googleBtnRef} className="flex justify-center min-h-[40px]" />
+          ) : (
+            <button
+              type="button"
+              disabled
+              title="Set VITE_GOOGLE_OAUTH_CLIENT_ID to enable"
+              className="w-full flex items-center justify-center gap-3 bg-white text-[#787774] text-sm font-medium py-2.5 px-4 rounded-lg border border-[#E8E8E6] cursor-not-allowed opacity-60"
+            >
+              <GoogleIcon />
+              Continue with Google (not configured)
+            </button>
+          )}
 
           {/* OR divider */}
           <div className="flex items-center gap-3">

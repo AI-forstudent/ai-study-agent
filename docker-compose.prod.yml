@@ -5,7 +5,9 @@ services:
   frontend:
     build:
       args:
-        - VITE_AI_API_URL=https://ai-study-agent.com
+        - VITE_AI_API_URL=https://${DOMAIN}
+        # Empty value is fine — AuthModal renders a disabled fallback button.
+        - VITE_GOOGLE_OAUTH_CLIENT_ID=${VITE_GOOGLE_OAUTH_CLIENT_ID:-}
     ports:
       - "80:80"
       - "443:443"

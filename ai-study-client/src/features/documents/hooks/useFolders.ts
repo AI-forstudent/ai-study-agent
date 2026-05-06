@@ -8,6 +8,8 @@ export interface Folder {
   color: string | null;
   is_starred: boolean;
   persona_id: string | null;
+  /** Optional parent course; null = top-level folder. */
+  course_id: number | null;
   created_at: string;
 }
 

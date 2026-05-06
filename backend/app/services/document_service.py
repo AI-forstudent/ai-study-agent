@@ -120,6 +120,13 @@ def get_fast_model() -> ChatGoogleGenerativeAI:
 
 
 def ask_gemini(prompt: str, use_smart_model: bool = False) -> str:
+    """Plain-text Gemini call.
+
+    Used by chat-style features that surface the answer to the user
+    directly. JSON-extracting features should use `ask_gemini_json`
+    (forces JSON mode) and route through `services.llm_json` for retry
+    + parse safety — not this function.
+    """
     try:
         llm = get_smart_model() if use_smart_model else get_fast_model()
         response = llm.invoke(prompt)
@@ -133,6 +140,39 @@ def ask_gemini(prompt: str, use_smart_model: bool = False) -> str:
     except Exception as e:
         print(f"[ERROR] Gemini API error: {e}")
         return "מצטער, שירות הענן (Gemini) עמוס או לא זמין כרגע. אנא נסה שוב בעוד מספר רגעים. 🔄"
+
+
+def ask_gemini_json(prompt: str, *, use_smart_model: bool = False) -> str:
+    """Gemini call that forces structured JSON output.
+
+    Uses the genai SDK directly (rather than the langchain wrapper) so we
+    can pass `response_mime_type="application/json"` — Gemini then refuses
+    to emit prose or markdown fences and the response is much more reliable
+    than relying on prompt instructions alone.
+
+    Exceptions are NOT swallowed here (unlike `ask_gemini`) — callers
+    typically wrap this in `services.llm_json.call_llm_for_json` which
+    handles retries and translates errors into a user-friendly response.
+    Returning a Hebrew apology like the chat path does would just cause
+    `json.loads` to fail downstream.
+    """
+    from google.genai import types
+    from app.services.genai_client import get_client
+
+    model = "gemini-2.5-pro" if use_smart_model else "gemini-2.5-flash"
+    client = get_client()
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            # 30s timeout — extraction prompts can be long when the doc is
+            # dense, and the previous 15s default was timing out on big PDFs.
+            # The genai SDK doesn't expose timeout on this surface; we trust
+            # the SDK default but log if response.text comes back empty.
+        ),
+    )
+    return response.text or ""
 
 
 def get_embedding_model() -> GoogleGenerativeAIEmbeddings:
@@ -309,6 +349,30 @@ def generate_specific_page_summary(page_text: str) -> str:
         "Highlight key concepts, main arguments, and important terms.\n"
         "CRITICAL: Your response MUST be in HEBREW.\n"
         f"Page Text:\n{page_text}\nSummary:"
+    )
+    return ask_gemini(prompt, use_smart_model=True)
+
+
+def generate_full_document_summary(all_text: str) -> str:
+    safe_text = all_text[:60000]
+    prompt = (
+        "You are an expert study assistant. "
+        "Generate a comprehensive, well-structured summary of the ENTIRE document below. "
+        "Include: main topics, key concepts, important arguments, conclusions, and any notable terminology. "
+        "Structure the summary with clear sections.\n"
+        "CRITICAL: Your response MUST be in HEBREW.\n"
+        f"Document Text:\n{safe_text}\n\nFull Summary:"
+    )
+    return ask_gemini(prompt, use_smart_model=True)
+
+
+def generate_custom_summary(text: str, custom_prompt: str) -> str:
+    safe_text = text[:40000]
+    prompt = (
+        f"You are an expert study assistant. "
+        f"The user has a specific request about the following document text:\n\n"
+        f"User Request: {custom_prompt}\n\n"
+        f"Document Text:\n{safe_text}\n\nResponse:"
     )
     return ask_gemini(prompt, use_smart_model=True)
 

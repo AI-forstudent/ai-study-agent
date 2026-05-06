@@ -26,6 +26,9 @@ export const api = {
   login:      (formData: FormData) => apiClient.post('/api/v1/auth/login', formData),
   register:   (userData: unknown)  => apiClient.post('/api/v1/auth/register', userData),
   guestLogin: ()                   => apiClient.post('/api/v1/auth/guest-login'),
+  // Exchanges a Google ID token (from Google Identity Services) for our JWT.
+  googleLogin: (idToken: string) =>
+    apiClient.post('/api/v1/auth/google', { id_token: idToken }),
 
   // ── System ───────────────────────────────────────────────────────────────
   checkHealth: () => apiClient.get('/health'),
@@ -47,6 +50,15 @@ export const api = {
 
   getDocumentSummaries: (documentId: number) =>
     apiClient.get(`/api/v1/documents/${documentId}/summaries`),
+
+  createFullDocumentSummary: (documentId: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/summary/all`),
+
+  createCustomSummary: (documentId: number, customPrompt: string, pageNumber?: number) =>
+    apiClient.post(`/api/v1/documents/${documentId}/summary/custom`, {
+      custom_prompt: customPrompt,
+      page_number: pageNumber ?? null,
+    }),
 
   deleteDocument: (documentId: number) =>
     apiClient.delete(`/api/v1/documents/${documentId}`),
@@ -82,16 +94,35 @@ export const api = {
     apiClient.patch(`/api/v1/documents/${docId}/star`, { is_starred: isStarred }),
 
   // ── Personas ─────────────────────────────────────────────────────────────
-  // Note: useAppStore.ts calls Grand Vision persona routes directly via fetch.
-  // These wrappers remain for any component that imports api directly.
+  // All persona traffic flows through here so the auth interceptor attaches
+  // the Bearer token automatically. Direct fetch() calls would be unauth'd
+  // and get 401 from the backend's per-user filtering.
   getPersonas: () => apiClient.get('/api/v1/personas/'),
 
   createPersona: (payload: {
     id: string;
     display_name: string;
-    traits?: Record<string, string>;
-    manual_prompt_override?: string;
+    description?: string;
+    persona_type?: string;
+    system_prompt?: string;
+    tags?: string[];
+    icon?: string;
+    original_persona_id?: string | null;
   }) => apiClient.post('/api/v1/personas/', payload),
+
+  updatePersona: (id: string, payload: {
+    display_name?: string;
+    description?: string;
+    system_prompt?: string;
+    tags?: string[];
+    icon?: string;
+  }) => apiClient.put(`/api/v1/personas/${encodeURIComponent(id)}`, payload),
+
+  deletePersona: (id: string) =>
+    apiClient.delete(`/api/v1/personas/${encodeURIComponent(id)}`),
+
+  clonePersona: (id: string) =>
+    apiClient.post(`/api/v1/personas/${encodeURIComponent(id)}/clone`),
 
   // ── Threads & Messages ────────────────────────────────────────────────────
   getThreads: (docId: number) =>
@@ -141,6 +172,98 @@ export const api = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+
+  // ── Courses ───────────────────────────────────────────────────────────────
+  // Returns the caller's courses (owned + admin-assigned + starred).
+  listCourses: () => apiClient.get('/api/v1/courses/'),
+
+  // Public catalog for the Courses tab. Each row has `is_starred` for the caller.
+  listPublicCourses: () => apiClient.get('/api/v1/courses/public'),
+
+  getCourse: (id: number) => apiClient.get(`/api/v1/courses/${id}`),
+
+  createCourse: (payload: {
+    title: string;
+    description?: string | null;
+    visibility?: 'private' | 'admin_assigned' | 'public';
+    color?: string | null;
+    icon?: string | null;
+  }) => apiClient.post('/api/v1/courses/', payload),
+
+  updateCourse: (id: number, payload: {
+    title?: string;
+    description?: string | null;
+    visibility?: 'private' | 'admin_assigned' | 'public';
+    color?: string | null;
+    icon?: string | null;
+  }) => apiClient.put(`/api/v1/courses/${id}`, payload),
+
+  deleteCourse: (id: number) => apiClient.delete(`/api/v1/courses/${id}`),
+
+  // Toggle the caller's "starred" membership on a public course.
+  starCourse: (id: number, isStarred: boolean) =>
+    apiClient.post(`/api/v1/courses/${id}/star`, { is_starred: isStarred }),
+
+  // ── Course syllabus ───────────────────────────────────────────────────────
+  // Returns { user_document_id, extracted, topics[], lecturers[] }.
+  getCourseSyllabus: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/syllabus`),
+
+  // Attach an existing UserDocument as the course syllabus. Triggers a
+  // one-time Gemini extraction on the backend.
+  attachCourseSyllabus: (courseId: number, userDocumentId: number) =>
+    apiClient.post(`/api/v1/courses/${courseId}/syllabus`, { user_document_id: userDocumentId }),
+
+  detachCourseSyllabus: (courseId: number) =>
+    apiClient.delete(`/api/v1/courses/${courseId}/syllabus`),
+
+  // ── Exams ─────────────────────────────────────────────────────────────────
+  listCourseExams: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/exams`),
+
+  // Aggregated topic / question-type / difficulty stats for the Exams tab.
+  // Returned as full sorted lists; the frontend chooses how many to show
+  // in the chart vs. the "View all" expander.
+  getCourseExamStats: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/exam-stats`),
+
+  // Backend runs the full pipeline (extraction → tagging → difficulty) on this
+  // call — typical 25-question exam takes 5-15s. Frontend should show a
+  // "processing…" state while the request is in flight.
+  createCourseExam: (courseId: number, payload: {
+    user_document_id: number;
+    title:            string;
+    year?:            number | null;
+    // Three independent metadata axes — backend will auto-fill any field
+    // left null/undefined here from the AI extraction.
+    semester?:        string | null;
+    moed?:            string | null;
+    exam_type?:       string | null;
+    has_solutions?:   boolean;
+    lecturer_ids?:    number[];
+  }) => apiClient.post(`/api/v1/courses/${courseId}/exams`, payload),
+
+  getExam: (examId: number) => apiClient.get(`/api/v1/exams/${examId}`),
+
+  // Re-runs the AI pipeline on an exam in 'failed' state. Returns the
+  // updated shell with status='pending'; the frontend keeps polling.
+  retryExamProcessing: (examId: number) =>
+    apiClient.post(`/api/v1/exams/${examId}/retry`),
+
+  deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
+
+  // ── Sessions (read-only — sessions are created via /chat or /threads) ────
+  listSessions: (limit = 50, offset = 0) =>
+    apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),
+
+  searchSessions: (q: string, limit = 50) =>
+    apiClient.get(`/api/v1/sessions/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  deleteSession: (id: number) => apiClient.delete(`/api/v1/sessions/${id}`),
+
+  // ── Library — merged sessions + unfiled-files feed for the My Library lane.
+  getLibraryRecent: (limit = 40) =>
+    apiClient.get(`/api/v1/library/recent?limit=${limit}`),
 
   // Deletes every StudentCourseRecord for the authenticated user (clean re-import).
   resetCourseRecords: () =>

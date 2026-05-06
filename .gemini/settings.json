@@ -1,0 +1,44 @@
+{
+  "$comment": "Gemini CLI MCP configuration. Mirrors .mcp.json. Note: Gemini CLI env-var expansion uses $VAR (single dollar) syntax in older versions; current versions also support ${VAR}. Test with /mcp list inside Gemini CLI.",
+
+  "mcpServers": {
+    "postgres": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network=host",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": {
+        "DATABASE_URI": "$POSTGRES_MCP_URI"
+      },
+      "timeout": 15000
+    },
+
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_TOKEN"
+      },
+      "timeout": 15000
+    },
+
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "timeout": 15000
+    },
+
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "timeout": 30000
+    }
+  }
+}

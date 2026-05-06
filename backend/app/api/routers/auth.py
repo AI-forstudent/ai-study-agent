@@ -1,7 +1,8 @@
 """
 app/api/routers/auth.py
 ───────────────────────
-User registration, login, guest login, and the get_current_user dependency.
+User registration, login, guest login, Google OAuth, and the
+get_current_user dependency.
 
 Mounted at /api/v1/auth in app/main.py.
 
@@ -11,12 +12,19 @@ without a circular import.
 
 from __future__ import annotations
 
+import uuid
+
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.config import ALGORITHM, SECRET_KEY
+from app.core.config import (
+    ALGORITHM,
+    GOOGLE_OAUTH_CLIENT_ID,
+    SECRET_KEY,
+)
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.models.domain import User
@@ -26,8 +34,6 @@ router = APIRouter(tags=["auth"])
 
 # tokenUrl must match the full mounted path so Swagger UI's Authorize works
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
-
-GUEST_EMAIL = "guest@studyagent.ai"
 
 
 # ── Dependency ─────────────────────────────────────────────────────────────
@@ -56,13 +62,27 @@ def get_current_user(
     return user
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _issue_token_for(user: User) -> dict:
+    """Wrap a User row in the response shape the frontend expects."""
+    return {
+        "access_token": create_access_token(data={"sub": str(user.id)}),
+        "token_type": "bearer",
+    }
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 def register(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    new_user = User(email=user.email, password_hash=get_password_hash(user.password))
+    new_user = User(
+        email=user.email,
+        password_hash=get_password_hash(user.password),
+        auth_provider="password",
+    )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -71,21 +91,25 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/guest-login")
 def guest_login(db: Session = Depends(get_db)):
-    """Creates the shared guest account on first call, then issues a token.
-    Intentionally open — no password required."""
-    guest = db.query(User).filter(User.email == GUEST_EMAIL).first()
-    if not guest:
-        guest = User(
-            email=GUEST_EMAIL,
-            password_hash=get_password_hash("__guest_managed__"),
-        )
-        db.add(guest)
-        db.commit()
-        db.refresh(guest)
-    return {
-        "access_token": create_access_token(data={"sub": str(guest.id)}),
-        "token_type": "bearer",
-    }
+    """Create a fresh, isolated guest account and issue a token.
+
+    Each call mints a brand-new User with a UUID-based email so guests cannot
+    see each other's data. Tier is set to 'guest' so the future quota system
+    applies the smallest credit allowance to these accounts.
+
+    Intentionally open — no password required.
+    """
+    guest_email = f"guest-{uuid.uuid4().hex[:12]}@studyagent.ai"
+    guest = User(
+        email=guest_email,
+        password_hash=get_password_hash(uuid.uuid4().hex),  # unguessable, never used
+        auth_provider="password",
+        subscription_tier="guest",
+    )
+    db.add(guest)
+    db.commit()
+    db.refresh(guest)
+    return _issue_token_for(guest)
 
 
 @router.post("/login")
@@ -97,7 +121,99 @@ def login(
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
-    return {
-        "access_token": create_access_token(data={"sub": str(user.id)}),
-        "token_type": "bearer",
-    }
+    return _issue_token_for(user)
+
+
+# ── Google Sign-In ─────────────────────────────────────────────────────────
+
+class GoogleLoginRequest(BaseModel):
+    """Body for POST /api/v1/auth/google.
+
+    `id_token` is the JWT issued by Google Identity Services on the frontend
+    (the `credential` field returned by `google.accounts.id`). The backend
+    re-verifies the signature, audience, and issuer before trusting any claims.
+    """
+    id_token: str
+
+
+@router.post("/google")
+def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+    """Verify a Google ID token and issue our own JWT.
+
+    Account-linking strategy:
+      1. If a user with `google_sub == sub` exists → log them in.
+      2. Else if a user with the same `email` exists (legacy password account)
+         → attach `google_sub` to that row, mark `auth_provider='google'`, log in.
+      3. Else → create a fresh user with tier='free' and auth_provider='google'.
+
+    The flow refuses to accept the token unless `email_verified` is true so a
+    Google account using an unverified email cannot hijack a password account
+    that registered with the same address.
+    """
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="Google Sign-In is not configured on this server.",
+        )
+
+    # Lazy import: keeps `google-auth` out of the cold-start path for deployments
+    # that disable Google Sign-In via missing env var.
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+    except ImportError as exc:  # pragma: no cover — install error
+        raise HTTPException(
+            status_code=503,
+            detail="Google Sign-In dependency missing — install google-auth.",
+        ) from exc
+
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            payload.id_token,
+            google_requests.Request(),
+            GOOGLE_OAUTH_CLIENT_ID,
+        )
+    except ValueError as exc:
+        # Invalid signature, expired token, wrong audience, etc.
+        raise HTTPException(status_code=401, detail=f"Invalid Google ID token: {exc}")
+
+    sub = idinfo.get("sub")
+    email = (idinfo.get("email") or "").lower()
+    email_verified = idinfo.get("email_verified", False)
+
+    if not sub or not email:
+        raise HTTPException(status_code=401, detail="Google token missing required claims.")
+
+    if not email_verified:
+        # Reject unverified emails — without this an attacker controlling a
+        # Google account with someone else's address could hijack their data.
+        raise HTTPException(
+            status_code=403,
+            detail="Google account email is not verified.",
+        )
+
+    # 1. Existing google-linked user
+    user = db.query(User).filter(User.google_sub == sub).first()
+
+    # 2. Pre-existing password user with the same email — link & upgrade
+    if user is None:
+        user = db.query(User).filter(User.email == email).first()
+        if user is not None:
+            user.google_sub = sub
+            user.auth_provider = "google"
+
+    # 3. Brand-new account
+    if user is None:
+        user = User(
+            email=email,
+            # Random unguessable password — Google flow is the only login path
+            password_hash=get_password_hash(uuid.uuid4().hex),
+            auth_provider="google",
+            google_sub=sub,
+            subscription_tier="free",
+        )
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+    return _issue_token_for(user)

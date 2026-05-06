@@ -45,3 +45,12 @@ google_credentials.json
 
 # AI Tools Local State
 .claude/
+
+# Gemini CLI local-only settings (project settings.json IS committed; user-level isn't)
+.gemini/.cache/
+
+# Migration backup folder created by setup-vibe-coding.sh
+.context.bak/
+
+# MCP / Claude Code session-level local state
+.claude.json
