@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PieChart, BarChart3, TrendingUp, ChevronDown } from 'lucide-react';
 import { api } from '../../../services/api';
 import type { ExamStats, ExamCard } from '../../../types/course';
