@@ -2,6 +2,52 @@
 
 ---
 
+## 2026-05-06 (very late) — Async exam processing + Retry
+
+**Scope:** Backend + frontend. Replaces the synchronous exam upload flow with a queued BackgroundTask pattern.
+
+### Why this change
+
+User reported: "upload gets stuck", "after refresh can't re-upload the same exam", "where do I see the question table". All three are the same root cause: a 25-question exam takes 60-150 seconds to process (extract + 25 × tag + difficulty), but nginx's `proxy_read_timeout` defaults to 60s. The connection drops; the user sees a hung modal; my own rollback path then deleted the Exam row, leaving the file alone in CAS so a retry hit 409.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/m8l9k0j1i2h3_exam_processing_status.py` | Adds `exams.processing_status` (`'pending'`/`'processing'`/`'completed'`/`'failed'`, default `'pending'`) and `exams.processing_error` (TEXT, nullable). Backfills existing rows: `'completed'` if `processed_at` is set, otherwise `'failed'`. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | `Exam` gains `processing_status` + `processing_error`. |
+| `backend/app/api/routers/exams.py` | `_run_exam_pipeline(exam_id, full_text)` is the new BackgroundTask worker — it owns its own DB session (the request session is closed by then), runs `process_exam`, and updates the row's status to `'completed'` / `'failed'` with a friendly error message via `services.llm_json.user_message_for`. The exam row is NEVER deleted on failure — the user can read the error and click Retry. POST returns 202 the moment the row is committed (typically <2s). New `POST /exams/{id}/retry` clears questions, resets status to `'pending'`, and queues a fresh task. ExamCardOut now carries `processing_status` + `processing_error`. |
+| `ai-study-client/src/types/course.ts` | `ExamProcessingStatus` union + new fields on `ExamCard`. |
+| `ai-study-client/src/services/api.ts` | `retryExamProcessing(examId)` wrapper. |
+| `ai-study-client/src/features/courses/components/CourseExamsTab.tsx` | Polls the list every 5s while any exam is `'pending'` or `'processing'`. Rows in those states are non-clickable and show a "queued" / "AI extracting…" indicator + an indigo "Processing" badge. Failed rows show the error message inline and a "Retry" button (owner only) that calls the new retry endpoint and optimistically flips status to `'pending'`. |
+| `ai-study-client/src/features/courses/components/ExamCreateModal.tsx` | Drops the `'processing'` phase — backend returns 202 fast, modal closes immediately, and the new exam appears in the table with `'pending'` state. The 60-150s wait is now non-blocking. |
+
+### Behaviour notes
+
+- **No more 60-second nginx timeout.** Backend response is now sub-2-seconds (just an INSERT + queue), regardless of exam length.
+- **Failure is observable.** Previously a failed extraction silently rolled back the row. Now it persists with a clear error message and a Retry button — the user controls when to re-run, and they don't have to delete the file from My Library to do it.
+- **Polling auto-stops.** The polling effect's dependency is the boolean "any exam in flight". When everything settles, the interval is cleared. No background polling on idle screens.
+- **Retry is idempotent.** Mash the button — each call clears prior questions and queues a fresh BackgroundTask. The DB transaction ordering means an in-flight prior run will be overwritten by the new one's terminal commit.
+
+### Acceptance criteria from the user spec
+
+- ✅ Uploading a single exam no longer "gets stuck" — modal closes immediately, processing happens in the background.
+- ✅ User can re-upload after a failure without 409 (the file is still in CAS, but the failed Exam row is reusable via Retry).
+- ✅ User can see the question table — once processing completes, the row becomes clickable and routes to `ExamDetailView`.
+
+### Still deferred (the rest of the user's bigger spec — T-020 to T-026)
+
+Granular metadata (split semester/moed/exam_type), folder upload, batched review UI, topic-relevance check, OCR for image-only PDFs, content-based duplicate detection. Those remain follow-up commits.
+
+---
+
 ## 2026-05-06 (late evening) — Robust LLM-JSON parsing
 
 **Scope:** Backend bug-fix. Frontend gets a small retry-clarity tweak.

@@ -17,15 +17,16 @@ Mounted at /api/v1 (the routes themselves are course- and exam-scoped:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.domain import (
     Course, CourseLecturer, CourseMembership, Exam, ExamQuestion,
     User, UserDocument,
@@ -35,6 +36,7 @@ from app.services.exam_processor import process_exam
 from app.services.llm_json import LLMJsonError, user_message_for
 
 router = APIRouter(tags=["exams"])
+log = logging.getLogger(__name__)
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -98,6 +100,10 @@ class ExamCardOut(BaseModel):
     question_count:        int = 0
     topics:                list[TopicOut] = []
     lecturers:             list[LecturerOut] = []
+    # Async processing state — frontend polls the list while any exam
+    # is 'pending' or 'processing', and surfaces a Retry button on 'failed'.
+    processing_status:     str = "pending"   # 'pending' | 'processing' | 'completed' | 'failed'
+    processing_error:      Optional[str] = None
     processed_at:          Optional[datetime] = None
     created_at:            datetime
 
@@ -165,6 +171,8 @@ def _serialize_card(exam: Exam) -> ExamCardOut:
         question_count=len(exam.questions),
         topics=_aggregate_topics_for_exam(exam),
         lecturers=[LecturerOut(id=l.id, name=l.name, role=l.role) for l in exam.lecturers],
+        processing_status=exam.processing_status,
+        processing_error=exam.processing_error,
         processed_at=exam.processed_at,
         created_at=exam.created_at,
     )
@@ -216,26 +224,80 @@ def list_course_exams(
     return [_serialize_card(e) for e in exams]
 
 
-@router.post("/courses/{course_id}/exams", response_model=ExamDetailOut, status_code=201)
+def _run_exam_pipeline(exam_id: int, full_text: str) -> None:
+    """BackgroundTask worker that runs the AI extraction outside the request.
+
+    The HTTP handler returns 202 the moment the row is created so the user
+    sees their exam in the list immediately (in `processing` state). This
+    function then chews through extraction + tagging + difficulty in its own
+    DB session — typically 60-150 seconds — and updates the row.
+
+    The exam row is NEVER deleted on failure: the user needs to see the
+    failed state, read the error, and either Retry or Delete-and-replace.
+    """
+    db = SessionLocal()
+    try:
+        exam = db.query(Exam).filter(Exam.id == exam_id).first()
+        if not exam:
+            log.warning("[exam_pipeline] exam %d not found at start of processing", exam_id)
+            return
+
+        exam.processing_status = "processing"
+        exam.processing_error  = None
+        db.commit()
+
+        try:
+            n_questions = process_exam(exam, full_text, db)
+        except LLMJsonError as exc:
+            log.warning("[exam_pipeline] exam %d LLMJsonError: %s", exam_id, exc.reason)
+            exam.processing_status = "failed"
+            exam.processing_error  = user_message_for(exc)
+            db.commit()
+            return
+        except Exception as exc:                     # pragma: no cover
+            log.exception("[exam_pipeline] exam %d hit unexpected error", exam_id)
+            exam.processing_status = "failed"
+            exam.processing_error  = f"Unexpected error: {exc}"
+            db.commit()
+            return
+
+        if n_questions == 0:
+            exam.processing_status = "failed"
+            exam.processing_error  = (
+                "No questions could be extracted from this document. "
+                "It may be image-only (try OCR), in an unusual layout, or not actually an exam."
+            )
+            db.commit()
+            return
+
+        exam.processing_status = "completed"
+        exam.processing_error  = None
+        exam.processed_at      = datetime.now(timezone.utc)
+        db.commit()
+        log.info("[exam_pipeline] exam %d completed with %d questions", exam_id, n_questions)
+    finally:
+        db.close()
+
+
+@router.post("/courses/{course_id}/exams", response_model=ExamDetailOut, status_code=202)
 def create_course_exam(
     course_id: int,
     payload: ExamCreateRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Attach a UserDocument as an exam and run the full processing pipeline.
+    """Create an exam shell and queue the AI pipeline as a BackgroundTask.
 
-    Steps the server executes:
-      1. Verify course ownership and that the doc lives in the caller's library.
-      2. Extract raw text from the PDF/DOCX.
-      3. Run `process_exam` → ONE Gemini call to break into questions, batch
-         embeddings, ONE small Gemini call per question to tag, and a no-LLM
-         difficulty re-calibration across the whole course.
-      4. Persist + commit.
+    Returns 202 (Accepted) the moment the row is committed. The actual
+    extraction / tagging / difficulty pass runs after the response is sent;
+    poll GET /exams/{id} or list the course's exams to watch
+    `processing_status` flip from 'pending' → 'processing' → 'completed' / 'failed'.
 
-    Duplicate detection is intentionally NOT in this commit — see
-    active_tracker T-015. Adding the same exam twice currently creates two
-    rows; clean them up via DELETE for now.
+    Failures keep the exam visible so the user can read the message and
+    either click Retry or delete-and-replace.
+
+    Duplicate detection is still TBD — see active_tracker T-015 / T-025.
     """
     course = _ensure_course_owner(course_id, current_user, db)
 
@@ -265,7 +327,20 @@ def create_course_exam(
                 detail=f"Lecturer ids {unknown} do not belong to this course",
             )
 
-    # Build the exam row before processing so questions can FK back to it.
+    # ── Read text now (cheap; pdfplumber / docx) so we can validate the
+    # file is readable before queueing the heavy job.
+    try:
+        pages = extract_text(user_doc.base_document.file_path)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read exam document: {exc}")
+    full_text = "\n".join(p["text"] for p in pages)
+    if not full_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="The document appears to be empty or image-only. OCR support is on the roadmap.",
+        )
+
+    # Build the exam row.
     exam = Exam(
         course_id=course_id,
         title=payload.title,
@@ -273,11 +348,11 @@ def create_course_exam(
         semester=payload.semester,
         user_document_id=user_doc.id,
         has_solutions=payload.has_solutions,
+        processing_status="pending",
     )
     db.add(exam)
-    db.flush()  # need exam.id
+    db.flush()  # need exam.id for the lecturer M2M
 
-    # Attach lecturers
     if payload.lecturer_ids:
         chosen = (
             db.query(CourseLecturer)
@@ -286,38 +361,75 @@ def create_course_exam(
         )
         exam.lecturers.extend(chosen)
 
-    # ── Read text + run the processing pipeline ──────────────────────────
+    db.commit()
+    db.refresh(exam)
+
+    # Queue the heavy pipeline. Runs after this response is sent. Uses its
+    # own DB session (the request's session is closed by then).
+    background.add_task(_run_exam_pipeline, exam.id, full_text)
+
+    return _serialize_detail(exam)
+
+
+@router.post("/exams/{exam_id}/retry", response_model=ExamDetailOut, status_code=202)
+def retry_exam_processing(
+    exam_id: int,
+    background: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Re-run the AI pipeline on an exam in 'failed' state.
+
+    Resets the row to 'pending', queues a fresh BackgroundTask. Idempotent —
+    callers can mash the button without worrying about duplicate runs (an
+    in-flight processing run will either finish or get overwritten by this
+    one's terminal commit).
+    """
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    _ensure_course_owner(exam.course_id, current_user, db)
+
+    if exam.processing_status not in ("failed", "completed"):
+        raise HTTPException(
+            status_code=409,
+            detail="Exam is currently being processed — wait for it to finish before retrying.",
+        )
+
+    # Re-read the source text. The user_document might have been deleted in
+    # the meantime; fail clearly if so.
+    if not exam.user_document_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Source document is no longer attached to this exam — please re-upload.",
+        )
+    user_doc = (
+        db.query(UserDocument)
+        .filter(UserDocument.id == exam.user_document_id)
+        .first()
+    )
+    if not user_doc or not user_doc.base_document or not user_doc.base_document.file_path:
+        raise HTTPException(
+            status_code=422,
+            detail="Source document is missing — please re-upload.",
+        )
     try:
         pages = extract_text(user_doc.base_document.file_path)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Could not read exam document: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not re-read exam document: {exc}")
     full_text = "\n".join(p["text"] for p in pages)
 
-    try:
-        n_questions = process_exam(exam, full_text, db)
-    except LLMJsonError as exc:
-        # Roll back the empty exam shell so we don't leave a zombie row.
-        db.delete(exam)
-        db.commit()
-        raise HTTPException(status_code=502, detail=user_message_for(exc))
-    except Exception as exc:
-        db.delete(exam)
-        db.commit()
-        raise HTTPException(status_code=503, detail=f"Exam processing failed: {exc}")
-
-    if n_questions == 0:
-        # Roll the exam back — we have no useful data and a card with zero
-        # questions would just confuse the user.
-        db.delete(exam)
-        db.commit()
-        raise HTTPException(
-            status_code=422,
-            detail="No questions could be extracted from this document.",
-        )
-
-    exam.processed_at = datetime.now(timezone.utc)
+    # Wipe any previously-extracted questions so the retry starts clean.
+    for q in list(exam.questions):
+        db.delete(q)
+    exam.processing_status     = "pending"
+    exam.processing_error      = None
+    exam.processed_at          = None
+    exam.aggregate_difficulty  = None
     db.commit()
     db.refresh(exam)
+
+    background.add_task(_run_exam_pipeline, exam.id, full_text)
     return _serialize_detail(exam)
 
 

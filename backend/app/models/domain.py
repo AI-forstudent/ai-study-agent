@@ -390,6 +390,12 @@ class Exam(Base):
     has_solutions            = Column(Boolean, nullable=False, server_default="false")
     aggregate_difficulty     = Column(Float,   nullable=True)
     reference_solutions      = Column(JSONB,   nullable=True)
+    # Async-processing state machine. POST /exams creates rows with
+    # status='pending', a FastAPI BackgroundTask flips to 'processing' and
+    # then to 'completed' or 'failed'. The frontend polls while any exam in
+    # the user's list is in 'pending' or 'processing'.
+    processing_status        = Column(String,  nullable=False, server_default="pending")
+    processing_error         = Column(Text,    nullable=True)
     processed_at             = Column(DateTime(timezone=True), nullable=True)
     created_at               = Column(DateTime(timezone=True), server_default=func.now())
 

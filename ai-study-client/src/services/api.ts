@@ -235,6 +235,11 @@ export const api = {
 
   getExam: (examId: number) => apiClient.get(`/api/v1/exams/${examId}`),
 
+  // Re-runs the AI pipeline on an exam in 'failed' state. Returns the
+  // updated shell with status='pending'; the frontend keeps polling.
+  retryExamProcessing: (examId: number) =>
+    apiClient.post(`/api/v1/exams/${examId}/retry`),
+
   deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
 
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────

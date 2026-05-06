@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   FileText, Plus, Loader2, Calendar, GraduationCap, TrendingUp,
-  ChevronRight, AlertCircle,
+  ChevronRight, AlertCircle, RotateCw, Sparkles,
 } from 'lucide-react';
 import { api } from '../../../services/api';
 import type { CourseLecturer, ExamCard, ExamDetail } from '../../../types/course';
@@ -28,6 +28,18 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
   const [error, setError]           = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [activeExamId, setActiveExamId] = useState<number | null>(null);
+  // ── List + lecturer fetch ───────────────────────────────────────────────
+  // Pulled out so the polling effect and the initial mount can share it.
+  const fetchExams = async () => {
+    try {
+      const res = await api.listCourseExams(courseId);
+      setExams(res.data);
+      setError(null);
+    } catch (err) {
+      console.error('[CourseExamsTab] exam fetch failed', err);
+      setError('Could not load exams.');
+    }
+  };
 
   const refresh = async () => {
     setLoading(true);
@@ -56,8 +68,31 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
 
   useEffect(() => { void refresh(); }, [courseId]);
 
-  // When an exam is created, drop the card into the list (the response is a
-  // full ExamDetail; we just keep the card-shaped fields).
+  // ── Poll while any exam is in flight ────────────────────────────────────
+  // The backend processes uploads asynchronously (BackgroundTask) — typical
+  // duration is 60-150s for a 25-question exam. We poll the list every 5
+  // seconds while any exam is `pending` or `processing`, and stop the
+  // moment everything settles.
+  useEffect(() => {
+    const hasInFlight = exams.some(e =>
+      e.processing_status === 'pending' || e.processing_status === 'processing'
+    );
+    if (!hasInFlight) return;
+
+    const interval = setInterval(() => {
+      // Inside the interval: read live state via the ref (the closure's
+      // `exams` is stale after the first tick).
+      void fetchExams();
+    }, 5_000);
+
+    return () => clearInterval(interval);
+    // We deliberately depend only on the existence of in-flight items, not
+    // on `exams` itself, to avoid restarting the interval on every poll tick.
+  }, [exams.some(e => e.processing_status === 'pending' || e.processing_status === 'processing')]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When an exam is created, drop the card into the list. The shell comes
+  // back with `processing_status='pending'` — the polling loop will flip
+  // it to 'processing' / 'completed' / 'failed' over the next minute or two.
   const handleCreated = (created: ExamDetail) => {
     setExams(prev => {
       const card: ExamCard = {
@@ -70,6 +105,8 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
         question_count:       created.question_count,
         topics:               created.topics,
         lecturers:            created.lecturers,
+        processing_status:    created.processing_status,
+        processing_error:     created.processing_error,
         processed_at:         created.processed_at,
         created_at:           created.created_at,
       };
@@ -80,6 +117,22 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
   const handleDeleted = (examId: number) => {
     setExams(prev => prev.filter(e => e.id !== examId));
     setActiveExamId(null);
+  };
+
+  const handleRetry = async (examId: number) => {
+    try {
+      await api.retryExamProcessing(examId);
+      // Optimistically flip status to 'pending' so the spinner shows up
+      // immediately; polling will catch the real state.
+      setExams(prev => prev.map(e =>
+        e.id === examId
+          ? { ...e, processing_status: 'pending', processing_error: null }
+          : e
+      ));
+    } catch (err) {
+      console.error('[CourseExamsTab] retry failed', err);
+      alert('Could not retry processing — please try again in a moment.');
+    }
   };
 
   const activeCard = useMemo(
@@ -167,16 +220,42 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
 
           {exams.map(exam => {
             const b = difficultyBadge(exam.aggregate_difficulty);
+            const inFlight = exam.processing_status === 'pending'
+                          || exam.processing_status === 'processing';
+            const failed   = exam.processing_status === 'failed';
+            const completed = exam.processing_status === 'completed';
+
             return (
-              <button
+              <div
                 key={exam.id}
-                onClick={() => setActiveExamId(exam.id)}
-                className="w-full text-start grid grid-cols-1 md:grid-cols-12 gap-2 md:gap-3 px-4 py-3 border-b border-[#E8E8E6] last:border-0 hover:bg-[#F7F7F5] transition-colors duration-150"
+                className={`grid grid-cols-1 md:grid-cols-12 gap-2 md:gap-3 px-4 py-3 border-b border-[#E8E8E6] last:border-0 transition-colors duration-150 ${
+                  completed ? 'cursor-pointer hover:bg-[#F7F7F5]' : 'bg-[#F7F7F5]/40'
+                }`}
+                onClick={() => completed && setActiveExamId(exam.id)}
               >
-                {/* Title + topics */}
+                {/* Title + topics + status banner */}
                 <div className="md:col-span-4 min-w-0">
                   <p className="text-sm font-medium text-[#37352F] truncate">{exam.title}</p>
-                  {exam.topics.length > 0 && (
+
+                  {/* In-flight or failed: show the explicit status banner */}
+                  {inFlight && (
+                    <div className="flex items-center gap-1.5 mt-1 text-[11px] text-indigo-600">
+                      <Sparkles className="w-3 h-3 animate-pulse" />
+                      <span>
+                        {exam.processing_status === 'pending'
+                          ? 'Queued for AI extraction…'
+                          : 'AI extracting questions…'}
+                      </span>
+                    </div>
+                  )}
+                  {failed && exam.processing_error && (
+                    <p className="mt-1 text-[11px] text-red-600 line-clamp-2" title={exam.processing_error}>
+                      {exam.processing_error}
+                    </p>
+                  )}
+
+                  {/* Topics — only show when extraction succeeded */}
+                  {completed && exam.topics.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {exam.topics.slice(0, 3).map(t => (
                         <span key={t.id} className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
@@ -210,23 +289,45 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
 
                 {/* Question count */}
                 <div className="md:col-span-1 text-xs text-[#37352F] md:text-center">
-                  {exam.question_count}
+                  {completed ? exam.question_count : '—'}
                 </div>
 
-                {/* Difficulty */}
+                {/* Status / Difficulty */}
                 <div className="md:col-span-2 flex items-center">
-                  <span className={`flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border ${b.cls}`}>
-                    <TrendingUp className="w-3 h-3" />
-                    {b.label}
-                    {exam.aggregate_difficulty != null && ` · ${(exam.aggregate_difficulty * 100).toFixed(0)}%`}
-                  </span>
+                  {inFlight ? (
+                    <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border bg-indigo-50 text-indigo-700 border-indigo-200">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Processing
+                    </span>
+                  ) : failed ? (
+                    <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border bg-red-50 text-red-700 border-red-200">
+                      <AlertCircle className="w-3 h-3" />
+                      Failed
+                    </span>
+                  ) : (
+                    <span className={`flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border ${b.cls}`}>
+                      <TrendingUp className="w-3 h-3" />
+                      {b.label}
+                      {exam.aggregate_difficulty != null && ` · ${(exam.aggregate_difficulty * 100).toFixed(0)}%`}
+                    </span>
+                  )}
                 </div>
 
-                {/* Chevron */}
-                <div className="md:col-span-1 flex items-center justify-end text-[#C4C4C4]">
-                  <ChevronRight className="w-4 h-4" />
+                {/* Chevron / retry */}
+                <div className="md:col-span-1 flex items-center justify-end text-[#C4C4C4] gap-1">
+                  {failed && isOwner && (
+                    <button
+                      onClick={e => { e.stopPropagation(); void handleRetry(exam.id); }}
+                      className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-50"
+                      title="Re-run AI extraction"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                      Retry
+                    </button>
+                  )}
+                  {completed && <ChevronRight className="w-4 h-4" />}
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>

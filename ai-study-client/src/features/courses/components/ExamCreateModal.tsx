@@ -33,7 +33,10 @@ export default function ExamCreateModal({
   const [lecturerIds, setLecturerIds] = useState<Set<number>>(new Set());
 
   // ── Step state ──────────────────────────────────────────────────────────
-  const [phase, setPhase]   = useState<'idle' | 'uploading' | 'processing'>('idle');
+  // 'queueing' = creating the exam shell on the backend (fast — extract_text
+  // + a DB insert; the AI pipeline runs in a BackgroundTask afterwards and
+  // is reflected via `processing_status` on the table row).
+  const [phase, setPhase]   = useState<'idle' | 'uploading' | 'queueing'>('idle');
   const [error, setError]   = useState<string | null>(null);
   // When upload succeeded but the processing pipeline failed, we cache the
   // userDocumentId so the retry button can skip re-uploading (which would
@@ -116,8 +119,11 @@ export default function ExamCreateModal({
       }
     }
 
-    // ── Step 2: attach as exam → triggers extraction + tagging pipeline ─
-    setPhase('processing');
+    // ── Step 2: queue the exam for AI processing ────────────────────────
+    // Backend now returns 202 once the row is committed; the heavy AI
+    // pipeline (extract → tag × N → calibrate) runs in a BackgroundTask
+    // and the user watches `processing_status` flip on the table row.
+    setPhase('queueing');
     try {
       const yearInt = year.trim() ? parseInt(year, 10) : null;
       const res = await api.createCourseExam(courseId, {
@@ -131,10 +137,10 @@ export default function ExamCreateModal({
       onCreated(res.data);
       onClose();
     } catch (err: any) {
-      // Backend now returns user-friendly messages from llm_json.user_message_for.
-      // The processing step failed but the upload succeeded — keep
-      // `uploadedDocId` so a retry skips re-upload and just re-runs the AI.
-      setError(err?.response?.data?.detail ?? 'Could not process the exam — please try again.');
+      // Validation / file-read errors. The actual AI failures don't reach
+      // here anymore (they fail in the BackgroundTask and the row just
+      // ends up with status='failed' in the table).
+      setError(err?.response?.data?.detail ?? 'Could not queue this exam for processing.');
       setPhase('idle');
     }
   };
@@ -320,8 +326,8 @@ export default function ExamCreateModal({
           >
             {phase === 'uploading' ? (
               <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading…</>
-            ) : phase === 'processing' ? (
-              <><Sparkles className="w-3.5 h-3.5 animate-pulse" /> AI extracting…</>
+            ) : phase === 'queueing' ? (
+              <><Sparkles className="w-3.5 h-3.5 animate-pulse" /> Queueing…</>
             ) : (
               <><Save className="w-3.5 h-3.5" /> Upload &amp; Process</>
             )}

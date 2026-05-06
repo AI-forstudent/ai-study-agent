@@ -142,6 +142,8 @@ export interface ExamQuestion {
   reference_solution:  string | null;
 }
 
+export type ExamProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
 /** Compact card shape used by the exam list table. */
 export interface ExamCard {
   id:                    number;
@@ -153,6 +155,9 @@ export interface ExamCard {
   question_count:        number;
   topics:                ExamTopic[];
   lecturers:             ExamLecturer[];
+  /** Async-processing state. Frontend polls while any exam is 'pending'/'processing'. */
+  processing_status:     ExamProcessingStatus;
+  processing_error:      string | null;
   processed_at:          string | null;
   created_at:            string;
 }
