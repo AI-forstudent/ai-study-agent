@@ -111,8 +111,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
-    op.create_index("ix_exams_id",        "exams", ["id"])
-    op.create_index("ix_exams_course_id", "exams", ["course_id"])
+    op.create_index("ix_exams_id", "exams", ["id"])
+    # The course_id index is auto-created by `index=True` on the column above
+    # — declaring it explicitly here would duplicate it (relation
+    # "ix_exams_course_id" already exists). Same applies to exam_questions
+    # and course_question_types below.
 
     # ── 3. exam_questions ──────────────────────────────────────────────────
     op.create_table(
@@ -148,8 +151,8 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
-    op.create_index("ix_exam_questions_id",      "exam_questions", ["id"])
-    op.create_index("ix_exam_questions_exam_id", "exam_questions", ["exam_id"])
+    op.create_index("ix_exam_questions_id", "exam_questions", ["id"])
+    # The exam_id index is auto-created by `index=True` on the column above.
 
     # ── 4. exam_question_topics — M2M between questions and topics ────────
     op.create_table(
@@ -190,12 +193,12 @@ def downgrade() -> None:
     op.drop_table("exam_lecturers")
     op.drop_table("exam_question_topics")
 
-    op.drop_index("ix_exam_questions_exam_id", table_name="exam_questions")
-    op.drop_index("ix_exam_questions_id",      table_name="exam_questions")
+    # Drop only the indexes we created EXPLICITLY in upgrade(); the ones from
+    # `index=True` go away automatically when the table is dropped.
+    op.drop_index("ix_exam_questions_id", table_name="exam_questions")
     op.drop_table("exam_questions")
 
-    op.drop_index("ix_exams_course_id", table_name="exams")
-    op.drop_index("ix_exams_id",        table_name="exams")
+    op.drop_index("ix_exams_id", table_name="exams")
     op.drop_table("exams")
 
     op.drop_index("ix_course_question_types_id", table_name="course_question_types")
