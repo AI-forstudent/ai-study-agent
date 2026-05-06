@@ -90,10 +90,15 @@ export default function ExamDetailView({
       <div className="bg-white border border-[#E8E8E6] rounded-xl p-5">
         <h2 className="text-base font-semibold text-[#37352F] mb-2">{examCard.title}</h2>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#787774]">
-          {(examCard.year || examCard.semester) && (
+          {(examCard.year || examCard.semester || examCard.moed || examCard.exam_type) && (
             <span className="flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5" />
-              {[examCard.semester, examCard.year].filter(Boolean).join(' · ')}
+              {[
+                examCard.year,
+                examCard.semester,
+                examCard.moed      ? `Moed ${examCard.moed}` : null,
+                examCard.exam_type,
+              ].filter(Boolean).join(' · ')}
             </span>
           )}
           {examCard.lecturers.length > 0 && (

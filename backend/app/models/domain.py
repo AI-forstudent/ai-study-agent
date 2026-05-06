@@ -381,7 +381,12 @@ class Exam(Base):
     )
     title                    = Column(String,  nullable=False)
     year                     = Column(Integer, nullable=True)
-    semester                 = Column(String,  nullable=True)
+    # Three independent metadata axes per the user spec (T-020). NEVER
+    # concatenate them — `semester` is the academic period, `moed` is the
+    # exam sitting, `exam_type` is the kind of test. All optional.
+    semester                 = Column(String,  nullable=True)   # 'Fall' | 'Spring' | 'Summer' | 'Other'
+    moed                     = Column(String,  nullable=True)   # 'A' | 'B' | 'C' | 'D' | 'Special'
+    exam_type                = Column(String,  nullable=True)   # 'midterm' | 'final' | 'quiz' | 'practice' | 'other'
     user_document_id         = Column(
         Integer,
         ForeignKey("userdocuments.id", ondelete="SET NULL"),

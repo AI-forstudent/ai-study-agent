@@ -234,7 +234,11 @@ export const api = {
     user_document_id: number;
     title:            string;
     year?:            number | null;
+    // Three independent metadata axes — backend will auto-fill any field
+    // left null/undefined here from the AI extraction.
     semester?:        string | null;
+    moed?:            string | null;
+    exam_type?:       string | null;
     has_solutions?:   boolean;
     lecturer_ids?:    number[];
   }) => apiClient.post(`/api/v1/courses/${courseId}/exams`, payload),

@@ -49,13 +49,20 @@ class ExamCreateRequest(BaseModel):
     /api/v1/documents/ upload first to get a user_document_id).
     `has_solutions` must reflect what the source PDF actually contains —
     the AI extractor will also flip this true if it sees inline solutions.
+
+    Metadata fields (year / semester / moed / exam_type) are independent.
+    Per the user spec they must NOT be concatenated. All four are optional
+    on the request — when the user leaves a field blank, the AI extractor
+    fills it in (when confident) during the BackgroundTask pass.
     """
     user_document_id: int
     title:            str
     year:             Optional[int] = None
-    semester:         Optional[str] = None
+    semester:         Optional[str] = None    # 'Fall' / 'Spring' / 'Summer' / 'Other'
+    moed:             Optional[str] = None    # 'A' / 'B' / 'C' / 'D' / 'Special'
+    exam_type:        Optional[str] = None    # 'midterm' / 'final' / 'quiz' / 'practice' / 'other'
     has_solutions:    bool          = False
-    lecturer_ids:     list[int]     = []   # FK→course_lecturers, must belong to this course
+    lecturer_ids:     list[int]     = []      # FK→course_lecturers, must belong to this course
 
 
 class TopicOut(BaseModel):
@@ -127,7 +134,10 @@ class ExamCardOut(BaseModel):
     id:                    int
     title:                 str
     year:                  Optional[int] = None
+    # Three independent metadata axes — never concatenate.
     semester:              Optional[str] = None
+    moed:                  Optional[str] = None
+    exam_type:             Optional[str] = None
     has_solutions:         bool
     aggregate_difficulty:  Optional[float] = None
     question_count:        int = 0
@@ -205,6 +215,8 @@ def _serialize_card(exam: Exam) -> ExamCardOut:
         title=exam.title,
         year=exam.year,
         semester=exam.semester,
+        moed=exam.moed,
+        exam_type=exam.exam_type,
         has_solutions=exam.has_solutions,
         aggregate_difficulty=exam.aggregate_difficulty,
         # Read the denormalized cache rather than lazy-loading questions.
@@ -502,6 +514,8 @@ def create_course_exam(
         title=payload.title,
         year=payload.year,
         semester=payload.semester,
+        moed=payload.moed,
+        exam_type=payload.exam_type,
         user_document_id=user_doc.id,
         has_solutions=payload.has_solutions,
         processing_status="pending",

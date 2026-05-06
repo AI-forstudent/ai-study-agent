@@ -275,11 +275,18 @@ export default function CourseExamsTab({ courseId, isOwner }: CourseExamsTabProp
                   )}
                 </div>
 
-                {/* Year + semester */}
+                {/* Year / Semester / Moed / Type — never concatenated;
+                     joined visually with `·` so multiple values fit in
+                     the same column without losing their structure. */}
                 <div className="md:col-span-2 flex items-center gap-1.5 text-xs text-[#787774] min-w-0">
                   <Calendar className="w-3 h-3 shrink-0" />
                   <span className="truncate">
-                    {[exam.semester, exam.year].filter(Boolean).join(' · ') || '—'}
+                    {([
+                      exam.year,
+                      exam.semester,
+                      exam.moed   ? `Moed ${exam.moed}`        : null,
+                      exam.exam_type,
+                    ].filter(Boolean).join(' · ')) || '—'}
                   </span>
                 </div>
 

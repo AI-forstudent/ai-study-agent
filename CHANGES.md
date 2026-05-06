@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-05-06 (next day) — Granular exam metadata (T-020)
+
+**Scope:** Backend migration + extraction prompt + form refactor. Splits the overloaded `Exam.semester` field into three independent columns per the user's original "concatenation bug" call-out.
+
+### Why this change
+
+The user's spec from earlier explicitly flagged:
+
+> Current bug: the system is jamming multiple distinct pieces of information into a single field (e.g., semester + exam sitting being merged). This is wrong. Each piece of metadata must be its own structured field so it can be filtered, sorted, and queried independently.
+
+Until this commit, both academic semester ("Fall") and exam sitting ("Moed A") were being shoved into `Exam.semester`. They're independent — Moed B in Fall is a different exam from Moed A in Fall. Filtering, sorting, and analytics need them apart.
+
+### What changed
+
+#### 🆕 Created
+
+| File | Purpose |
+|---|---|
+| `backend/alembic/versions/o0n1m2l3k4j5_exam_granular_metadata.py` | Adds `Exam.moed` (`A`/`B`/`C`/`D`/`Special`/null) and `Exam.exam_type` (`midterm`/`final`/`quiz`/`practice`/`other`/null). Backfill regex-extracts any `"Moed X"` (English or `"מועד X"` Hebrew) string out of the existing `semester` field into the new `moed` column. |
+
+#### ✏️ Modified
+
+| File | What changed |
+|---|---|
+| `backend/app/models/domain.py` | `Exam` gains `moed` and `exam_type`. Comment notes the never-concatenate invariant. |
+| `backend/app/api/routers/exams.py` | `ExamCreateRequest` + `ExamCardOut` (and via inheritance, `ExamDetailOut`) carry `moed` and `exam_type`. The `_serialize_card` and create handler thread them through. |
+| `backend/app/services/exam_processor.py` | `_EXTRACTION_PROMPT` rewritten — response is now a top-level object with `metadata` (year/semester/moed/exam_type) and `questions` (the existing list). New `_coerce_year` / `_coerce_enum` helpers normalise the model output. `extract_questions` returns a `(metadata, questions)` tuple. `process_exam` applies the AI-detected metadata to the exam row only when the corresponding user field is null/blank — user input always wins. |
+| `ai-study-client/src/types/course.ts` | New `ExamSemester`, `ExamMoed`, `ExamType` literal-union types; `ExamCard` carries all three fields. |
+| `ai-study-client/src/services/api.ts` | `createCourseExam` payload type carries `moed` + `exam_type`. |
+| `ai-study-client/src/features/courses/components/ExamCreateModal.tsx` | Replaces the single overloaded semester dropdown with four small selects: `Year` / `Semester` / `Moed` / `Type`. Each defaults to "Auto-detect" (empty string) so the AI fills it; explicit user picks override. Helper text below the row explains the auto-fill behaviour. |
+| `ai-study-client/src/features/courses/components/CourseExamsTab.tsx` | Table row's "Period" column joins year / semester / moed / exam_type with ` · ` separators (visually together, but never concatenated in the data layer). |
+| `ai-study-client/src/features/courses/components/ExamDetailView.tsx` | Same join in the detail-card header. |
+
+### Auto-fill policy
+
+User input ALWAYS wins. AI fills only the fields the user left on "Auto-detect" (i.e., null on the request). This matches the spec's "auto-filled but please verify" intent — the user can always pick before upload, and the AI never silently overwrites a chosen value.
+
+### Hebrew handling
+
+The extraction prompt explicitly maps Hebrew terms — `מועד א/ב/מיוחד` → `A`/`B`/`Special`, `סמסטר א` / `סתיו` → `Fall`, `סמסטר ב` / `אביב` → `Spring`, `קיץ` → `Summer`. Real-world syllabi mix these freely.
+
+### Token cost
+
+Same number of LLM calls as before — the extraction prompt is now a slightly larger payload (the extra metadata schema), but it runs once per exam upload like always.
+
+### What's still ahead (per the original user spec)
+
+T-021 / T-022: folder upload + batched review UI. T-023: topic-relevance check. T-024: OCR for image-only PDFs. T-025: content-based duplicate detection. T-026: multi-lecturer "+ add" affordance. F-011: the Take/Submit/Grade flow.
+
+---
+
 ## 2026-05-06 (very overnight) — Two-axis tagging + real exam stats
 
 **Scope:** Backend prompt + tagger refactor; new aggregation endpoint; frontend stats header rewire. No migrations.

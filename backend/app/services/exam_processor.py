@@ -67,26 +67,52 @@ _TAG_PARALLELISM = 5
 # ══════════════════════════════════════════════════════════════════════════
 
 _EXTRACTION_PROMPT = """\
-You are an exam parser. Extract every question from the following past paper.
-Return ONLY a valid JSON array — no markdown fences, no prose. Each element:
+You are an exam parser. Read the past-paper text below and produce a JSON
+object with TWO top-level fields: `metadata` (auto-detected exam metadata)
+and `questions` (the structured question list).
+
+Return ONLY valid JSON — no markdown fences, no prose:
 
 {{
-  "number":               string,   // e.g. "1", "1a", "2"
-  "text":                 string,   // the question itself
-  "page":                 integer,  // page where the question starts
-  "has_solution_inline":  boolean,  // true if the source already has a solution beneath it
-  "solution_text":        string|null  // the existing solution if present, otherwise null
+  "metadata": {{
+    "detected_year":      integer | null,
+    "detected_semester":  "Fall" | "Spring" | "Summer" | "Other" | null,
+    "detected_moed":      "A" | "B" | "C" | "D" | "Special" | null,
+    "detected_exam_type": "midterm" | "final" | "quiz" | "practice" | "other" | null
+  }},
+  "questions": [
+    {{
+      "number":               string,   // e.g. "1", "1a", "2"
+      "text":                 string,   // the question itself
+      "page":                 integer,  // page where the question starts
+      "has_solution_inline":  boolean,  // true if the source has a solution below
+      "solution_text":        string | null
+    }},
+    …
+  ]
 }}
 
-Rules
-─────
+Metadata rules
+──────────────
+• The four metadata axes are INDEPENDENT — never merge them. "Moed B in Fall
+  2024" populates ALL of detected_moed='B', detected_semester='Fall',
+  detected_year=2024 — they are different concepts.
+• Hebrew "מועד" maps to "moed". "מועד א" → 'A'; "מועד ב" → 'B'; "מועד מיוחד"
+  → 'Special'. "סמסטר א" / "סתיו" → 'Fall'. "סמסטר ב" / "אביב" → 'Spring'.
+  "קיץ" → 'Summer'.
+• When you cannot confidently infer a field from the document, set it to null
+  rather than guessing. The user explicitly fills these in; the AI value is
+  only used when the user left a field blank.
+
+Question rules
+──────────────
 • Return EVERY question, in source order. Do not summarize, paraphrase, or skip.
-• Subquestions that share a stem (e.g. "1a", "1b") are returned as separate
-  rows; copy the shared stem into each one.
-• If the exam only contains questions without solutions, set
-  has_solution_inline=false and solution_text=null for every row.
-• Keep formulas and code verbatim — including LaTeX.
-• Hebrew text is supported. Return values in the source language.
+• Subquestions that share a stem ("1a", "1b") are separate rows with the
+  shared stem copied into each.
+• If the source has no inline solutions at all, every row gets
+  has_solution_inline=false and solution_text=null.
+• Keep formulas and code verbatim, including LaTeX.
+• Hebrew is supported. Return values in the source language.
 
 Exam text
 ─────────
@@ -94,25 +120,31 @@ Exam text
 """
 
 
-def extract_questions(text: str) -> list[dict[str, Any]]:
-    """Run Gemini in JSON mode to break an exam PDF into structured questions.
+def extract_questions(text: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Run Gemini in JSON mode to extract metadata + questions from an exam.
 
-    Routes through `services.llm_json.call_llm_for_json`, which enforces:
-      • Native JSON output (`ask_gemini_json` sets `response_mime_type`).
-      • Up to 3 retries with stricter "JSON only" reminders on failure.
-      • Type validation (we expect a `list`).
+    Returns a 2-tuple `(metadata, questions)`:
 
-    Raises `LLMJsonError` if every attempt fails — the router translates
-    that into a user-friendly 502 with `services.llm_json.user_message_for`.
+      metadata: { "detected_year": int|None, "detected_semester": str|None,
+                  "detected_moed": str|None, "detected_exam_type": str|None }
+      questions: list of { "number", "text", "page", "has_solution_inline",
+                           "solution_text" }
+
+    The router applies the metadata to the Exam row only when the user
+    didn't already fill the corresponding field (user input wins; AI fills
+    blanks). See `_run_exam_pipeline` in routers/exams.py.
+
+    Raises `LLMJsonError` if every retry fails.
     """
+    empty_metadata = {
+        "detected_year": None, "detected_semester": None,
+        "detected_moed": None, "detected_exam_type": None,
+    }
     if not text or not text.strip():
-        return []
+        return empty_metadata, []
 
-    # Lazy import — see syllabus_extractor for the same circular-import note.
     from app.services.document_service import ask_gemini_json
 
-    # Same length cap as syllabus extractor — keeps cost predictable; longer
-    # exams are rare and can be split client-side if needed.
     capped = text[:20_000]
     base_prompt = _EXTRACTION_PROMPT.format(text=capped)
 
@@ -120,12 +152,25 @@ def extract_questions(text: str) -> list[dict[str, Any]]:
         llm_call=lambda p: ask_gemini_json(p, use_smart_model=True),
         base_prompt=base_prompt,
         max_attempts=3,
-        expected_type=list,
+        expected_type=dict,
         label="exam_extract_questions",
     )
 
+    # Defensive normalization — model could return missing keys / wrong shapes.
+    raw_meta = parsed.get("metadata") if isinstance(parsed.get("metadata"), dict) else {}
+    metadata = {
+        "detected_year":      _coerce_year(raw_meta.get("detected_year")),
+        "detected_semester":  _coerce_enum(raw_meta.get("detected_semester"),
+                                           {"Fall", "Spring", "Summer", "Other"}),
+        "detected_moed":      _coerce_enum(raw_meta.get("detected_moed"),
+                                           {"A", "B", "C", "D", "Special"}),
+        "detected_exam_type": _coerce_enum(raw_meta.get("detected_exam_type"),
+                                           {"midterm", "final", "quiz", "practice", "other"}),
+    }
+
+    raw_questions = parsed.get("questions") if isinstance(parsed.get("questions"), list) else []
     out: list[dict[str, Any]] = []
-    for q in parsed:
+    for q in raw_questions:
         if not isinstance(q, dict):
             continue
         number = str(q.get("number", "")).strip()
@@ -139,7 +184,38 @@ def extract_questions(text: str) -> list[dict[str, Any]]:
             "has_solution_inline": bool(q.get("has_solution_inline", False)),
             "solution_text":       q.get("solution_text") or None,
         })
-    return out
+    return metadata, out
+
+
+def _coerce_year(val: Any) -> int | None:
+    """Accept either an int or a numeric string; reject anything implausible
+    (year outside 1990..2099 catches the "model returned 12345" case)."""
+    try:
+        if isinstance(val, str):
+            val = int(val.strip())
+        elif isinstance(val, float):
+            val = int(val)
+        if isinstance(val, int) and 1990 <= val <= 2099:
+            return val
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _coerce_enum(val: Any, allowed: set[str]) -> str | None:
+    """Accept only values from `allowed`; case-insensitive match for safety."""
+    if not isinstance(val, str):
+        return None
+    cleaned = val.strip()
+    if not cleaned:
+        return None
+    # Exact match first, then case-insensitive lookup.
+    if cleaned in allowed:
+        return cleaned
+    for a in allowed:
+        if cleaned.lower() == a.lower():
+            return a
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -499,9 +575,23 @@ def process_exam(
     # Lazy import to avoid pulling document_service into module load order.
     from app.services.document_service import get_embedding_model
 
-    questions_data = extract_questions(raw_text)
+    metadata, questions_data = extract_questions(raw_text)
     if not questions_data:
         return 0
+
+    # ── Apply auto-detected metadata where the user left blanks ─────────
+    # Policy: USER VALUES WIN. AI fills only when the corresponding field
+    # is None on the exam row (i.e. the user didn't pick anything in the
+    # upload modal). This matches the "auto-fill but please verify" path
+    # the user spec described.
+    if exam.year is None and metadata["detected_year"] is not None:
+        exam.year = metadata["detected_year"]
+    if not exam.semester and metadata["detected_semester"]:
+        exam.semester = metadata["detected_semester"]
+    if not exam.moed and metadata["detected_moed"]:
+        exam.moed = metadata["detected_moed"]
+    if not exam.exam_type and metadata["detected_exam_type"]:
+        exam.exam_type = metadata["detected_exam_type"]
 
     course = exam.course
 

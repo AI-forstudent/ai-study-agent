@@ -18,17 +18,52 @@ interface ExamCreateModalProps {
   onCreated: (exam: ExamDetail) => void;
 }
 
-const SEMESTER_OPTIONS = ['Fall', 'Spring', 'Summer', 'Moed A', 'Moed B', 'Moed C', 'Other'];
+// Three independent metadata axes per T-020. Each dropdown carries an
+// empty option labelled "Auto-detect" — when the user leaves it on
+// "Auto-detect", the backend's AI extraction fills the field. When the
+// user picks a value, that explicit choice wins.
+type SelectOption = { value: string; label: string };
+
+const SEMESTER_OPTIONS: SelectOption[] = [
+  { value: '',       label: 'Auto-detect' },
+  { value: 'Fall',   label: 'Fall' },
+  { value: 'Spring', label: 'Spring' },
+  { value: 'Summer', label: 'Summer' },
+  { value: 'Other',  label: 'Other' },
+];
+
+const MOED_OPTIONS = [
+  { value: '',        label: 'Auto-detect' },
+  { value: 'A',       label: 'Moed A' },
+  { value: 'B',       label: 'Moed B' },
+  { value: 'C',       label: 'Moed C' },
+  { value: 'D',       label: 'Moed D' },
+  { value: 'Special', label: 'Special / Meyuhad' },
+];
+
+const EXAM_TYPE_OPTIONS = [
+  { value: '',          label: 'Auto-detect' },
+  { value: 'midterm',   label: 'Midterm' },
+  { value: 'final',     label: 'Final' },
+  { value: 'quiz',      label: 'Quiz' },
+  { value: 'practice',  label: 'Practice' },
+  { value: 'other',     label: 'Other' },
+];
 
 export default function ExamCreateModal({
   isOpen, courseId, lecturers, onClose, onCreated,
 }: ExamCreateModalProps) {
   // ── Form state ──────────────────────────────────────────────────────────
+  // All three metadata fields default to '' ("Auto-detect") so the AI fills
+  // them unless the user explicitly picks a value. Title still defaults to
+  // the filename so we don't ship empty cards.
   const fileInputRef                  = useRef<HTMLInputElement>(null);
   const [file, setFile]               = useState<File | null>(null);
   const [title, setTitle]             = useState('');
-  const [year, setYear]               = useState<string>(String(new Date().getFullYear()));
-  const [semester, setSemester]       = useState<string>('Fall');
+  const [year, setYear]               = useState<string>('');
+  const [semester, setSemester]       = useState<string>('');   // '' → auto-detect
+  const [moed, setMoed]               = useState<string>('');   // '' → auto-detect
+  const [examType, setExamType]       = useState<string>('');   // '' → auto-detect
   const [hasSolutions, setHasSolutions] = useState(false);
   const [lecturerIds, setLecturerIds] = useState<Set<number>>(new Set());
 
@@ -48,8 +83,10 @@ export default function ExamCreateModal({
     if (!isOpen) return;
     setFile(null);
     setTitle('');
-    setYear(String(new Date().getFullYear()));
-    setSemester('Fall');
+    setYear('');
+    setSemester('');
+    setMoed('');
+    setExamType('');
     setHasSolutions(false);
     setLecturerIds(new Set());
     setPhase('idle');
@@ -130,7 +167,11 @@ export default function ExamCreateModal({
         user_document_id: userDocumentId!,
         title:            title.trim(),
         year:             Number.isFinite(yearInt) ? yearInt : null,
+        // Empty string from the "Auto-detect" option → null, lets the
+        // backend AI fill the field. Picked value → wins over AI.
         semester:         semester || null,
+        moed:             moed || null,
+        exam_type:        examType || null,
         has_solutions:    hasSolutions,
         lecturer_ids:     [...lecturerIds],
       });
@@ -234,8 +275,10 @@ export default function ExamCreateModal({
             />
           </div>
 
-          {/* Year + semester (side-by-side) */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Year / Semester / Moed / Exam type — three independent metadata
+               axes per spec; never concatenated. All optional — leaving any
+               field on "Auto-detect" lets the AI fill it from the PDF. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wide text-[#787774] mb-1.5">Year</p>
               <input
@@ -243,8 +286,8 @@ export default function ExamCreateModal({
                 value={year}
                 onChange={e => setYear(e.target.value)}
                 disabled={phase !== 'idle'}
-                placeholder="2024"
-                className="w-full h-9 px-3 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 disabled:opacity-60"
+                placeholder="auto"
+                className="w-full h-9 px-3 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 disabled:opacity-60 placeholder:text-[#C4C4C4]"
               />
             </div>
             <div>
@@ -255,10 +298,35 @@ export default function ExamCreateModal({
                 disabled={phase !== 'idle'}
                 className="w-full h-9 px-2 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 disabled:opacity-60"
               >
-                {SEMESTER_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                {SEMESTER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#787774] mb-1.5">Moed</p>
+              <select
+                value={moed}
+                onChange={e => setMoed(e.target.value)}
+                disabled={phase !== 'idle'}
+                className="w-full h-9 px-2 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 disabled:opacity-60"
+              >
+                {MOED_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-[#787774] mb-1.5">Type</p>
+              <select
+                value={examType}
+                onChange={e => setExamType(e.target.value)}
+                disabled={phase !== 'idle'}
+                className="w-full h-9 px-2 border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 disabled:opacity-60"
+              >
+                {EXAM_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
           </div>
+          <p className="text-[10px] text-[#C4C4C4] -mt-2">
+            Leave any field on "Auto-detect" and the AI will infer it from the PDF.
+          </p>
 
           {/* Has solutions */}
           <label className="flex items-start gap-2 cursor-pointer select-none">

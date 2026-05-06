@@ -144,12 +144,20 @@ export interface ExamQuestion {
 
 export type ExamProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
+/** Allowed values for the three independent metadata axes (T-020). */
+export type ExamSemester = 'Fall' | 'Spring' | 'Summer' | 'Other';
+export type ExamMoed     = 'A' | 'B' | 'C' | 'D' | 'Special';
+export type ExamType     = 'midterm' | 'final' | 'quiz' | 'practice' | 'other';
+
 /** Compact card shape used by the exam list table. */
 export interface ExamCard {
   id:                    number;
   title:                 string;
   year:                  number | null;
-  semester:              string | null;
+  /** Three independent metadata axes — never concatenate. */
+  semester:              ExamSemester | null;
+  moed:                  ExamMoed     | null;
+  exam_type:             ExamType     | null;
   has_solutions:         boolean;
   aggregate_difficulty:  number | null;
   question_count:        number;
