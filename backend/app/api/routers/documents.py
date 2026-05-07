@@ -52,6 +52,9 @@ from app.schemas.schemas import (
     PublicDocumentResponse,
     VisibilityUpdate,
 )
+from app.services.permissions import (
+    DEFAULT_ORG_ID, DocumentCapabilities, Scope, gate_or_403,
+)
 from app.services.document_service import (
     CODE_EXTENSIONS,
     convert_to_pdf,
@@ -148,6 +151,16 @@ def upload_document(
     is_starred: bool = Form(False),
     db: Session = Depends(get_db),
 ):
+    # Phase 2 gate. Uploaded docs are owned by the uploader; in v1 they
+    # land under the user's home org (Default). Once Phase 5 lets users
+    # belong to real orgs the scope here will derive from `folder_id`'s
+    # course chain when a folder is supplied.
+    gate_or_403(
+        current_user, DocumentCapabilities.upload_document,
+        Scope.organization(DEFAULT_ORG_ID), db,
+        owner_id=current_user.id,
+    )
+
     if persona_id and not db.query(Persona).filter(Persona.id == persona_id).first():
         raise HTTPException(status_code=404, detail="PERSONA_NOT_FOUND")
 
@@ -328,6 +341,13 @@ def delete_document(
     )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Phase 2 gate.
+    gate_or_403(
+        current_user, DocumentCapabilities.delete_document,
+        Scope.organization(user_doc.organization_id or DEFAULT_ORG_ID), db,
+        owner_id=user_doc.user_id,
+    )
 
     base_hash = user_doc.base_hash
 

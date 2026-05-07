@@ -35,6 +35,9 @@ from app.models.domain import (
 from app.services.document_service import extract_text
 from app.services.exam_processor import process_exam
 from app.services.llm_json import LLMJsonError, user_message_for
+from app.services.permissions import (
+    ExamCapabilities, Scope, gate_or_403,
+)
 
 router = APIRouter(tags=["exams"])
 log = logging.getLogger(__name__)
@@ -469,6 +472,13 @@ def create_course_exam(
     """
     course = _ensure_course_owner(course_id, current_user, db)
 
+    # Phase 2 gate.
+    gate_or_403(
+        current_user, ExamCapabilities.upload_exam,
+        Scope.course(course.id), db,
+        owner_id=course.owner_id,
+    )
+
     # Validate the source doc
     user_doc = (
         db.query(UserDocument)
@@ -508,9 +518,13 @@ def create_course_exam(
             detail="The document appears to be empty or image-only. OCR support is on the roadmap.",
         )
 
-    # Build the exam row.
+    # Build the exam row. community_id / organization_id are NOT NULL on
+    # the Exam model after the Phase-1 migration; denormalize them from
+    # the parent course so the INSERT doesn't violate the constraint.
     exam = Exam(
         course_id=course_id,
+        community_id=course.community_id,
+        organization_id=course.organization_id,
         title=payload.title,
         year=payload.year,
         semester=payload.semester,
@@ -644,6 +658,14 @@ def delete_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    _ensure_course_owner(exam.course_id, current_user, db)
+    course = _ensure_course_owner(exam.course_id, current_user, db)
+
+    # Phase 2 gate.
+    gate_or_403(
+        current_user, ExamCapabilities.delete_exam,
+        Scope.course(exam.course_id), db,
+        owner_id=course.owner_id,
+    )
+
     db.delete(exam)
     db.commit()
