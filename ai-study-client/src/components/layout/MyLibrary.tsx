@@ -254,11 +254,10 @@ export default function MyLibrary({
     setActiveFolderId(id);
     setActiveCourseId(null);
   }
-  function openCourse(id: number) {
-    setActiveCourseId(id);
-    setActiveFolderId(null);
-    setCourseTab('folders');
-  }
+  // `openCourse` is gone — the My Courses lane that called it was removed in
+  // the three-lane rebuild (commit 2/5). Course drilldown now happens only
+  // via the `pendingCourseId` effect (set from the Public Courses click flow);
+  // the Courses page in commit 3 owns this end-to-end.
   function backToRoot() {
     setActiveFolderId(null);
     setActiveCourseId(null);
