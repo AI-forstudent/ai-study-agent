@@ -31,6 +31,9 @@ from app.models.domain import (
 )
 from app.services.document_service import extract_text
 from app.services.llm_json import LLMJsonError, user_message_for
+from app.services.permissions import (
+    CourseCapabilities, Scope, gate_or_403,
+)
 from app.services.syllabus_extractor import extract_syllabus
 
 router = APIRouter(tags=["courses"])
@@ -247,8 +250,25 @@ def create_course(
     db: Session = Depends(get_db),
 ):
     _ensure_visibility(payload.visibility)
+
+    # Phase 2 gate. New courses currently land in the user's home community
+    # (Default/General for v1 — admin UI for picking a real community arrives
+    # in Phase 5). The creator becomes the implicit owner, so the v1
+    # self-service rule in Default lets any authenticated user create a
+    # course; outside Default the matrix would require community_admin+.
+    target_community_id = 1   # TODO Phase 5: derive from payload once admin UI exposes it
+    gate_or_403(
+        current_user, CourseCapabilities.create_course,
+        Scope.community(target_community_id), db,
+        owner_id=current_user.id,
+    )
+
     course = Course(
         owner_id=current_user.id,
+        # community_id / organization_id are NOT NULL on the model; for v1
+        # everything lives in Default until the admin UI exposes a picker.
+        community_id=target_community_id,
+        organization_id=1,
         title=payload.title,
         description=payload.description,
         visibility=payload.visibility,
@@ -321,6 +341,15 @@ def update_course(
 ):
     course = _get_owned_course_or_404(course_id, current_user, db)
 
+    # Phase 2 gate — owner-fallback in Default lets the existing 404-only
+    # ownership semantics keep working when the flag is off, and matches
+    # the role-based check (course_admin from Phase-1 backfill) when on.
+    gate_or_403(
+        current_user, CourseCapabilities.update_course,
+        Scope.course(course.id), db,
+        owner_id=course.owner_id,
+    )
+
     if payload.visibility is not None:
         _ensure_visibility(payload.visibility)
         course.visibility = payload.visibility
@@ -351,6 +380,14 @@ def delete_course(
     or threads. Memberships pointing at this course are removed.
     """
     course = _get_owned_course_or_404(course_id, current_user, db)
+
+    # Phase 2 gate — owner-fallback in Default mirrors the existing
+    # ownership-only behaviour; outside Default the matrix kicks in.
+    gate_or_403(
+        current_user, CourseCapabilities.delete_course,
+        Scope.course(course.id), db,
+        owner_id=course.owner_id,
+    )
 
     db.query(Folder).filter(Folder.course_id == course_id).update(
         {"course_id": None}, synchronize_session=False

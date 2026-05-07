@@ -354,7 +354,7 @@ def can_or_owner(
     return can(user, action, scope, db, target_user_id=owner_id)
 
 
-# ── Logging helpers (used by route gates in commit P2C) ────────────────────
+# ── Logging helpers (used by route gates) ──────────────────────────────────
 
 def log_decision(
     *, user_id: int, action: str, scope: Scope, granted: bool, enforced: bool,
@@ -374,3 +374,48 @@ def log_decision(
         "yes" if granted else "no",
         "yes" if enforced else "shadow",
     )
+
+
+def gate_or_403(
+    user: User,
+    action: str,
+    scope: Scope,
+    db: Session,
+    *,
+    owner_id: Optional[int] = None,
+    target_user_id: Optional[int] = None,
+) -> None:
+    """Standard write-route gate. Calls `can_or_owner()` (when `owner_id`
+    is given) or `can()` (when only `target_user_id` is given), logs the
+    decision, and raises `HTTPException(403)` on deny **only when the
+    `PERMISSIONS_ENFORCE_WRITES` flag is on**. With the flag off, the
+    decision is shadow-logged but the request proceeds — that's how Phase
+    2 lands without breaking existing behaviour.
+
+    Routes pass `owner_id` when the action targets an existing row that
+    has a recorded owner (e.g. `Course.owner_id`); the v1 self-service
+    semantics in Default org let owners pass regardless of role.
+
+    For actions on rows that aren't owned by anyone yet (creation flows),
+    pass `owner_id=current_user.id` — the action is implicitly self-owned.
+    """
+    # Importing FastAPI inside the function keeps this module testable
+    # without the FastAPI dependency in the hot import path.
+    from fastapi import HTTPException
+
+    if owner_id is not None:
+        granted = can_or_owner(user, action, scope, db, owner_id=owner_id)
+    else:
+        granted = can(user, action, scope, db, target_user_id=target_user_id)
+
+    enforce = enforce_writes_enabled()
+    log_decision(
+        user_id=user.id, action=action, scope=scope,
+        granted=granted, enforced=enforce,
+    )
+
+    if not granted and enforce:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You do not have permission to perform '{action}' on this resource.",
+        )
