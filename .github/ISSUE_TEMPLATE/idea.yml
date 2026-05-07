@@ -1,0 +1,33 @@
+name: New Idea
+description: A new idea for the AI Study Partner. Claude analyzes ideas every weekday morning.
+title: "[Idea] "
+labels: ["area:idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Claude will analyze this idea during the next daily run (weekdays at 09:00) and post a verdict, effort estimate, and a sketch of the design (if it's a UI feature) as a comment. The issue then moves to the **Idea Summary** column on the Ideas Pipeline project.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem / Motivation
+      description: What pain point or opportunity does this address?
+      placeholder: e.g. "Users abandon course creation halfway through"
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Rough Idea
+      description: What you'd want it to do — even at a high level. Don't worry about implementation details.
+      placeholder: "When a user does X, the system should Y, so that Z"
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else (optional)
+      description: References, screenshots, links, related issues. Add a `priority:high|med|low` label manually if you have a strong feeling about urgency — otherwise the daily analysis will infer one.
