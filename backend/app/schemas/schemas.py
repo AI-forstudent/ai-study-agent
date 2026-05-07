@@ -146,6 +146,10 @@ class DocumentResponse(BaseModel):
     folder_id:   Optional[int] = None
     shared_at:   Optional[datetime] = None
     created_at:  datetime
+    # Recency-of-use for the My Library Files lane sort. NULL until the
+    # doc is first opened post-restructure (PATCH /touch). Frontend
+    # treats NULL as `created_at` for sorting purposes.
+    last_opened_at: Optional[datetime] = None
     # From BaseDocument
     file_path:    Optional[str] = None
     base_hash:    str

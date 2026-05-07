@@ -78,6 +78,15 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     if (!full) return;
     setDocumentId(doc.id);  // triggers useChat to clear + re-fetch threads
     setActiveThread(null);
+
+    // Bump `last_opened_at` so the My Library Files lane re-sorts. Fire-and-
+    // forget — failure to record recency must not block opening the doc.
+    // Optimistically update local state too so the lane reorders without
+    // needing a round-trip to GET /documents/.
+    const nowIso = new Date().toISOString();
+    setUserDocs(prev => prev.map(d => d.id === doc.id ? { ...d, last_opened_at: nowIso } : d));
+    api.touchDocument(doc.id).catch(() => { /* noop */ });
+
     try {
       const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
       const response    = await api.getFile(encodedPath);

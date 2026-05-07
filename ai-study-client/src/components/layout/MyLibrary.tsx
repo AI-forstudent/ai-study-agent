@@ -12,13 +12,12 @@ import FolderModal from '../../features/documents/components/FolderModal';
 import MoveToFolderModal from '../../features/documents/components/MoveToFolderModal';
 import SessionCard from '../../features/sessions/components/SessionCard';
 import FileCardCompact from '../../features/sessions/components/FileCardCompact';
-import CourseCard from '../../features/courses/components/CourseCard';
 import CourseModal from '../../features/courses/components/CourseModal';
 import CourseSyllabusTab from '../../features/courses/components/CourseSyllabusTab';
 import CourseExamsTab from '../../features/courses/components/CourseExamsTab';
 import type { Folder } from '../../features/documents/hooks/useFolders';
 import type { Persona } from '../../types/persona';
-import type { Course, LibraryFeedItem } from '../../types/course';
+import type { Course } from '../../types/course';
 import { ACCEPTED_FILE_TYPES, FileIcon } from '../../utils/fileIcons';
 import { api } from '../../services/api';
 
@@ -33,8 +32,29 @@ interface Doc {
   folder_id: number | null;
   shared_at: string | null;
   created_at?: string | null;
+  /** Bumped to now() each time the user opens this doc; drives the My Library
+   *  Files-lane sort. NULL until the first post-restructure open. */
+  last_opened_at?: string | null;
   doc_type?: string;
   file_path?: string;
+}
+
+/** Row shape returned by GET /api/v1/sessions/. Distinct from the lane-mixed
+ *  /library/recent shape we used pre-restructure. `session_title` is the
+ *  AI-generated collective title (set once at session creation, frozen);
+ *  `title` is the per-thread short label used by the workspace tree. */
+interface SessionRow {
+  id:                number;
+  title:             string | null;
+  session_title:     string | null;
+  emoji:             string | null;
+  document_id:       number | null;
+  document_title:    string | null;
+  persona_id:        string | null;
+  selected_text:     string | null;
+  last_message:      string | null;
+  message_count:     number;
+  created_at:        string;
 }
 
 interface MyLibraryProps {
@@ -110,7 +130,7 @@ export default function MyLibrary({
   const [activeCourseId, setActiveCourseId] = useState<number | null>(null);
   const [courseTab, setCourseTab]           = useState<CourseTab>('folders');
 
-  const [recentFeed, setRecentFeed] = useState<LibraryFeedItem[]>([]);
+  const [sessions, setSessions]     = useState<SessionRow[]>([]);
   const [courses, setCourses]       = useState<Course[]>([]);
   const [moveDoc, setMoveDoc]       = useState<Doc | null>(null);
 
@@ -126,12 +146,15 @@ export default function MyLibrary({
   }, []);
 
   // ── Fetch lanes ───────────────────────────────────────────────────────────
-  const refreshFeed = async () => {
+  // Three-lane restructure (2026-05-08): Sessions and Files are independent
+  // lanes — a doc with conversations shows up in BOTH (Files for the doc
+  // itself, Sessions for the chat tree on top of it).
+  const refreshSessions = async () => {
     try {
-      const res = await api.getLibraryRecent();
-      setRecentFeed(res.data);
+      const res = await api.listSessions();
+      setSessions(res.data);
     } catch (err) {
-      console.error('[MyLibrary] failed to load recent feed', err);
+      console.error('[MyLibrary] failed to load sessions', err);
     }
   };
   const refreshCourses = async () => {
@@ -143,8 +166,20 @@ export default function MyLibrary({
     }
   };
 
-  useEffect(() => { void refreshFeed(); }, [userDocs.length]);
+  // userDocs.length triggers a refresh on upload/delete; threads created
+  // from `useChat` are picked up by the next mount or page navigation.
+  useEffect(() => { void refreshSessions(); }, [userDocs.length]);
   useEffect(() => { void refreshCourses(); }, []);
+
+  // Files lane — sort by recency-of-use (last_opened_at, fallback created_at)
+  // descending so the doc the user just opened jumps to the front.
+  const sortedFiles = useMemo(() => {
+    return [...userDocs].sort((a, b) => {
+      const ta = a.last_opened_at ?? a.created_at ?? '';
+      const tb = b.last_opened_at ?? b.created_at ?? '';
+      return tb.localeCompare(ta);
+    });
+  }, [userDocs]);
 
   // ── Drill into a course requested by the parent (e.g. clicked from the
   //    Public Courses page). We refresh "My Courses" first; if the requested
@@ -240,7 +275,7 @@ export default function MyLibrary({
     if (!confirm('Delete this session and its branches?')) return;
     try {
       await api.deleteSession(sessionId);
-      await refreshFeed();
+      await refreshSessions();
     } catch (err) {
       console.error('[deleteSession]', err);
       alert('Failed to delete session.');
@@ -567,12 +602,12 @@ export default function MyLibrary({
         </div>
       )}
 
-      {/* ── Lane 1: Sessions & Files (mixed) ────────────────────────────── */}
+      {/* ── Lane 1: Sessions (only — files are their own lane below) ─────── */}
       <LibraryLane
-        title="Sessions & Files"
-        count={recentFeed.length}
+        title="Sessions"
+        count={sessions.length}
         onSearchClick={onOpenSessionsSearch}
-        isEmpty={recentFeed.length === 0}
+        isEmpty={sessions.length === 0}
         emptyState={
           <div className="flex flex-col items-center gap-2 text-[#787774]">
             <MessageSquare className="w-7 h-7 opacity-30" />
@@ -587,28 +622,58 @@ export default function MyLibrary({
           </div>
         }
       >
-        {recentFeed.map(item =>
-          item.kind === 'session' ? (
-            <SessionCard
-              key={`s${item.session_id}`}
-              session={item}
-              onOpen={onSelectSession}
-              onDelete={handleDeleteSession}
-            />
-          ) : (
-            <FileCardCompact
-              key={`f${item.file_id}`}
-              file={item}
-              sortAt={item.sort_at}
-              onOpen={id => onSelectDocument({ id })}
-              onDelete={(id, title) => onDeleteRequest({ id, title })}
-              onStar={(id, isStarred) => onStarDocument(id, isStarred)}
-            />
-          ),
-        )}
+        {sessions.map(s => (
+          <SessionCard
+            key={`s${s.id}`}
+            session={{
+              session_id:     s.id,
+              // Prefer the AI-generated collective title; fall back to the
+              // per-thread short label, then to a generic placeholder.
+              session_title:  s.session_title ?? s.title,
+              session_emoji:  s.emoji,
+              session_preview: s.last_message,
+              message_count:  s.message_count,
+              document_id:    s.document_id,
+              document_title: s.document_title,
+              sort_at:        s.created_at,
+            }}
+            onOpen={onSelectSession}
+            onDelete={handleDeleteSession}
+          />
+        ))}
       </LibraryLane>
 
-      {/* ── Lane 2: Folders (top-level only) ─────────────────────────────── */}
+      {/* ── Lane 2: Files (every doc, sorted by last opened) ─────────────── */}
+      <LibraryLane
+        title="Files"
+        count={sortedFiles.length}
+        isEmpty={sortedFiles.length === 0}
+        emptyState={
+          <div className="flex flex-col items-center gap-2 text-[#787774]">
+            <FileText className="w-7 h-7 opacity-30" />
+            <p className="text-sm">No files yet — upload one with the button above.</p>
+          </div>
+        }
+      >
+        {sortedFiles.map(doc => (
+          <FileCardCompact
+            key={`f${doc.id}`}
+            file={{
+              file_id:       doc.id,
+              file_title:    doc.title,
+              file_doc_type: doc.doc_type ?? 'GENERAL',
+              is_starred:    doc.is_starred,
+              is_public:     doc.is_public,
+            }}
+            sortAt={doc.last_opened_at ?? doc.created_at ?? undefined}
+            onOpen={id => onSelectDocument({ id })}
+            onDelete={(id, title) => onDeleteRequest({ id, title })}
+            onStar={(id, isStarred) => onStarDocument(id, isStarred)}
+          />
+        ))}
+      </LibraryLane>
+
+      {/* ── Lane 3: Folders (top-level only) ─────────────────────────────── */}
       <LibraryLane
         title="Folders"
         count={topLevelFolders.length}
@@ -641,44 +706,14 @@ export default function MyLibrary({
         ))}
       </LibraryLane>
 
-      {/* ── Lane 3: My Courses ────────────────────────────────────────────── */}
-      <LibraryLane
-        title="My Courses"
-        count={courses.length}
-        isEmpty={courses.length === 0}
-        emptyState={
-          <div className="flex flex-col items-center gap-2 text-[#787774]">
-            <GraduationCap className="w-7 h-7 opacity-30" />
-            <p className="text-sm">No courses yet.</p>
-            <button
-              onClick={() => { setEditingCourse(null); setCourseModalOpen(true); }}
-              className="mt-1 flex items-center gap-2 bg-white text-[#37352F] hover:bg-[#F7F7F5] text-sm font-medium px-4 py-2 rounded-lg border border-[#E8E8E6]"
-            >
-              <GraduationCap className="w-4 h-4" />
-              New course
-            </button>
-          </div>
-        }
-      >
-        {courses.map(course => (
-          <CourseCard
-            key={course.id}
-            course={course}
-            onOpen={openCourse}
-            onEdit={c => { setEditingCourse(c); setCourseModalOpen(true); }}
-            onDelete={async c => {
-              if (!confirm(`Delete "${c.title}"?`)) return;
-              try {
-                await api.deleteCourse(c.id);
-                await refreshCourses();
-              } catch (err) {
-                console.error('[deleteCourse]', err);
-                alert('Failed to delete course.');
-              }
-            }}
-          />
-        ))}
-      </LibraryLane>
+      {/*
+        The My Courses lane has moved to its own dedicated Courses page (see
+        the sidebar Courses entry). MyLibrary stays focused on Sessions /
+        Files / Folders per the 2026-05-08 library restructure brief.
+        Course drilldown logic above is retained for the existing
+        `pendingCourseId` flow from the public-courses entry — it will
+        migrate fully into the Courses page in commit 3.
+      */}
 
       {/* Folder modal */}
       <FolderModal

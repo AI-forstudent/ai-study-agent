@@ -85,6 +85,7 @@ def _build_doc_response(ud: UserDocument) -> DocumentResponse:
         folder_id=ud.folder_id,
         shared_at=ud.shared_at,
         created_at=ud.created_at,
+        last_opened_at=ud.last_opened_at,
         file_path=bd.file_path if bd else None,
         base_hash=bd.hash_id if bd else "",
         doc_type=bd.doc_type if bd else "GENERAL",
