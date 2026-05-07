@@ -129,6 +129,15 @@ class UserCapabilities(StrEnum):
     revoke_role = "revoke_role"
 
 
+class AdminCapabilities(StrEnum):
+    """Capabilities that gate the Phase-5 admin panel reads. Mutation
+    actions reuse the existing matrix entries (assign_role,
+    create_organization, create_community, etc.)."""
+    list_all_users        = "list_all_users"        # platform-wide — super_user only
+    list_org_members      = "list_org_members"      # org-scoped — org_admin+
+    view_role_assignments = "view_role_assignments" # any admin within scope
+
+
 # Master action→roles map. Roles inherit downward at the same scope; the
 # walk in `can()` handles cross-scope inheritance separately, so this map
 # only lists DIRECT eligibility — e.g. update_course lists course_admin
@@ -172,6 +181,10 @@ ACTION_ROLES: dict[str, frozenset[str]] = {
     # User management — privileged
     UserCapabilities.assign_role.value: frozenset({"super_user", "org_admin", "community_admin", "course_admin"}),
     UserCapabilities.revoke_role.value: frozenset({"super_user", "org_admin", "community_admin", "course_admin"}),
+    # Admin panel reads
+    AdminCapabilities.list_all_users.value:        frozenset({"super_user"}),
+    AdminCapabilities.list_org_members.value:      frozenset({"super_user", "org_admin"}),
+    AdminCapabilities.view_role_assignments.value: frozenset({"super_user", "org_admin", "community_admin", "course_admin"}),
 }
 
 
@@ -374,6 +387,37 @@ def log_decision(
         "yes" if granted else "no",
         "yes" if enforced else "shadow",
     )
+
+
+def require_can(
+    user: User,
+    action: str,
+    scope: Scope,
+    db: Session,
+    *,
+    target_user_id: Optional[int] = None,
+) -> None:
+    """Always-enforcing permission check. Unlike `gate_or_403`, this raises
+    `HTTPException(403)` on deny **regardless of `PERMISSIONS_ENFORCE_WRITES`**.
+
+    Used by Phase-5 admin routes — those need to be locked down from the
+    moment they ship, even while the rest of the app is still in shadow
+    mode. The flag exists to let us ramp ENFORCEMENT gradually on
+    pre-existing user-facing routes; admin endpoints are new and have no
+    legacy traffic to protect.
+    """
+    from fastapi import HTTPException
+
+    granted = can(user, action, scope, db, target_user_id=target_user_id)
+    log_decision(
+        user_id=user.id, action=action, scope=scope,
+        granted=granted, enforced=True,
+    )
+    if not granted:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You do not have permission to perform '{action}' here.",
+        )
 
 
 def gate_or_403(
