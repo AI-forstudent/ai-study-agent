@@ -219,19 +219,12 @@ function App() {
     startStandaloneSession(courseId);
   }
 
-  /** Card click on the public-courses catalog. Auto-stars the course (so it
-   *  appears in My Library's "My Courses" lane) and drills the user straight
-   *  into the course detail view. Owners and already-starred users skip the
-   *  star step. Failures fall back to switching to My Library so the user is
-   *  not stranded with no feedback. */
-  async function handleOpenPublicCourse(course: { id: number; is_starred: boolean }) {
-    try {
-      if (!course.is_starred) {
-        await api.starCourse(course.id, true);
-      }
-    } catch (err) {
-      console.error('[handleOpenPublicCourse] star failed', err);
-    }
+  /** Card click on the public-courses catalog. Drills the user into the course
+   *  detail view in **read-only mode** — no auto-star (the user's roadmap
+   *  explicitly says clicking should not commit them to anything; star stays
+   *  a separate explicit action). MyLibrary fetches the course on demand if
+   *  it isn't already in the user's `My Courses` list. */
+  function handleOpenPublicCourse(course: { id: number }) {
     setPendingLibraryCourseId(course.id);
     setView('main');
   }

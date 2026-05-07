@@ -147,17 +147,43 @@ export default function MyLibrary({
   useEffect(() => { void refreshCourses(); }, []);
 
   // ── Drill into a course requested by the parent (e.g. clicked from the
-  //    Public Courses page). We refresh first so the new starred-membership
-  //    is reflected in the local `courses` list and `activeCourse` resolves.
+  //    Public Courses page). We refresh "My Courses" first; if the requested
+  //    course isn't there (public-course click without a star), we fetch it
+  //    directly via getCourse and inject it into the local list so the
+  //    drilldown UI can resolve `activeCourse`. The course's `role` field
+  //    will be null for a non-member, which the detail view already uses to
+  //    hide owner-only actions like "Edit course".
   useEffect(() => {
     if (pendingCourseId == null) return;
     let cancelled = false;
     (async () => {
-      await refreshCourses();
+      let freshCourses: Course[] = [];
+      try {
+        const res = await api.listCourses();
+        freshCourses = res.data;
+      } catch (err) {
+        console.error('[MyLibrary] failed to load courses', err);
+      }
       if (cancelled) return;
-      setActiveCourseId(pendingCourseId);
-      setActiveFolderId(null);
-      setCourseTab('folders');
+
+      let resolvable = freshCourses.some(c => c.id === pendingCourseId);
+      if (!resolvable) {
+        try {
+          const res = await api.getCourse(pendingCourseId);
+          freshCourses = [...freshCourses, res.data];
+          resolvable = true;
+        } catch (err) {
+          console.error('[MyLibrary] could not load pending course', err);
+        }
+      }
+      if (cancelled) return;
+
+      setCourses(freshCourses);
+      if (resolvable) {
+        setActiveCourseId(pendingCourseId);
+        setActiveFolderId(null);
+        setCourseTab('folders');
+      }
       onPendingCourseConsumed?.();
     })();
     return () => { cancelled = true; };
