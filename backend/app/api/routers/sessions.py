@@ -41,11 +41,12 @@ router = APIRouter(tags=["sessions"])
 # ── Schemas ────────────────────────────────────────────────────────────────
 
 class SessionCard(BaseModel):
-    """Compact shape used by the My Library "Sessions & Files" lane."""
+    """Compact shape used by the My Library Sessions lane."""
     model_config = ConfigDict(from_attributes=True)
 
     id:                int
-    title:             Optional[str] = None       # AI-generated thread title
+    title:             Optional[str] = None       # Per-thread short label
+    session_title:     Optional[str] = None       # AI-generated collective title for the whole tree
     emoji:             Optional[str] = None
     document_id:       Optional[int] = None       # UserDocument.id, if anchored
     document_title:    Optional[str] = None       # Resolved on the server
@@ -82,6 +83,7 @@ def _build_card(thread: Thread, db: DBSession) -> SessionCard:
     return SessionCard(
         id=thread.id,
         title=thread.title,
+        session_title=thread.session_title,
         emoji=thread.emoji,
         document_id=thread.document_id,
         document_title=doc_title,
@@ -104,14 +106,23 @@ def list_my_sessions(
 ):
     """Return root threads the caller owns, newest first.
 
-    Forks of an existing thread are excluded — they show up nested inside
-    their parent session in the workspace tree, not as standalone cards.
+    Filtering rules (per the 2026-05-08 library restructure brief):
+      • parent_thread_id IS NULL — forks/sub-threads show inside their parent
+        session in the workspace tree, not as standalone cards.
+      • EXISTS at least one Message — a Session is a *learning event*, so a
+        thread that was created (e.g. by the auto-clone flow) but never had
+        a message exchange is NOT a session and shouldn't clutter the lane.
+        That's the user's hard rule: "if I just upload a doc and don't ask
+        anything, that's a doc, not a session."
     """
     rows = (
         db.query(Thread)
         .filter(
             Thread.user_id == current_user.id,
             Thread.parent_thread_id.is_(None),
+            db.query(Message.id)
+              .filter(Message.thread_id == Thread.id)
+              .exists(),
         )
         .order_by(Thread.created_at.desc())
         .offset(offset)
@@ -139,15 +150,22 @@ def search_my_sessions(
     many message hits it had.
     """
     pattern = f"%{q.lower()}%"
+    has_messages = (
+        db.query(Message.id)
+          .filter(Message.thread_id == Thread.id)
+          .exists()
+    )
 
-    # Threads where title or selected_text match.
+    # Threads where title / session_title / selected_text match.
     direct = (
         db.query(Thread)
         .filter(
             Thread.user_id == current_user.id,
             Thread.parent_thread_id.is_(None),
+            has_messages,
             or_(
                 Thread.title.ilike(pattern),
+                Thread.session_title.ilike(pattern),
                 Thread.selected_text.ilike(pattern),
             ),
         )

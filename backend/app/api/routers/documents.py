@@ -424,6 +424,35 @@ def star_document(
     return _build_doc_response(user_doc)
 
 
+@router.patch("/{document_id}/touch", status_code=204)
+def touch_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Bump `last_opened_at` to now() for the calling user's UserDocument.
+
+    Drives recency-of-use sorting in the My Library Files lane (per the
+    2026-05-08 library restructure brief). Cheap idempotent write — the
+    frontend fires this every time a doc is opened. Cross-user touches
+    return 404 (no existence leak).
+    """
+    rows = (
+        db.query(UserDocument)
+        .filter(
+            UserDocument.id == document_id,
+            UserDocument.user_id == current_user.id,
+        )
+        .update(
+            {"last_opened_at": datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+    )
+    if rows == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    db.commit()
+
+
 # ── Code Review (Unified Annotation Engine — Phase 1) ────────────────────────
 
 @router.post("/{document_id}/review")

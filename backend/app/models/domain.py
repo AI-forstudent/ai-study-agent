@@ -315,6 +315,11 @@ class UserDocument(Base):
     )
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
     shared_at        = Column(DateTime(timezone=True), nullable=True)
+    # Recency-of-use for the My Library Files lane sort. Bumped by the
+    # `PATCH /api/v1/documents/{id}/touch` endpoint on every open. NULL
+    # until the doc is first opened post-restructure; readers should
+    # treat NULL as `created_at` for sorting purposes.
+    last_opened_at   = Column(DateTime(timezone=True), nullable=True, index=True)
 
     owner         = relationship("User",         back_populates="user_documents")
     folder        = relationship("Folder",       back_populates="documents")
@@ -696,6 +701,11 @@ class CourseMembership(Base):
     user_id    = Column(Integer, ForeignKey("users.id"),    nullable=False, index=True)
     course_id  = Column(Integer, ForeignKey("courses.id"),  nullable=False, index=True)
     role       = Column(String,  nullable=False, server_default="starred")
+    # Lets the user hide a course from the default "My Courses" view
+    # without unstarring it. Drives the Visible / Hidden collapsibles
+    # in the new Courses tabbed page. Indexed on (user_id, is_hidden)
+    # for fast partition queries.
+    is_hidden  = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user   = relationship("User",   back_populates="course_memberships")
@@ -729,6 +739,14 @@ class Thread(Base):
     selected_text = Column(Text,    nullable=True)
     emoji         = Column(String,  nullable=True, default="💬")
     title         = Column(String,  nullable=True)
+    # AI-generated collective title for the whole conversation tree
+    # (per the locked decision in docs/plans/multi_tenancy.md and the
+    # 2026-05-08 library restructure brief — generated once after the
+    # first user+assistant exchange, never refreshed). Distinct from
+    # `title` which is the per-thread short label (used by the
+    # breadcrumb / Miller column tree). Only meaningful on root
+    # threads; sub-threads inherit from their root via session_id walk.
+    session_title = Column(Text,    nullable=True)
     persona_id    = Column(String,  ForeignKey("personas.id"), nullable=True)
     # Optional course context — when set, the prompt builder injects the
     # course's syllabus summary into the system prompt so the AI Teacher

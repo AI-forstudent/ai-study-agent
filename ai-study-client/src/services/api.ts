@@ -93,6 +93,11 @@ export const api = {
   starDocument: (docId: number, isStarred: boolean) =>
     apiClient.patch(`/api/v1/documents/${docId}/star`, { is_starred: isStarred }),
 
+  // Bumps `last_opened_at` to now() — drives recency-of-use sorting in the
+  // My Library Files lane. Cheap fire-and-forget; ignore failures.
+  touchDocument: (docId: number) =>
+    apiClient.patch(`/api/v1/documents/${docId}/touch`),
+
   // ── Personas ─────────────────────────────────────────────────────────────
   // All persona traffic flows through here so the auth interceptor attaches
   // the Bearer token automatically. Direct fetch() calls would be unauth'd
@@ -139,6 +144,11 @@ export const api = {
 
   forkThread: (threadId: number, messageId: number) =>
     apiClient.post(`/api/v1/threads/${threadId}/fork?message_id=${messageId}`),
+
+  // Copy a sub-thread (with descendants + messages) into a brand-new top-level
+  // session — original tree is left intact. Returns the new root thread.
+  promoteThreadToSession: (threadId: number) =>
+    apiClient.post(`/api/v1/threads/${threadId}/promote-to-session`),
 
   // ── Personal Hub ──────────────────────────────────────────────────────────
   getProfile: () =>
@@ -203,6 +213,12 @@ export const api = {
   // Toggle the caller's "starred" membership on a public course.
   starCourse: (id: number, isStarred: boolean) =>
     apiClient.post(`/api/v1/courses/${id}/star`, { is_starred: isStarred }),
+
+  // Toggle the caller's `is_hidden` flag on a course — drives the Visible /
+  // Hidden collapsibles on the new Courses tabbed page. Hiding does NOT
+  // unstar/unown — the course stays in the user's list, just collapsed.
+  setCourseHidden: (id: number, isHidden: boolean) =>
+    apiClient.patch(`/api/v1/courses/${id}/hide`, { is_hidden: isHidden }),
 
   // ── Course syllabus ───────────────────────────────────────────────────────
   // Returns { user_document_id, extracted, topics[], lecturers[] }.

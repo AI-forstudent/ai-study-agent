@@ -70,6 +70,7 @@ class CourseResponse(BaseModel):
     icon:             Optional[str] = None
     created_at:       datetime
     role:             Optional[str] = None  # caller's membership role, if any
+    is_hidden:        bool          = False  # caller's hide-toggle on this course
     folder_count:     int           = 0
     document_count:   int           = 0
 
@@ -91,7 +92,12 @@ class PublicCourseResponse(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _build_response(course: Course, role: Optional[str], db: Session) -> CourseResponse:
+def _build_response(
+    course: Course,
+    role: Optional[str],
+    db: Session,
+    is_hidden: bool = False,
+) -> CourseResponse:
     folder_count = (
         db.query(Folder).filter(Folder.course_id == course.id).count()
     )
@@ -111,6 +117,7 @@ def _build_response(course: Course, role: Optional[str], db: Session) -> CourseR
         icon=course.icon,
         created_at=course.created_at,
         role=role,
+        is_hidden=is_hidden,
         folder_count=folder_count,
         document_count=document_count,
     )
@@ -209,15 +216,26 @@ def list_my_courses(
         .all()
     )
 
-    seen: dict[int, tuple[Course, str]] = {}
+    # (course, role, is_hidden) keyed by course id. Owner inferred from
+    # Course.owner_id always wins over a membership row's role; the
+    # membership row still provides the is_hidden flag if the owner has
+    # hidden their own course (rare but possible — we don't write
+    # ownership rows by default, so for owner-without-membership the
+    # default is_hidden=false applies).
+    seen: dict[int, tuple[Course, str, bool]] = {}
     for c in owned:
-        seen[c.id] = (c, "owner")
+        seen[c.id] = (c, "owner", False)
     for m, c in member_rows:
-        # Owner-via-membership is bookkeeping; "owner" inferred above wins.
-        if c.id not in seen:
-            seen[c.id] = (c, m.role)
+        existing = seen.get(c.id)
+        if existing is None:
+            seen[c.id] = (c, m.role, m.is_hidden)
+        else:
+            # Keep "owner" role; carry membership's is_hidden over so an
+            # owner who explicitly added a hidden membership still has it
+            # respected.
+            seen[c.id] = (existing[0], existing[1], m.is_hidden)
 
-    out = [_build_response(c, role, db) for c, role in seen.values()]
+    out = [_build_response(c, role, db, hidden) for c, role, hidden in seen.values()]
     out.sort(key=lambda x: x.created_at, reverse=True)
     return out
 
@@ -262,8 +280,20 @@ def get_course(
         raise HTTPException(status_code=404, detail="Course not found")
 
     role: Optional[str] = None
+    is_hidden = False
     if course.owner_id == current_user.id:
         role = "owner"
+        # Owners may also hold a membership row carrying their hide flag.
+        owner_membership = (
+            db.query(CourseMembership)
+            .filter(
+                CourseMembership.user_id == current_user.id,
+                CourseMembership.course_id == course_id,
+            )
+            .first()
+        )
+        if owner_membership:
+            is_hidden = owner_membership.is_hidden
     else:
         membership = (
             db.query(CourseMembership)
@@ -275,10 +305,11 @@ def get_course(
         )
         if membership:
             role = membership.role
+            is_hidden = membership.is_hidden
         elif course.visibility != "public":
             raise HTTPException(status_code=404, detail="Course not found")
 
-    return _build_response(course, role, db)
+    return _build_response(course, role, db, is_hidden)
 
 
 @router.put("/{course_id}", response_model=CourseResponse)
@@ -329,6 +360,68 @@ def delete_course(
     )
     db.delete(course)
     db.commit()
+
+
+# ── Hide / Unhide (per-user toggle on My Courses) ─────────────────────────
+
+class HideRequest(BaseModel):
+    is_hidden: bool
+
+
+@router.patch("/{course_id}/hide", response_model=CourseResponse)
+def set_course_hidden(
+    course_id: int,
+    payload: HideRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Toggle the calling user's `is_hidden` flag on this course.
+
+    Drives the Visible / Hidden collapsibles on the new Courses tabbed
+    page (per the 2026-05-08 library restructure brief). Hiding a course
+    does NOT remove ownership / starred-membership — the course stays in
+    the user's list, just collapsed under the Hidden block.
+
+    For owners without an explicit `course_memberships` row, we create
+    one with role='owner' so the is_hidden flag has somewhere to live.
+    Cross-user / unreachable courses 404 (no existence leak).
+    """
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    is_owner = course.owner_id == current_user.id
+    membership = (
+        db.query(CourseMembership)
+        .filter(
+            CourseMembership.user_id == current_user.id,
+            CourseMembership.course_id == course_id,
+        )
+        .first()
+    )
+
+    # Reachability — same rules as GET /{id}
+    if not is_owner and membership is None and course.visibility != "public":
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if membership is None:
+        # Owners and public-course viewers without a membership row get one
+        # created on the spot so the hide flag has a home.
+        membership = CourseMembership(
+            user_id=current_user.id,
+            course_id=course_id,
+            role="owner" if is_owner else "starred",
+            is_hidden=payload.is_hidden,
+        )
+        db.add(membership)
+    else:
+        membership.is_hidden = payload.is_hidden
+
+    db.commit()
+    db.refresh(membership)
+
+    role: Optional[str] = "owner" if is_owner else membership.role
+    return _build_response(course, role, db, membership.is_hidden)
 
 
 # ── Star (membership upsert) ──────────────────────────────────────────────
