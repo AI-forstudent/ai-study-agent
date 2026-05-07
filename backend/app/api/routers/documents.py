@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import (
-    BaseDocument, Chunk, Folder, Message, PageSummary,
+    BaseDocument, Chunk, Course, Exam, Folder, Message, PageSummary,
     Persona, Thread, User, UserDocument,
 )
 from app.schemas.schemas import (
@@ -100,9 +100,36 @@ def get_user_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """List the caller's UserDocuments for the My Library Files lane.
+
+    Excludes UserDocuments that are course-attached source files — i.e. the
+    underlying file rows for an Exam (`Exam.user_document_id`) or a Course
+    syllabus (`Course.syllabus_user_document_id`). Those documents already
+    surface inside the course's Exams / Syllabus tabs; double-showing them
+    in My Library → Files is just noise (B-014).
+
+    The exam-upload pipeline currently writes its source file with
+    `BaseDocument.doc_type = 'GENERAL'`, so a filter on `doc_type` alone
+    isn't enough — we have to consult the `exams` and `courses` tables.
+    """
+    exam_doc_ids = (
+        db.query(Exam.user_document_id)
+        .filter(Exam.user_document_id.isnot(None))
+        .subquery()
+    )
+    syllabus_doc_ids = (
+        db.query(Course.syllabus_user_document_id)
+        .filter(Course.syllabus_user_document_id.isnot(None))
+        .subquery()
+    )
+
     user_docs = (
         db.query(UserDocument)
-        .filter(UserDocument.user_id == current_user.id)
+        .filter(
+            UserDocument.user_id == current_user.id,
+            ~UserDocument.id.in_(db.query(exam_doc_ids)),
+            ~UserDocument.id.in_(db.query(syllabus_doc_ids)),
+        )
         .order_by(UserDocument.created_at.desc())
         .all()
     )

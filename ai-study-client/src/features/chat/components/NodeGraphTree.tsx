@@ -69,7 +69,7 @@ export const NodeGraphTree: React.FC<TreeStrategyProps> = ({
               }`}
             >
               <MessageSquare size={12} />
-              לצ'אט
+              Open chat
             </button>
           </div>
         </div>

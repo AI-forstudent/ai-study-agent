@@ -94,7 +94,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       setFile(blobUrl);
     } catch (error) {
       console.error('Failed to load document via Blob:', error);
-      alert('לא הצלחנו לטעון את המסמך. ייתכן שהוא פגום או נמחק מהשרת.');
+      alert('Could not load the document — it may be corrupted or removed from the server.');
     }
   };
 
@@ -112,7 +112,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       }
       setDocToDelete(null);
     } catch {
-      alert('שגיאה במחיקת המסמך. אנא נסה שוב.');
+      alert('Failed to delete the document. Please try again.');
     } finally {
       setIsDeleting(false);
     }

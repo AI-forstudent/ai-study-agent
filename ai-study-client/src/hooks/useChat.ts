@@ -81,13 +81,13 @@ export function useChat(
           setActiveThread(fresh.data);
           setThreads(prev => prev.map(t => t.id === newThread.id ? fresh.data : t));
         } catch {
-          alert('הייתה שגיאה בשליחת הפרומפט למודל.');
+          alert('Failed to send the prompt to the model.');
         } finally {
           setIsSending(false);
         }
       }
     } catch {
-      alert('שגיאה ביצירת השיחה');
+      alert('Failed to create the conversation.');
     } finally {
       setIsCreatingThread(false);
     }
@@ -178,7 +178,7 @@ export function useChat(
         setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
       }
     } catch {
-      alert('לא הצלחתי לשלוח את ההודעה...');
+      alert('Failed to send the message.');
     } finally {
       setIsSending(false);
     }
