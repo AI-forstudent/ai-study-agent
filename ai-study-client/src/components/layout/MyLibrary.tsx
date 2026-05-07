@@ -520,6 +520,22 @@ export default function MyLibrary({
     );
   }
 
+  // ── Pending drilldown — render a thin loading state instead of flashing
+  //     the lanes for a frame before the course detail mounts (B-013). The
+  //     pendingCourseId effect resolves to either a drilled-in `activeCourse`
+  //     or (on fetch failure) clears `pendingCourseId`, at which point this
+  //     branch falls through to the regular root view.
+  if (pendingCourseId != null) {
+    return (
+      <PageContainer>
+        <div className="flex items-center justify-center py-24 gap-3 text-[#787774]">
+          <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+          <span className="text-sm">Opening course…</span>
+        </div>
+      </PageContainer>
+    );
+  }
+
   // ── Root view: lanes ─────────────────────────────────────────────────────
   return (
     <PageContainer>

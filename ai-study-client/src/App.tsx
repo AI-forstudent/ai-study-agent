@@ -223,8 +223,18 @@ function App() {
    *  detail view in **read-only mode** — no auto-star (the user's roadmap
    *  explicitly says clicking should not commit them to anything; star stays
    *  a separate explicit action). MyLibrary fetches the course on demand if
-   *  it isn't already in the user's `My Courses` list. */
+   *  it isn't already in the user's `My Courses` list.
+   *
+   *  Also exits any in-progress standalone chat session (B-012). Without
+   *  this, navigating Courses after a fresh "+ New Session" click would
+   *  bounce the user back into the chat workspace because
+   *  `isInWorkspace = !!documentId || standaloneMode`. */
   function handleOpenPublicCourse(course: { id: number }) {
+    docs.clearDocument();
+    chat.reset();
+    setStandaloneMode(false);
+    setActivePersonaId(null);
+    setActiveCourseId(null);
     setPendingLibraryCourseId(course.id);
     setView('main');
   }

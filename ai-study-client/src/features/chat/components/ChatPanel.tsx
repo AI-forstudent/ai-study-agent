@@ -566,7 +566,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         <>
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white">
 
-            {activeThread && (
+            {/* Context banner — only meaningful for threads anchored to a
+                text selection in a document. Standalone /chat threads carry
+                an empty `selected_text` and rendering the banner with empty
+                quotes is just noise (B-011). */}
+            {activeThread && activeThread.selected_text?.trim() && (
               <div className="bg-[#F7F7F5] border border-[#E8E8E6] p-3 rounded-lg text-xs text-[#787774] mb-4">
                 <span className="font-medium text-[#37352F] block mb-1">
                   {activeThread.emoji || '📌'} Context (selected text):
