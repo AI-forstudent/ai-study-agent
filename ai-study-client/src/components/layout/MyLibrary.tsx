@@ -149,13 +149,18 @@ export default function MyLibrary({
   useEffect(() => { void refreshSessions(); }, [userDocs.length]);
 
   // Files lane — sort by recency-of-use (last_opened_at, fallback created_at)
-  // descending so the doc the user just opened jumps to the front.
+  // descending so the doc the user just opened jumps to the front. Course-
+  // attached exam documents (EXAM_RAW / EXAM_PROCESSED) are filtered out
+  // because they belong inside the course's Exams tab — they shouldn't
+  // double-show in My Library/Files (B-014, user feedback 2026-05-08).
   const sortedFiles = useMemo(() => {
-    return [...userDocs].sort((a, b) => {
-      const ta = a.last_opened_at ?? a.created_at ?? '';
-      const tb = b.last_opened_at ?? b.created_at ?? '';
-      return tb.localeCompare(ta);
-    });
+    return [...userDocs]
+      .filter(d => d.doc_type !== 'EXAM_RAW' && d.doc_type !== 'EXAM_PROCESSED')
+      .sort((a, b) => {
+        const ta = a.last_opened_at ?? a.created_at ?? '';
+        const tb = b.last_opened_at ?? b.created_at ?? '';
+        return tb.localeCompare(ta);
+      });
   }, [userDocs]);
 
   // ── Cross-page folder drilldown ─────────────────────────────────────────
