@@ -7,7 +7,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
-import PublicCoursesPage    from './features/courses/components/PublicCoursesPage';
+import CoursesPage          from './features/courses/components/CoursesPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -69,9 +69,12 @@ function App() {
   /** True when a chat-only (no document) session is active. */
   const [standaloneMode, setStandaloneMode]               = useState(false);
   const [activeCourseId, setActiveCourseId]               = useState<number | null>(null);
-  /** When the user clicks into a public course we star it and stash the id
-   *  here; MyLibrary picks it up, refreshes its course list, and drills in. */
-  const [pendingLibraryCourseId, setPendingLibraryCourseId] = useState<number | null>(null);
+  /** Cross-page folder open. Set by the Courses page when the user clicks a
+   *  folder card inside a course's Folders tab; MyLibrary picks it up and
+   *  drills into the folder. (Course detail lives in the Courses page now,
+   *  so the matching `pendingLibraryCourseId` from B-009 is gone — courses
+   *  no longer round-trip through My Library.) */
+  const [pendingLibraryFolderId, setPendingLibraryFolderId] = useState<number | null>(null);
   const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
 
   const docs    = useDocuments(isAuthenticated, handleLogout);
@@ -219,23 +222,17 @@ function App() {
     startStandaloneSession(courseId);
   }
 
-  /** Card click on the public-courses catalog. Drills the user into the course
-   *  detail view in **read-only mode** — no auto-star (the user's roadmap
-   *  explicitly says clicking should not commit them to anything; star stays
-   *  a separate explicit action). MyLibrary fetches the course on demand if
-   *  it isn't already in the user's `My Courses` list.
-   *
-   *  Also exits any in-progress standalone chat session (B-012). Without
-   *  this, navigating Courses after a fresh "+ New Session" click would
-   *  bounce the user back into the chat workspace because
-   *  `isInWorkspace = !!documentId || standaloneMode`. */
-  function handleOpenPublicCourse(course: { id: number }) {
+  /** Folder click inside a course's Folders tab on the Courses page. Drills
+   *  the user across to My Library and opens that folder. Same cross-page
+   *  pattern as the (now retired) pendingLibraryCourseId flow, just for
+   *  folders. */
+  function handleOpenFolderInLibrary(folderId: number) {
     docs.clearDocument();
     chat.reset();
     setStandaloneMode(false);
     setActivePersonaId(null);
     setActiveCourseId(null);
-    setPendingLibraryCourseId(course.id);
+    setPendingLibraryFolderId(folderId);
     setView('main');
   }
 
@@ -395,7 +392,13 @@ function App() {
   if (view === 'gallery') {
     return (
       <AppLayout sidebar={sidebar}>
-        <PublicCoursesPage onOpenCourse={handleOpenPublicCourse} />
+        <CoursesPage
+          folders={folders.folders}
+          userDocs={docs.userDocs}
+          personas={personas}
+          onStartCourseChat={handleStartCourseChat}
+          onOpenFolderInLibrary={handleOpenFolderInLibrary}
+        />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}
@@ -435,7 +438,6 @@ function App() {
             onSelectDocument={handleOpenPreFlight}
             onSelectSession={handleOpenSession}
             onStartNewSession={handleStartNewSession}
-            onStartCourseChat={handleStartCourseChat}
             onDeleteRequest={docs.setDocToDelete}
             onStarDocument={docs.handleStarDocument}
             onMoveDocument={docs.handleMoveDocument}
@@ -444,8 +446,8 @@ function App() {
             onUpdateFolder={folders.updateFolder}
             onDeleteFolder={folders.deleteFolder}
             personas={personas}
-            pendingCourseId={pendingLibraryCourseId}
-            onPendingCourseConsumed={() => setPendingLibraryCourseId(null)}
+            pendingFolderId={pendingLibraryFolderId}
+            onPendingFolderConsumed={() => setPendingLibraryFolderId(null)}
           />
           <ResumeToastContainer
             personaName={toastPersonaName}

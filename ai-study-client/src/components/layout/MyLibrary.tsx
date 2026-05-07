@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload, Library, Loader2, AlertCircle, CheckCircle2,
-  Plus, FolderPlus, GraduationCap, MessageSquare, ArrowLeft,
+  Plus, FolderPlus, MessageSquare, ArrowLeft,
   Trash2, Star, FolderOpen, FileText,
 } from 'lucide-react';
 import PageContainer from './PageContainer';
@@ -12,16 +12,14 @@ import FolderModal from '../../features/documents/components/FolderModal';
 import MoveToFolderModal from '../../features/documents/components/MoveToFolderModal';
 import SessionCard from '../../features/sessions/components/SessionCard';
 import FileCardCompact from '../../features/sessions/components/FileCardCompact';
-import CourseModal from '../../features/courses/components/CourseModal';
-import CourseSyllabusTab from '../../features/courses/components/CourseSyllabusTab';
-import CourseExamsTab from '../../features/courses/components/CourseExamsTab';
 import type { Folder } from '../../features/documents/hooks/useFolders';
 import type { Persona } from '../../types/persona';
-import type { Course } from '../../types/course';
 import { ACCEPTED_FILE_TYPES, FileIcon } from '../../utils/fileIcons';
 import { api } from '../../services/api';
 
-type CreateMenu = 'session' | 'folder' | 'course';
+// Courses are no longer a My-Library concept — they live on the Courses page
+// (sidebar entry → CoursesPage). My Library is Sessions / Files / Folders.
+type CreateMenu = 'session' | 'folder';
 
 interface Doc {
   id: number;
@@ -67,9 +65,6 @@ interface MyLibraryProps {
   onSelectDocument: (doc: { id: number }) => void;
   onSelectSession: (sessionId: number) => void;
   onStartNewSession: () => void;
-  /** Start a new chat session scoped to a specific course (its syllabus
-   *  becomes part of the AI Teacher's system prompt). */
-  onStartCourseChat: (courseId: number) => void;
   onDeleteRequest: (doc: { id: number; title: string }) => void;
   onStarDocument: (id: number, isStarred: boolean) => void;
   onMoveDocument: (docId: number, folderId: number | null) => void;
@@ -80,15 +75,12 @@ interface MyLibraryProps {
   personas: Persona[];
   /** Navigate to the dedicated Sessions search page. */
   onOpenSessionsSearch?: () => void;
-  /** When set (e.g. after the user clicks a public course card), MyLibrary
-   *  refreshes its course list and drills into this course. The parent should
-   *  clear it via `onPendingCourseConsumed` so the same course id can be opened
-   *  again later. */
-  pendingCourseId?: number | null;
-  onPendingCourseConsumed?: () => void;
+  /** Cross-page folder drilldown — set by the Courses page when the user
+   *  clicks a folder card inside a course's Folders tab. MyLibrary opens
+   *  that folder; the parent should clear via `onPendingFolderConsumed`. */
+  pendingFolderId?: number | null;
+  onPendingFolderConsumed?: () => void;
 }
-
-type CourseTab = 'folders' | 'syllabus' | 'exams';
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -102,7 +94,6 @@ export default function MyLibrary({
   onSelectDocument,
   onSelectSession,
   onStartNewSession,
-  onStartCourseChat,
   onDeleteRequest,
   onStarDocument,
   onMoveDocument,
@@ -112,8 +103,8 @@ export default function MyLibrary({
   onDeleteFolder,
   personas,
   onOpenSessionsSearch,
-  pendingCourseId,
-  onPendingCourseConsumed,
+  pendingFolderId,
+  onPendingFolderConsumed,
 }: MyLibraryProps) {
   // ── State ────────────────────────────────────────────────────────────────
   const fileInputRef                          = useRef<HTMLInputElement>(null);
@@ -122,16 +113,11 @@ export default function MyLibrary({
   const [createMenuOpen, setCreateMenuOpen]   = useState(false);
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [editingFolder, setEditingFolder]     = useState<Folder | null>(null);
-  const [courseModalOpen, setCourseModalOpen] = useState(false);
-  const [editingCourse, setEditingCourse]     = useState<Course | null>(null);
 
   // Drilldown — when set we're viewing the contents of a Folder or a Course.
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
-  const [activeCourseId, setActiveCourseId] = useState<number | null>(null);
-  const [courseTab, setCourseTab]           = useState<CourseTab>('folders');
 
   const [sessions, setSessions]     = useState<SessionRow[]>([]);
-  const [courses, setCourses]       = useState<Course[]>([]);
   const [moveDoc, setMoveDoc]       = useState<Doc | null>(null);
 
   // ── Click-outside for the +New menu ─────────────────────────────────────
@@ -157,19 +143,10 @@ export default function MyLibrary({
       console.error('[MyLibrary] failed to load sessions', err);
     }
   };
-  const refreshCourses = async () => {
-    try {
-      const res = await api.listCourses();
-      setCourses(res.data);
-    } catch (err) {
-      console.error('[MyLibrary] failed to load courses', err);
-    }
-  };
 
   // userDocs.length triggers a refresh on upload/delete; threads created
   // from `useChat` are picked up by the next mount or page navigation.
   useEffect(() => { void refreshSessions(); }, [userDocs.length]);
-  useEffect(() => { void refreshCourses(); }, []);
 
   // Files lane — sort by recency-of-use (last_opened_at, fallback created_at)
   // descending so the doc the user just opened jumps to the front.
@@ -181,55 +158,20 @@ export default function MyLibrary({
     });
   }, [userDocs]);
 
-  // ── Drill into a course requested by the parent (e.g. clicked from the
-  //    Public Courses page). We refresh "My Courses" first; if the requested
-  //    course isn't there (public-course click without a star), we fetch it
-  //    directly via getCourse and inject it into the local list so the
-  //    drilldown UI can resolve `activeCourse`. The course's `role` field
-  //    will be null for a non-member, which the detail view already uses to
-  //    hide owner-only actions like "Edit course".
+  // ── Cross-page folder drilldown ─────────────────────────────────────────
+  // When the user clicks a folder card inside a course's Folders tab on the
+  // Courses page, the parent navigates to view='main' and sets
+  // `pendingFolderId`. Pick it up and drill in. Course drilldown moved out
+  // entirely — see CoursesPage for that.
   useEffect(() => {
-    if (pendingCourseId == null) return;
-    let cancelled = false;
-    (async () => {
-      let freshCourses: Course[] = [];
-      try {
-        const res = await api.listCourses();
-        freshCourses = res.data;
-      } catch (err) {
-        console.error('[MyLibrary] failed to load courses', err);
-      }
-      if (cancelled) return;
-
-      let resolvable = freshCourses.some(c => c.id === pendingCourseId);
-      if (!resolvable) {
-        try {
-          const res = await api.getCourse(pendingCourseId);
-          freshCourses = [...freshCourses, res.data];
-          resolvable = true;
-        } catch (err) {
-          console.error('[MyLibrary] could not load pending course', err);
-        }
-      }
-      if (cancelled) return;
-
-      setCourses(freshCourses);
-      if (resolvable) {
-        setActiveCourseId(pendingCourseId);
-        setActiveFolderId(null);
-        setCourseTab('folders');
-      }
-      onPendingCourseConsumed?.();
-    })();
-    return () => { cancelled = true; };
-  }, [pendingCourseId]);
+    if (pendingFolderId == null) return;
+    setActiveFolderId(pendingFolderId);
+    onPendingFolderConsumed?.();
+  }, [pendingFolderId]);
 
   // ── Drilldown helpers ────────────────────────────────────────────────────
   const activeFolder = activeFolderId != null
     ? folders.find(f => f.id === activeFolderId) ?? null
-    : null;
-  const activeCourse = activeCourseId != null
-    ? courses.find(c => c.id === activeCourseId) ?? null
     : null;
 
   const visibleDocs = useMemo(() => {
@@ -239,11 +181,6 @@ export default function MyLibrary({
     return [];
   }, [userDocs, activeFolderId]);
 
-  const courseFolders = useMemo(() => {
-    if (activeCourseId == null) return [];
-    return folders.filter(f => f.course_id === activeCourseId);
-  }, [folders, activeCourseId]);
-
   const topLevelFolders = useMemo(
     () => folders.filter(f => f.course_id == null),
     [folders],
@@ -252,22 +189,15 @@ export default function MyLibrary({
   // ── Actions ──────────────────────────────────────────────────────────────
   function openFolder(id: number) {
     setActiveFolderId(id);
-    setActiveCourseId(null);
   }
-  // `openCourse` is gone — the My Courses lane that called it was removed in
-  // the three-lane rebuild (commit 2/5). Course drilldown now happens only
-  // via the `pendingCourseId` effect (set from the Public Courses click flow);
-  // the Courses page in commit 3 owns this end-to-end.
   function backToRoot() {
     setActiveFolderId(null);
-    setActiveCourseId(null);
   }
 
   function openCreate(kind: CreateMenu) {
     setCreateMenuOpen(false);
     if (kind === 'session')    onStartNewSession();
     else if (kind === 'folder') { setEditingFolder(null); setFolderModalOpen(true); }
-    else if (kind === 'course') { setEditingCourse(null); setCourseModalOpen(true); }
   }
 
   async function handleDeleteSession(sessionId: number) {
@@ -346,16 +276,9 @@ export default function MyLibrary({
                 <p className="text-[10px] text-[#787774]">Group documents and sessions</p>
               </div>
             </button>
-            <button
-              onClick={() => openCreate('course')}
-              className="w-full flex items-start gap-2 px-3 py-2.5 hover:bg-[#F7F7F5] text-start border-t border-[#E8E8E6]"
-            >
-              <GraduationCap className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-[#37352F]">New Course</p>
-                <p className="text-[10px] text-[#787774]">Top-level container for folders</p>
-              </div>
-            </button>
+            {/* "New Course" lives on the dedicated Courses page now (sidebar
+                → Courses → My Courses tab). The +New menu in My Library
+                stays focused on session + folder. */}
           </div>
         )}
       </div>
@@ -440,142 +363,16 @@ export default function MyLibrary({
     );
   }
 
-  if (activeCourse) {
-    const courseAccent = activeCourse.color ?? '#6366F1';
-    const isOwner = activeCourse.role === 'owner';
-
-    return (
-      <PageContainer>
-        {/* Breadcrumb + actions */}
-        <div className="flex items-center justify-between gap-2 mb-4">
-          <div className="flex items-center gap-2">
-            <button onClick={backToRoot} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F]">
-              <ArrowLeft className="w-4 h-4" /> My Library
-            </button>
-            <span className="text-[#C4C4C4]">/</span>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: courseAccent }} />
-              <span className="text-sm font-semibold text-[#37352F]">{activeCourse.title}</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onStartCourseChat(activeCourse.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
-              title="Open a chat that knows this course's syllabus"
-            >
-              <MessageSquare className="w-4 h-4" />
-              Chat about this course
-            </button>
-            {isOwner && (
-              <button
-                onClick={() => { setEditingCourse(activeCourse); setCourseModalOpen(true); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[#787774] border border-[#E8E8E6] rounded-lg hover:bg-[#F7F7F5]"
-              >
-                Edit course
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex border-b border-[#E8E8E6] mb-5">
-          <button
-            onClick={() => setCourseTab('folders')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
-              courseTab === 'folders'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-[#787774] hover:text-[#37352F]'
-            }`}
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            Folders
-            <span className="text-[10px] text-[#C4C4C4]">({courseFolders.length})</span>
-          </button>
-          <button
-            onClick={() => setCourseTab('syllabus')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
-              courseTab === 'syllabus'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-[#787774] hover:text-[#37352F]'
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Syllabus
-          </button>
-          <button
-            onClick={() => setCourseTab('exams')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
-              courseTab === 'exams'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-[#787774] hover:text-[#37352F]'
-            }`}
-          >
-            <GraduationCap className="w-3.5 h-3.5" />
-            Exams
-          </button>
-        </div>
-
-        {/* Tab body */}
-        {courseTab === 'folders' && (
-          courseFolders.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
-              <FolderOpen className="w-8 h-8 opacity-30" />
-              <p className="text-sm">This course has no folders yet.</p>
-              <p className="text-xs text-[#C4C4C4]">
-                Create a folder from the library and assign it to this course (folder→course move comes next).
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {courseFolders.map(folder => (
-                <FolderCard
-                  key={folder.id}
-                  folder={folder}
-                  docCount={userDocs.filter(d => d.folder_id === folder.id).length}
-                  personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
-                  onOpen={openFolder}
-                  onEdit={f => { setEditingFolder(f); setFolderModalOpen(true); }}
-                  onDelete={f => onDeleteFolder(f.id)}
-                />
-              ))}
-            </div>
-          )
-        )}
-
-        {courseTab === 'syllabus' && (
-          <CourseSyllabusTab courseId={activeCourse.id} isOwner={isOwner} />
-        )}
-
-        {courseTab === 'exams' && (
-          <CourseExamsTab courseId={activeCourse.id} isOwner={isOwner} />
-        )}
-      </PageContainer>
-    );
-  }
-
-  // ── Pending drilldown — render a thin loading state instead of flashing
-  //     the lanes for a frame before the course detail mounts (B-013). The
-  //     pendingCourseId effect resolves to either a drilled-in `activeCourse`
-  //     or (on fetch failure) clears `pendingCourseId`, at which point this
-  //     branch falls through to the regular root view.
-  if (pendingCourseId != null) {
-    return (
-      <PageContainer>
-        <div className="flex items-center justify-center py-24 gap-3 text-[#787774]">
-          <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-          <span className="text-sm">Opening course…</span>
-        </div>
-      </PageContainer>
-    );
-  }
+  // Course drilldown moved to the dedicated Courses page (CoursesPage). My
+  // Library now only owns Sessions / Files / Folders + the folder-drilldown
+  // branch above. The cross-page folder drilldown lands via `pendingFolderId`.
 
   // ── Root view: lanes ─────────────────────────────────────────────────────
   return (
     <PageContainer>
       <PageHeader
         title="My Library"
-        subtitle="Sessions, files, folders, and courses — everything in one place."
+        subtitle="Your sessions, files, and folders. Courses live on their own page."
         icon={<Library className="w-5 h-5 text-indigo-600" />}
         actions={headerActions}
       />
@@ -705,14 +502,8 @@ export default function MyLibrary({
         ))}
       </LibraryLane>
 
-      {/*
-        The My Courses lane has moved to its own dedicated Courses page (see
-        the sidebar Courses entry). MyLibrary stays focused on Sessions /
-        Files / Folders per the 2026-05-08 library restructure brief.
-        Course drilldown logic above is retained for the existing
-        `pendingCourseId` flow from the public-courses entry — it will
-        migrate fully into the Courses page in commit 3.
-      */}
+      {/* Courses are not a My Library lane — they live on the dedicated
+          Courses page now (sidebar → Courses, two-tab My / Public layout). */}
 
       {/* Folder modal */}
       <FolderModal
@@ -729,14 +520,7 @@ export default function MyLibrary({
         }}
       />
 
-      {/* Course modal */}
-      <CourseModal
-        isOpen={courseModalOpen}
-        editing={editingCourse}
-        onClose={() => { setCourseModalOpen(false); setEditingCourse(null); }}
-        onSaved={async () => { await refreshCourses(); }}
-        onDeleted={async () => { await refreshCourses(); }}
-      />
+      {/* Course create / edit modal moved to the Courses page. */}
     </PageContainer>
   );
 }

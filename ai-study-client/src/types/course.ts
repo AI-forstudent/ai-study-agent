@@ -22,6 +22,9 @@ export interface Course {
   icon:             string | null;
   created_at:       string;
   role:             CourseRole;
+  /** Per-user hide flag. Drives the Visible / Hidden collapsibles on the
+   *  Courses page's My Courses tab. Hiding does NOT unstar/unown. */
+  is_hidden:        boolean;
   folder_count:     number;
   document_count:   number;
 }

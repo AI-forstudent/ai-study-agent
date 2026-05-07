@@ -7,12 +7,14 @@ import { api } from '../../../services/api';
 
 interface PublicCoursesPageProps {
   /** Called when the user clicks a course card to open it. The handler is
-   *  expected to ensure the course is reachable from My Library (e.g. by
-   *  starring it first) and then navigate the user there. */
+   *  expected to navigate the user into the course detail view. */
   onOpenCourse?: (course: PublicCourse) => void;
+  /** When true, render without the outer PageContainer/PageHeader chrome
+   *  so this can be nested inside the new CoursesPage tabbed view. */
+  embedded?: boolean;
 }
 
-export default function PublicCoursesPage({ onOpenCourse }: PublicCoursesPageProps = {}) {
+export default function PublicCoursesPage({ onOpenCourse, embedded }: PublicCoursesPageProps = {}) {
   const [courses, setCourses]   = useState<PublicCourse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch]     = useState('');
@@ -56,13 +58,15 @@ export default function PublicCoursesPage({ onOpenCourse }: PublicCoursesPagePro
     }
   }
 
-  return (
-    <PageContainer>
-      <PageHeader
-        title="Courses"
-        subtitle="Browse public courses shared by other students. Star one to add it to your library."
-        icon={<Globe className="w-5 h-5 text-indigo-600" />}
-      />
+  const body = (
+    <>
+      {!embedded && (
+        <PageHeader
+          title="Courses"
+          subtitle="Browse public courses shared by other students. Star one to add it to your library."
+          icon={<Globe className="w-5 h-5 text-indigo-600" />}
+        />
+      )}
 
       {/* Search */}
       <div className="relative max-w-md mb-6">
@@ -151,6 +155,8 @@ export default function PublicCoursesPage({ onOpenCourse }: PublicCoursesPagePro
           })}
         </div>
       )}
-    </PageContainer>
+    </>
   );
+
+  return embedded ? body : <PageContainer>{body}</PageContainer>;
 }
