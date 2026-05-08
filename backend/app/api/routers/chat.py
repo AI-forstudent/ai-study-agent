@@ -12,13 +12,14 @@ Mounted at /api/v1/chat in app/main.py.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import Message, Thread, User
+from app.services.document_service import generate_session_title_background
 from app.services.prompt_builder import resolve_system_prompt
 from app.services.model_router import resolve_alias
 from app.services.llm_providers import call_llm
@@ -58,6 +59,7 @@ class ChatResponse(BaseModel):
 @router.post("/", response_model=ChatResponse)
 def chat(
     payload: ChatRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -161,6 +163,16 @@ def chat(
     db.add(ai_msg)
     db.commit()
     db.refresh(ai_msg)
+
+    # ── 7b. Session-title generation on the very first exchange ────────────
+    # Fires once after the first user+assistant pair lands. The function
+    # itself short-circuits if `Thread.session_title` is already set, so
+    # we don't have to track "is this the first message" here precisely.
+    if not thread.session_title and thread.parent_thread_id is None:
+        background.add_task(
+            generate_session_title_background,
+            thread.id, payload.message, reply_text, db,
+        )
 
     # ── 8. Return ───────────────────────────────────────────────────────────
     return ChatResponse(

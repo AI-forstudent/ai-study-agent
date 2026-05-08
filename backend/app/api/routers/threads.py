@@ -27,6 +27,7 @@ from app.core.database import get_db
 from app.models.domain import Chunk, Message, Thread, User, UserDocument
 from app.schemas.schemas import MessageCreate, MessageResponse, ThreadCreate, ThreadResponse
 from app.services.document_service import (
+    generate_session_title_background,
     generate_thread_metadata_background,
     get_chat_response_for_thread,
     get_full_thread_history,
@@ -188,6 +189,16 @@ def add_message_to_thread(
     db.add(ai_msg)
     db.commit()
     db.refresh(ai_msg)
+
+    # Session-title generation on the very first exchange. The function
+    # short-circuits on sub-threads or already-titled root threads, so it's
+    # safe to fire on every first-message and let the background task decide.
+    if len(history_so_far) == 1 and thread.parent_thread_id is None:
+        background_tasks.add_task(
+            generate_session_title_background,
+            thread_id, message.content, ai_response, db,
+        )
+
     return ai_msg
 
 
