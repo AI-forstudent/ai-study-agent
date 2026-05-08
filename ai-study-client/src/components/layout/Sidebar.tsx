@@ -1,15 +1,20 @@
 import React from 'react';
 import {
   Sparkles, Library, FlaskConical, Globe, LogOut, Settings,
-  GraduationCap, Plus, Users,
+  GraduationCap, Plus, Users, Shield,
 } from 'lucide-react';
 
+type SidebarView = 'main' | 'lab' | 'gallery' | 'settings' | 'hub' | 'admin';
+
 interface SidebarProps {
-  activeView: 'main' | 'lab' | 'gallery' | 'settings' | 'hub';
-  onNavigate: (view: 'main' | 'lab' | 'gallery' | 'settings' | 'hub') => void;
+  activeView: SidebarView;
+  onNavigate: (view: SidebarView) => void;
   onLogout: () => void;
   /** Called when the user clicks the prominent "+ New Session" button. */
   onNewSession?: () => void;
+  /** When true, render the Admin nav entry. The frontend guards this on
+   *  `me.has_admin_role` so non-admins never see the link. */
+  showAdmin?: boolean;
 }
 
 // ── Reusable sub-components ─────────────────────────────────────────────────
@@ -57,7 +62,7 @@ function NavItem({ icon: Icon, label, active, disabled, badge, onClick }: NavIte
 
 // ── Main sidebar ────────────────────────────────────────────────────────────
 
-export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession }: SidebarProps) {
+export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession, showAdmin }: SidebarProps) {
   return (
     <aside className="w-60 h-screen flex flex-col bg-[#F7F7F5] border-e border-[#E8E8E6] shrink-0 overflow-hidden">
 
@@ -120,6 +125,14 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
           active={activeView === 'hub'}
           onClick={() => onNavigate('hub')}
         />
+        {showAdmin && (
+          <NavItem
+            icon={Shield}
+            label="Admin"
+            active={activeView === 'admin'}
+            onClick={() => onNavigate('admin')}
+          />
+        )}
       </div>
 
       {/* ── Spacer ─────────────────────────────────────────────────────── */}

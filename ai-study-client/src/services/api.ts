@@ -30,6 +30,11 @@ export const api = {
   googleLogin: (idToken: string) =>
     apiClient.post('/api/v1/auth/google', { id_token: idToken }),
 
+  // Returns the caller's identity + role assignments. Frontend uses
+  // `is_super_user` / `has_admin_role` to decide whether to show the
+  // Admin sidebar entry.
+  getMe: () => apiClient.get('/api/v1/auth/me'),
+
   // ── System ───────────────────────────────────────────────────────────────
   checkHealth: () => apiClient.get('/health'),
 
@@ -296,6 +301,42 @@ export const api = {
   // Patch a catalog entry's name or credits (used by Edit Course modal).
   updateCatalogEntry: (courseId: number, payload: { name?: string; credits?: number | null }) =>
     apiClient.put(`/api/v1/profile/catalog/${courseId}`, payload),
+
+  // ── Admin (Phase 5) ──────────────────────────────────────────────────────
+  // All gated server-side by require_can() — non-admins get 403. The frontend
+  // hides the sidebar entry from non-admins so these endpoints aren't even
+  // called in the normal case.
+  adminListUsers: (emailContains?: string) =>
+    apiClient.get('/api/v1/admin/users', { params: emailContains ? { email_contains: emailContains } : {} }),
+
+  adminListOrganizations: () =>
+    apiClient.get('/api/v1/admin/organizations'),
+
+  adminCreateOrganization: (payload: { name: string; slug: string }) =>
+    apiClient.post('/api/v1/admin/organizations', payload),
+
+  adminListCommunities: (organizationId: number) =>
+    apiClient.get('/api/v1/admin/communities', { params: { organization_id: organizationId } }),
+
+  adminCreateCommunity: (payload: { organization_id: number; name: string; slug: string }) =>
+    apiClient.post('/api/v1/admin/communities', payload),
+
+  adminListRoleAssignments: (filter: {
+    user_id?: number;
+    scope_type?: 'platform' | 'organization' | 'community' | 'course';
+    scope_id?: number;
+  }) =>
+    apiClient.get('/api/v1/admin/role-assignments', { params: filter }),
+
+  adminCreateRoleAssignment: (payload: {
+    user_id:    number;
+    role:       'super_user' | 'org_admin' | 'community_admin' | 'course_admin' | 'member';
+    scope_type: 'platform' | 'organization' | 'community' | 'course';
+    scope_id:   number | null;
+  }) => apiClient.post('/api/v1/admin/role-assignments', payload),
+
+  adminDeleteRoleAssignment: (assignmentId: number) =>
+    apiClient.delete(`/api/v1/admin/role-assignments/${assignmentId}`),
 };
 
 export default API_BASE;

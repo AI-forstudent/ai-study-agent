@@ -8,6 +8,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
 import CoursesPage          from './features/courses/components/CoursesPage';
+import AdminPage            from './features/admin/components/AdminPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -23,6 +24,7 @@ import { ResumeToastContainer } from './features/sessions/components/ResumeToast
 import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
 
 import { useAuth }      from './hooks/useAuth';
+import { useMe }        from './hooks/useMe';
 import { useDocuments } from './hooks/useDocuments';
 import { useChat }      from './hooks/useChat';
 import { useFolders }   from './features/documents/hooks/useFolders';
@@ -80,6 +82,7 @@ function App() {
   const docs    = useDocuments(isAuthenticated, handleLogout);
   const folders = useFolders(isAuthenticated);
   const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId, activeCourseId);
+  const { me, refresh: refreshMe } = useMe(isAuthenticated);
 
   // ── Derived state ───────────────────────────────────────────────────────────
   const activePersonaName: string | null = activePersonaId
@@ -333,13 +336,31 @@ function App() {
     <Sidebar
       activeView={view}
       onNavigate={(v) => {
-        if (v === 'main' || v === 'settings' || v === 'hub') { docs.clearDocument(); setStandaloneMode(false); }
+        if (v === 'main' || v === 'settings' || v === 'hub' || v === 'admin') {
+          docs.clearDocument();
+          setStandaloneMode(false);
+        }
         setView(v);
       }}
       onLogout={handleLogout}
       onNewSession={handleStartNewSession}
+      showAdmin={!!me?.has_admin_role}
     />
   );
+
+  if (view === 'admin') {
+    if (!me?.has_admin_role) {
+      // Defensive — sidebar hides the link but a stale URL or refresh
+      // could still land here. Bounce back to My Library.
+      setView('main');
+      return null;
+    }
+    return (
+      <AppLayout sidebar={sidebar}>
+        <AdminPage me={me} onRolesChanged={refreshMe} />
+      </AppLayout>
+    );
+  }
 
   if (view === 'settings') {
     return (
