@@ -83,10 +83,12 @@ export const api = {
   // ── Folders ──────────────────────────────────────────────────────────────
   getFolders: () => apiClient.get('/api/v1/folders/'),
 
-  createFolder: (payload: { name: string; color?: string | null; persona_id?: string | null }) =>
+  // `course_id` (T-013 / F-031) attaches the new folder to a course; null
+  // / undefined leaves it top-level. Backend already accepts this field.
+  createFolder: (payload: { name: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null }) =>
     apiClient.post('/api/v1/folders/', payload),
 
-  updateFolder: (id: number, payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null }) =>
+  updateFolder: (id: number, payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null }) =>
     apiClient.put(`/api/v1/folders/${id}`, payload),
 
   deleteFolder: (id: number) =>
@@ -278,6 +280,32 @@ export const api = {
     apiClient.post(`/api/v1/exams/${examId}/retry`),
 
   deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
+
+  // ── Lectures (F-031) ──────────────────────────────────────────────────────
+  listCourseLectures: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/lectures`),
+
+  createCourseLecture: (courseId: number, payload: {
+    title:                       string;
+    lecture_date?:               string | null;     // ISO yyyy-mm-dd
+    manual_summary?:             string | null;
+    recording_user_document_id?: number | null;
+    notes_user_document_id?:     number | null;
+  }) => apiClient.post(`/api/v1/courses/${courseId}/lectures`, payload),
+
+  getLecture: (id: number) => apiClient.get(`/api/v1/lectures/${id}`),
+
+  // Partial update — only send the fields you actually want to change.
+  // Pass `null` for an attachment FK to detach without setting a new one.
+  updateLecture: (id: number, payload: {
+    title?:                       string;
+    lecture_date?:                string | null;
+    manual_summary?:              string | null;
+    recording_user_document_id?:  number | null;
+    notes_user_document_id?:      number | null;
+  }) => apiClient.put(`/api/v1/lectures/${id}`, payload),
+
+  deleteLecture: (id: number) => apiClient.delete(`/api/v1/lectures/${id}`),
 
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────
   listSessions: (limit = 50, offset = 0) =>

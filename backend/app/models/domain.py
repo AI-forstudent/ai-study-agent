@@ -18,7 +18,7 @@ Migration strategy (run once after checkout)
 """
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Column, DateTime, Enum, Float,
+    BigInteger, Boolean, CheckConstraint, Column, Date, DateTime, Enum, Float,
     ForeignKey, Index, Integer, String, Table, Text, UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -483,6 +483,9 @@ class Course(Base):
     exams          = relationship("Exam",
                                   back_populates="course",
                                   cascade="all, delete-orphan")
+    lectures       = relationship("Lecture",
+                                  back_populates="course",
+                                  cascade="all, delete-orphan")
     question_types = relationship("CourseQuestionType",
                                   back_populates="course",
                                   cascade="all, delete-orphan")
@@ -563,6 +566,63 @@ exam_lecturers = Table(
     Column("lecturer_id", Integer,
            ForeignKey("course_lecturers.id", ondelete="CASCADE"), primary_key=True),
 )
+
+
+class Lecture(Base):
+    """
+    A learning unit inside a Course (F-031 Phase 1).
+
+    Holds a manual summary the user types in plus up to one recording and
+    one notes file linked from the user's library (UserDocuments). Phase 2
+    will fuse the recording transcript + notes + manual_summary into an
+    AI-generated structured summary; that output lands on a future column
+    so this `manual_summary` field stays the user-owned source of truth.
+    """
+    __tablename__ = "lectures"
+
+    id                          = Column(Integer, primary_key=True, index=True)
+    course_id                   = Column(
+        Integer,
+        ForeignKey("courses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Denormalized Phase-1 multi-tenant scope. Both NOT NULL — copied from
+    # the parent course at insert. Matches the Exam / Folder pattern so
+    # `can(user, action, scope)` can walk the same chain in Phase 2.
+    community_id                = Column(
+        Integer,
+        ForeignKey("communities.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    organization_id             = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    title                       = Column(String,  nullable=False)
+    lecture_date                = Column(Date,    nullable=True)
+    manual_summary              = Column(Text,    nullable=True)
+    # Both attachments are optional. SET NULL on delete so the user can
+    # garbage-collect a UserDocument without losing the lecture row.
+    recording_user_document_id  = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    notes_user_document_id      = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at                  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at                  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    course        = relationship("Course",       back_populates="lectures")
+    recording_doc = relationship("UserDocument", foreign_keys=[recording_user_document_id])
+    notes_doc     = relationship("UserDocument", foreign_keys=[notes_user_document_id])
 
 
 class Exam(Base):

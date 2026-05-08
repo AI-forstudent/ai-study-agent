@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import {
-  ArrowLeft, FolderOpen, FileText, GraduationCap, MessageSquare,
-  Settings as SettingsIcon, AlertTriangle, Trash2, Loader2,
+  ArrowLeft, FolderOpen, FileText, GraduationCap, MessageSquare, Mic,
+  Settings as SettingsIcon, AlertTriangle, Trash2, Loader2, Plus,
 } from 'lucide-react';
 import PageContainer from '../../../components/layout/PageContainer';
 import FolderCard from '../../documents/components/FolderCard';
 import CourseSyllabusTab from './CourseSyllabusTab';
 import CourseExamsTab from './CourseExamsTab';
+import CourseLecturesTab from './CourseLecturesTab';
+import FolderModal from '../../documents/components/FolderModal';
 import type { Course } from '../../../types/course';
 import type { Folder } from '../../documents/hooks/useFolders';
 import type { Persona } from '../../../types/persona';
 
-type CourseTab = 'folders' | 'syllabus' | 'exams' | 'settings';
+type CourseTab = 'folders' | 'lectures' | 'syllabus' | 'exams' | 'settings';
 
 interface Doc {
   id:        number;
@@ -34,13 +36,19 @@ interface CourseDetailViewProps {
    *  Edit / delete folder actions are deliberately not exposed here in
    *  commit 3 — those happen in My Library's folder view. */
   onOpenFolderInLibrary: (folderId: number) => void;
+  /** Create a new folder. Caller wires this through useFolders. The
+   *  Folders tab passes `course_id` set to this course's id automatically. */
+  onCreateFolder?: (p: {
+    name: string; color: string | null; is_starred: boolean;
+    persona_id: string | null; course_id: number | null;
+  }) => Promise<Folder>;
 }
 
 /**
  * Course detail view — extracted from MyLibrary into the dedicated Courses
- * page (per the 2026-05-08 library restructure brief). Renders three tabs
- * inside a course: Folders / Syllabus / Exams. The Settings → Danger Zone
- * tab lands in commit 4 (F-024).
+ * page (per the 2026-05-08 library restructure brief). Renders four tabs
+ * inside a course: Folders / Lectures / Syllabus / Exams (+ Settings/Danger
+ * Zone for owners). Lectures landed in F-031 Phase 1.
  */
 export default function CourseDetailView({
   course,
@@ -52,8 +60,10 @@ export default function CourseDetailView({
   onDelete,
   onStartCourseChat,
   onOpenFolderInLibrary,
+  onCreateFolder,
 }: CourseDetailViewProps) {
   const [tab, setTab] = useState<CourseTab>('folders');
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
   const accent = course.color ?? '#6366F1';
   const isOwner = course.role === 'owner';
 
@@ -129,6 +139,17 @@ export default function CourseDetailView({
           <span className="text-[10px] text-[#C4C4C4]">({courseFolders.length})</span>
         </button>
         <button
+          onClick={() => setTab('lectures')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
+            tab === 'lectures'
+              ? 'border-indigo-600 text-indigo-600'
+              : 'border-transparent text-[#787774] hover:text-[#37352F]'
+          }`}
+        >
+          <Mic className="w-3.5 h-3.5" />
+          Lectures
+        </button>
+        <button
           onClick={() => setTab('syllabus')}
           className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
             tab === 'syllabus'
@@ -167,27 +188,46 @@ export default function CourseDetailView({
 
       {/* ── Tab body ─────────────────────────────────────────────────── */}
       {tab === 'folders' && (
-        courseFolders.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
-            <FolderOpen className="w-8 h-8 opacity-30" />
-            <p className="text-sm">This course has no folders yet.</p>
-            <p className="text-xs text-[#C4C4C4]">
-              Create a folder from the library and assign it to this course.
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {courseFolders.map(folder => (
-              <FolderCard
-                key={folder.id}
-                folder={folder}
-                docCount={userDocs.filter(d => d.folder_id === folder.id).length}
-                personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
-                onOpen={onOpenFolderInLibrary}
-              />
-            ))}
-          </div>
-        )
+        <div className="space-y-4">
+          {isOwner && onCreateFolder && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => setFolderModalOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg"
+              >
+                <Plus className="w-4 h-4" />
+                Add folder
+              </button>
+            </div>
+          )}
+          {courseFolders.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
+              <FolderOpen className="w-8 h-8 opacity-30" />
+              <p className="text-sm">This course has no folders yet.</p>
+              <p className="text-xs text-[#C4C4C4]">
+                {isOwner
+                  ? 'Use “Add folder” above, or assign an existing folder from My Library.'
+                  : 'The course owner has not added any folders yet.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {courseFolders.map(folder => (
+                <FolderCard
+                  key={folder.id}
+                  folder={folder}
+                  docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+                  personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
+                  onOpen={onOpenFolderInLibrary}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'lectures' && (
+        <CourseLecturesTab courseId={course.id} isOwner={isOwner} />
       )}
 
       {tab === 'syllabus' && (
@@ -196,6 +236,21 @@ export default function CourseDetailView({
 
       {tab === 'exams' && (
         <CourseExamsTab courseId={course.id} isOwner={isOwner} />
+      )}
+
+      {/* Folder modal — opened from the "+ Add folder" button on the
+          Folders tab. The course is locked to this course's id so the
+          new folder lands inside it without an extra picker. */}
+      {onCreateFolder && (
+        <FolderModal
+          isOpen={folderModalOpen}
+          editing={null}
+          personas={personas}
+          defaultCourseId={course.id}
+          lockCourse
+          onClose={() => setFolderModalOpen(false)}
+          onSave={async payload => { await onCreateFolder(payload); }}
+        />
       )}
 
       {tab === 'settings' && isOwner && (

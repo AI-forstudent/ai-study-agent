@@ -67,8 +67,8 @@ interface MyLibraryProps {
   onStarDocument: (id: number, isStarred: boolean) => void;
   onMoveDocument: (docId: number, folderId: number | null) => void;
   folders: Folder[];
-  onCreateFolder: (p: { name: string; color: string | null; is_starred: boolean; persona_id: string | null }) => Promise<Folder>;
-  onUpdateFolder: (id: number, p: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null }) => Promise<Folder>;
+  onCreateFolder: (p: { name: string; color: string | null; is_starred: boolean; persona_id: string | null; course_id?: number | null }) => Promise<Folder>;
+  onUpdateFolder: (id: number, p: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null }) => Promise<Folder>;
   onDeleteFolder: (id: number) => Promise<void>;
   personas: Persona[];
   /** Navigate to the dedicated Sessions search page. */
@@ -115,6 +115,10 @@ export default function MyLibrary({
 
   const [sessions, setSessions]     = useState<SessionRow[]>([]);
   const [moveDoc, setMoveDoc]       = useState<Doc | null>(null);
+  // F-031 / T-013: courses for the FolderModal picker so users can attach
+  // a folder to a course straight from My Library. Self-contained fetch
+  // to avoid threading another prop through App.tsx.
+  const [courseOptions, setCourseOptions] = useState<{ id: number; title: string }[]>([]);
 
   // ── Click-outside for the +New menu ─────────────────────────────────────
   useEffect(() => {
@@ -143,6 +147,14 @@ export default function MyLibrary({
   // userDocs.length triggers a refresh on upload/delete; threads created
   // from `useChat` are picked up by the next mount or page navigation.
   useEffect(() => { void refreshSessions(); }, [userDocs.length]);
+
+  // Load the user's owned/admin/starred courses once for the FolderModal
+  // picker. Failure is non-fatal — modal just hides the picker.
+  useEffect(() => {
+    api.listCourses()
+      .then(res => setCourseOptions(res.data.map((c: any) => ({ id: c.id, title: c.title }))))
+      .catch(err => console.error('[MyLibrary] failed to load course options', err));
+  }, []);
 
   // Files lane — sort by recency-of-use (last_opened_at, fallback
   // created_at) descending so the doc the user just opened jumps to the
@@ -492,11 +504,14 @@ export default function MyLibrary({
       {/* Courses are not a My Library lane — they live on the dedicated
           Courses page now (sidebar → Courses, two-tab My / Public layout). */}
 
-      {/* Folder modal */}
+      {/* Folder modal — courses prop drives the optional course picker
+          (T-013 / F-031). When the courses fetch failed the picker is
+          gracefully hidden. */}
       <FolderModal
         isOpen={folderModalOpen}
         editing={editingFolder}
         personas={personas}
+        courses={courseOptions}
         onClose={() => { setFolderModalOpen(false); setEditingFolder(null); }}
         onSave={async payload => {
           if (editingFolder) {

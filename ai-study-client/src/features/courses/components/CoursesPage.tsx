@@ -28,6 +28,13 @@ interface CoursesPageProps {
   onStartCourseChat:     (courseId: number) => void;
   /** Cross-page navigation to My Library with the folder drilled in. */
   onOpenFolderInLibrary: (folderId: number) => void;
+  /** Lets the course detail's Folders tab create folders pre-attached to
+   *  the current course (F-031 / T-013). Forwarded straight to
+   *  `useFolders.createFolder` by App.tsx. */
+  onCreateFolder?: (p: {
+    name: string; color: string | null; is_starred: boolean;
+    persona_id: string | null; course_id: number | null;
+  }) => Promise<Folder>;
 }
 
 /**
@@ -48,6 +55,7 @@ export default function CoursesPage({
   personas,
   onStartCourseChat,
   onOpenFolderInLibrary,
+  onCreateFolder,
 }: CoursesPageProps) {
   const [activeTab,       setActiveTab]       = useState<CoursesTab>('my');
   const [activeCourseId,  setActiveCourseId]  = useState<number | null>(null);
@@ -143,6 +151,7 @@ export default function CoursesPage({
           }}
           onStartCourseChat={onStartCourseChat}
           onOpenFolderInLibrary={onOpenFolderInLibrary}
+          onCreateFolder={onCreateFolder}
         />
         <CourseModal
           isOpen={courseModalOpen}

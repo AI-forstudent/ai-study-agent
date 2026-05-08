@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Check, Star } from 'lucide-react';
+import { X, Check, Star, BookMarked } from 'lucide-react';
 import type { Folder } from '../hooks/useFolders';
 import type { Persona } from '../../../types/persona';
 
@@ -9,24 +9,45 @@ const PRESET_COLORS = [
   '#F97316', '#6B7280',
 ];
 
+export interface CourseOption {
+  id:    number;
+  title: string;
+}
+
 interface FolderModalProps {
   isOpen: boolean;
   editing?: Folder | null;
   personas: Persona[];
+  /** Optional list of courses the user owns. When provided, the modal shows
+   *  a "Course" dropdown so the user can attach the folder to a course
+   *  (T-013). Pass an empty array or omit to hide the picker. */
+  courses?: CourseOption[];
+  /** Pre-fill course_id (e.g. when opened from inside a Course's Folders tab).
+   *  When set AND `lockCourse` is true the picker is hidden — the folder is
+   *  created inside the course unconditionally. */
+  defaultCourseId?: number | null;
+  /** Hide the course picker even if `courses` is non-empty — used by the
+   *  course-scoped "+ Add folder" affordance which fixes the destination. */
+  lockCourse?: boolean;
   onClose: () => void;
   onSave: (payload: {
-    name: string;
-    color: string | null;
+    name:       string;
+    color:      string | null;
     is_starred: boolean;
     persona_id: string | null;
+    course_id:  number | null;
   }) => Promise<void>;
 }
 
-export default function FolderModal({ isOpen, editing, personas, onClose, onSave }: FolderModalProps) {
+export default function FolderModal({
+  isOpen, editing, personas, courses = [], defaultCourseId, lockCourse,
+  onClose, onSave,
+}: FolderModalProps) {
   const [name, setName]           = useState('');
   const [color, setColor]         = useState<string>(PRESET_COLORS[0]);
   const [isStarred, setIsStarred] = useState(false);
   const [personaId, setPersonaId] = useState<string>('');
+  const [courseId, setCourseId]   = useState<string>('');   // empty string = no course
   const [isSaving, setIsSaving]   = useState(false);
 
   useEffect(() => {
@@ -35,7 +56,13 @@ export default function FolderModal({ isOpen, editing, personas, onClose, onSave
     setColor(editing?.color ?? PRESET_COLORS[0]);
     setIsStarred(editing?.is_starred ?? false);
     setPersonaId(editing?.persona_id ?? '');
-  }, [isOpen, editing]);
+    // Priority: edited row's existing course_id > defaultCourseId prop > none.
+    const initialCourse =
+      editing?.course_id != null ? String(editing.course_id) :
+      defaultCourseId != null    ? String(defaultCourseId) :
+      '';
+    setCourseId(initialCourse);
+  }, [isOpen, editing, defaultCourseId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,6 +74,7 @@ export default function FolderModal({ isOpen, editing, personas, onClose, onSave
         color,
         is_starred: isStarred,
         persona_id: personaId || null,
+        course_id:  courseId ? Number(courseId) : null,
       });
       onClose();
     } finally {
@@ -55,6 +83,8 @@ export default function FolderModal({ isOpen, editing, personas, onClose, onSave
   };
 
   if (!isOpen) return null;
+
+  const showCoursePicker = !lockCourse && courses.length > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -89,6 +119,30 @@ export default function FolderModal({ isOpen, editing, personas, onClose, onSave
               className="w-full px-3 py-2.5 text-sm text-[#37352F] border border-[#E8E8E6] rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors placeholder:text-[#C4C4C4]"
             />
           </div>
+
+          {/* Course picker (T-013) — only shown when caller supplies courses
+              and didn't lock the destination. */}
+          {showCoursePicker && (
+            <div>
+              <label className="block text-xs font-medium text-[#787774] mb-1.5 flex items-center gap-1.5">
+                <BookMarked className="w-3 h-3" />
+                Course <span className="text-[#C4C4C4]">(optional)</span>
+              </label>
+              <select
+                value={courseId}
+                onChange={e => setCourseId(e.target.value)}
+                className="w-full px-3 py-2.5 text-sm text-[#37352F] border border-[#E8E8E6] rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors bg-white"
+              >
+                <option value="">Top-level (no course)</option>
+                {courses.map(c => (
+                  <option key={c.id} value={c.id}>{c.title}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-[#C4C4C4] mt-1">
+                Folders attached to a course appear inside that course's Folders tab.
+              </p>
+            </div>
+          )}
 
           {/* Color picker */}
           <div>

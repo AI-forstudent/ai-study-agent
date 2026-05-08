@@ -165,16 +165,26 @@ def upload_document(
         raise HTTPException(status_code=404, detail="PERSONA_NOT_FOUND")
 
     # ── 0. Validate file extension ───────────────────────────────────────────
+    # AUDIO + IMAGE were added for the Lecture feature (F-031). They share
+    # the same CAS storage path as text docs but skip the extract → chunk →
+    # embed pipeline below (no readable text). Phase 2 will run AUDIO files
+    # through Gemini's audio API for transcription.
     filename = file.filename or ""
     ext = os.path.splitext(filename)[1].lower()
+    AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+    IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
     if ext in (".pdf", ".docx", ".pptx"):
         doc_type = "GENERAL"
     elif ext in CODE_EXTENSIONS:
         doc_type = "SOURCE_CODE"
+    elif ext in AUDIO_EXTENSIONS:
+        doc_type = "AUDIO"
+    elif ext in IMAGE_EXTENSIONS:
+        doc_type = "IMAGE"
     else:
         raise HTTPException(
             status_code=422,
-            detail=f"Unsupported file type '{ext}'. Upload a PDF, Word/PowerPoint document, or source code file.",
+            detail=f"Unsupported file type '{ext}'. Upload a PDF, Word/PowerPoint, source code, audio recording, or image.",
         )
 
     # ── 1. Hash ─────────────────────────────────────────────────────────────
@@ -231,7 +241,14 @@ def upload_document(
 
     # Office formats: extract raw text first, then convert to PDF for display.
     # PPTX has no dedicated text extractor — convert first, then read the PDF.
-    if ext == ".docx":
+    # AUDIO / IMAGE: store the file as-is, skip text extraction. Phase 2 of
+    # F-031 will run AUDIO through Gemini transcription before chunking; for
+    # now these uploads carry zero chunks and that's fine — the chat-search
+    # path filters them out via doc_type.
+    if doc_type in ("AUDIO", "IMAGE"):
+        pages_data: list[dict] = []
+        display_path = file_location
+    elif ext == ".docx":
         pages_data = extract_text_from_word(file_location)
         try:
             display_path = convert_to_pdf(file_location, UPLOADS_DIR)

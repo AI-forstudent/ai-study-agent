@@ -258,10 +258,16 @@ function App() {
       }
     }
 
-    // 2. Refresh the user's docs list so handleSelectDocument can resolve
-    //    the doc by id (covers both fresh-upload and duplicate-already-in-list
-    //    cases).
-    await docs.refreshUserDocs();
+    // 2. Refresh the user's docs list. We need the FRESH list (not the
+    //    closure-captured one inside the hook) to resolve the brand-new doc
+    //    by id below — `handleSelectDocument`'s closure would still hold the
+    //    pre-upload userDocs and silently bail on `find()` returning undefined.
+    const freshDocs = (await docs.refreshUserDocs()) ?? [];
+    const fullDoc = freshDocs.find((d: any) => d.id === attachId);
+    if (!fullDoc) {
+      console.error('[handleAttachFileToActiveSession] doc not in refreshed list', attachId);
+      throw new Error('Uploaded document did not appear in the refreshed list.');
+    }
 
     // 3. Attach to thread or create one. The current activeThread lives in
     //    Zustand; we read it freshly to dodge stale closures.
@@ -279,11 +285,13 @@ function App() {
       useAppStore.getState().setActiveThread(created.data);
     }
 
-    // 4. Flip the workspace to doc-anchored. This sets `documentId` in
-    //    useDocuments → useChat re-routes to the doc-anchored RAG path on
-    //    the next message → MainWorkspace renders the PDF viewer alongside
-    //    the chat panel.
-    await docs.handleSelectDocument({ id: attachId });
+    // 4. Flip the workspace to doc-anchored. We use `selectDocumentInList`
+    //    (not `handleSelectDocument`) because it (a) takes the freshly-
+    //    resolved doc object so it doesn't rely on a stale closure, and
+    //    (b) preserves the active thread we just attached/created — the
+    //    default `setActiveThread(null)` would drop the user's conversation
+    //    on the floor and bounce them to an empty Threads tree.
+    await docs.selectDocumentInList(fullDoc, { preserveActiveThread: true });
     setStandaloneMode(false);
 
     if (wasDuplicate) {
@@ -488,6 +496,7 @@ function App() {
           personas={personas}
           onStartCourseChat={handleStartCourseChat}
           onOpenFolderInLibrary={handleOpenFolderInLibrary}
+          onCreateFolder={folders.createFolder}
         />
         <ResumeToastContainer
           personaName={toastPersonaName}

@@ -32,7 +32,7 @@ export function useFolders(isAuthenticated: boolean) {
   }, [isAuthenticated]);
 
   const createFolder = useCallback(async (
-    payload: { name: string; color?: string | null; is_starred?: boolean; persona_id?: string | null },
+    payload: { name: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null },
   ): Promise<Folder> => {
     const res = await api.createFolder(payload);
     const folder = res.data as Folder;
@@ -42,7 +42,7 @@ export function useFolders(isAuthenticated: boolean) {
 
   const updateFolder = useCallback(async (
     id: number,
-    payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null },
+    payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null },
   ): Promise<Folder> => {
     const res = await api.updateFolder(id, payload);
     const updated = res.data as Folder;
