@@ -1,0 +1,64 @@
+name: Move idea card on Analysis comment
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  move-card:
+    if: startsWith(github.event.comment.body, '## Analysis')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find project item and move to Idea Summary
+        env:
+          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO_OWNER: ${{ github.event.repository.owner.login }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -e
+
+          ITEM_ID=$(gh api graphql \
+            -F owner="$REPO_OWNER" \
+            -F repo="$REPO_NAME" \
+            -F num="$ISSUE_NUMBER" \
+            -f query='
+              query($owner: String!, $repo: String!, $num: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $num) {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { number }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.issue.projectItems.nodes[] | select(.project.number == 1) | .id')
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "Issue #$ISSUE_NUMBER is not on Ideas Pipeline (project #1) — nothing to move"
+            exit 0
+          fi
+
+          echo "Moving project item $ITEM_ID to 'Idea Summary'"
+
+          gh api graphql \
+            -f projectId="PVT_kwDOEMqYQ84BXDLJ" \
+            -f itemId="$ITEM_ID" \
+            -f fieldId="PVTSSF_lADOEMqYQ84BXDLJzhSSx5I" \
+            -f optionId="0706370f" \
+            -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId:    $itemId
+                  fieldId:   $fieldId
+                  value:     { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }'
+
+          echo "Moved issue #$ISSUE_NUMBER to Idea Summary"
