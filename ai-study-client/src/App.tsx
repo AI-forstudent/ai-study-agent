@@ -19,6 +19,7 @@ import AppLayout      from './components/layout/AppLayout';
 import Sidebar        from './components/layout/Sidebar';
 import Settings       from './components/layout/Settings';
 import AuthModal      from './components/ui/AuthModal';
+import { showToast }  from './hooks/useToast';
 import { api }        from './services/api';
 import { ResumeToastContainer } from './features/sessions/components/ResumeToast';
 import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
@@ -286,10 +287,10 @@ function App() {
     setStandaloneMode(false);
 
     if (wasDuplicate) {
-      // Browser-native is acceptable for v1; a toast component would be
-      // nicer but isn't worth the dependency right now.
-      // eslint-disable-next-line no-alert
-      alert('This file is already in your library — opened the existing copy.');
+      showToast(
+        'This file is already in your library — opened the existing copy.',
+        'info',
+      );
     }
   }
 

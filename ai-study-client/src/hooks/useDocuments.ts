@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, type ChangeEvent } from 'react';
 import { api } from '../services/api';
 import { useAppStore } from '../store/useAppStore';
+import { showToast } from './useToast';
 
 /**
  * Hook to manage document lifecycle.
@@ -99,9 +100,43 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       }
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        setUploadError('DOCUMENT_EXISTS');
+        // Duplicate hash — same file already in the user's library.
+        // Open the existing copy in the workspace so the user lands on
+        // the doc they just tried to upload, instead of staring at a
+        // banner on the My Library root.
+        const detail = err?.response?.data?.detail;
+        const existingId =
+          typeof detail === 'object' ? detail?.existing_user_document_id : undefined;
+        if (typeof existingId === 'number') {
+          try {
+            const docsRes = await api.getUserDocuments();
+            setUserDocs(docsRes.data);
+            const existing = docsRes.data.find((d: any) => d.id === existingId);
+            if (existing) {
+              setActiveThread(null);
+              setDocumentId(existingId);
+              try {
+                const encodedPath = existing.file_path.split('/').map(encodeURIComponent).join('/');
+                const blobRes = await api.getFile(encodedPath);
+                setFile(URL.createObjectURL(blobRes.data));
+              } catch {
+                setFile(selectedFile);
+              }
+              showToast(
+                'This file is already in your library — opened the existing copy.',
+                'info',
+              );
+              return;
+            }
+          } catch (lookupErr) {
+            console.error('[handleFileChange] existing-doc lookup failed', lookupErr);
+          }
+        }
+        // Fallback if we couldn't resolve the existing doc — show a toast
+        // instead of the legacy DOCUMENT_EXISTS banner.
+        showToast('This file is already in your library.', 'info');
       } else {
-        setUploadError('UPLOAD_FAILED');
+        showToast('Upload failed. Please check the file and try again.', 'error');
       }
     } finally {
       setIsUploading(false);
