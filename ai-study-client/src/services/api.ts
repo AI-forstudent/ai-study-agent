@@ -144,6 +144,12 @@ export const api = {
   createThread: (payload: unknown) =>
     apiClient.post('/api/v1/threads/', payload),
 
+  // Partial update for a thread the caller owns. Currently used by F-020
+  // to attach an uploaded document to an existing thread so future
+  // messages use the doc-anchored RAG path.
+  updateThread: (threadId: number, payload: { document_id?: number | null }) =>
+    apiClient.patch(`/api/v1/threads/${threadId}`, payload),
+
   sendMessage: (threadId: number, content: string) =>
     apiClient.post(`/api/v1/threads/${threadId}/messages`, { content }),
 

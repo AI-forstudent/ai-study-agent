@@ -225,6 +225,44 @@ function App() {
     startStandaloneSession(courseId);
   }
 
+  /** F-020 — paperclip-in-chat handler. Uploads `file`, then either attaches
+   *  it to the active thread (chat-in-progress case) or creates a fresh
+   *  doc-anchored thread on the fly (New Session before first message),
+   *  and switches the workspace UI to PDF + chat split via
+   *  `docs.handleSelectDocument`. */
+  async function handleAttachFileToActiveSession(file: File): Promise<void> {
+    // 1. Upload (auto-summarize is off — F-021).
+    const uploadRes = await api.uploadDocument(file, false);
+    const newDocId: number = uploadRes.data.id;
+
+    // 2. Refresh the user's docs list so handleSelectDocument can resolve
+    //    the new doc by id.
+    await docs.refreshUserDocs();
+
+    // 3. Attach to thread or create one. The current activeThread lives in
+    //    Zustand; we read it freshly to dodge stale closures.
+    const currentThread = useAppStore.getState().activeThread;
+    if (currentThread) {
+      await api.updateThread(currentThread.id, { document_id: newDocId });
+    } else {
+      // Standalone session before any message — create a doc-anchored
+      // thread now so subsequent /threads/.../messages calls have a target.
+      const created = await api.createThread({
+        document_id: newDocId,
+        persona_id: activePersonaId,
+        course_id: activeCourseId,
+      });
+      useAppStore.getState().setActiveThread(created.data);
+    }
+
+    // 4. Flip the workspace to doc-anchored. This sets `documentId` in
+    //    useDocuments → useChat re-routes to the doc-anchored RAG path on
+    //    the next message → MainWorkspace renders the PDF viewer alongside
+    //    the chat panel.
+    await docs.handleSelectDocument({ id: newDocId });
+    setStandaloneMode(false);
+  }
+
   /** Folder click inside a course's Folders tab on the Courses page. Drills
    *  the user across to My Library and opens that folder. Same cross-page
    *  pattern as the (now retired) pendingLibraryCourseId flow, just for
@@ -502,6 +540,7 @@ function App() {
             activePersonaName,
             activePersonaId,
             onSwitchPersona:    handleSwitchPersona,
+            onAttachFile:       handleAttachFileToActiveSession,
           }}
           onSaveMemory={handleOpenWrapUp}
         />

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -50,6 +50,10 @@ interface ChatPanelProps {
   activePersonaId?: string | null;
   /** Called when the user confirms a mid-session persona switch */
   onSwitchPersona?: (newId: string | null, keepContext: boolean) => void;
+  /** F-020 — uploads the picked file, attaches it to the active thread (or
+   *  creates a doc-anchored thread on the fly), and switches the workspace
+   *  to PDF + chat split. Hidden when the workspace already has a doc. */
+  onAttachFile?: (file: File) => Promise<void>;
 }
 
 const SummaryLoader = () => (
@@ -186,8 +190,35 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   activePersonaName,
   activePersonaId,
   onSwitchPersona,
+  onAttachFile,
 }) => {
   const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
+  const [isAttaching, setIsAttaching] = useState(false);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+
+  // F-020 — paperclip handler. Uploads, attaches to the active thread (or
+  // creates a doc-anchored one), then switches the workspace to doc-anchored.
+  // Hidden when the workspace already has a doc — adding multiple docs to
+  // a single thread is the M2M-attachments enhancement (deferred).
+  const showAttachButton = !documentId && !!onAttachFile;
+  const handleAttachClick = () => {
+    if (isAttaching) return;
+    attachInputRef.current?.click();
+  };
+  const handleAttachChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';   // reset so picking the same file twice still fires onChange
+    if (!file || !onAttachFile) return;
+    setIsAttaching(true);
+    try {
+      await onAttachFile(file);
+    } catch (err) {
+      console.error('[ChatPanel] attach failed', err);
+      alert('Failed to attach the document. Please try again.');
+    } finally {
+      setIsAttaching(false);
+    }
+  };
   const [pageSummaries, setPageSummaries] = useState<Record<number, string>>({});
   const [fullDocSummary, setFullDocSummary] = useState<string | null>(null);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -663,7 +694,29 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
 
           {/* Input bar */}
-          <div className="px-4 py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0">
+          <div className="px-4 py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0 items-center">
+            {showAttachButton && (
+              <>
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.pptx,.txt,.md,.py,.js,.ts,.tsx,.jsx,.go,.rs,.java,.c,.cpp,.h,.hpp"
+                  className="hidden"
+                  onChange={handleAttachChange}
+                />
+                <button
+                  type="button"
+                  onClick={handleAttachClick}
+                  disabled={isAttaching}
+                  title="Attach a document to this conversation"
+                  className="p-2 rounded-lg text-[#787774] hover:text-indigo-600 hover:bg-[#F7F7F5] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+                >
+                  {isAttaching
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Paperclip className="w-4 h-4" />}
+                </button>
+              </>
+            )}
             <input
               type="text"
               value={inputMessage}

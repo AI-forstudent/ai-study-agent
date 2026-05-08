@@ -71,6 +71,13 @@ class ThreadCreate(BaseModel):
     course_id: Optional[int] = None
 
 
+class ThreadUpdate(BaseModel):
+    """Partial update for a thread the caller owns. Currently only exposes
+    `document_id` so the F-020 chat-attach flow can promote a previously
+    standalone thread to a doc-anchored one mid-conversation."""
+    document_id: Optional[int] = None
+
+
 class ThreadResponse(BaseModel):
     id: int
     document_id: Optional[int] = None   # userdocuments.id

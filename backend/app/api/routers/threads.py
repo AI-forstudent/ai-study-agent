@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import Chunk, Message, Thread, User, UserDocument
-from app.schemas.schemas import MessageCreate, MessageResponse, ThreadCreate, ThreadResponse
+from app.schemas.schemas import MessageCreate, MessageResponse, ThreadCreate, ThreadResponse, ThreadUpdate
 from app.services.document_service import (
     generate_session_title_background,
     generate_thread_metadata_background,
@@ -126,6 +126,35 @@ def create_thread(
     db.commit()
     db.refresh(new_thread)
     return new_thread
+
+
+# ── Patch thread (attach a document mid-conversation) ──────────────────────
+
+@router.patch("/{thread_id}", response_model=ThreadResponse)
+def update_thread(
+    thread_id: int,
+    payload: ThreadUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Partial update for a thread the caller owns. Drives F-020:
+    attaches a uploaded document to a thread so subsequent messages
+    use the doc-anchored RAG path (threads.py POST /messages) instead
+    of the standalone /chat/ path.
+
+    Currently the only mutable field is `document_id`; the doc must
+    belong to the calling user.
+    """
+    thread = _get_owned_thread_or_404(thread_id, current_user, db)
+
+    if payload.document_id is not None:
+        _assert_owns_userdoc(payload.document_id, current_user, db)
+        thread.document_id = payload.document_id
+
+    db.commit()
+    db.refresh(thread)
+    thread.messages = get_full_thread_history(thread.id, db)
+    return thread
 
 
 # ── Add message to thread ───────────────────────────────────────────────────

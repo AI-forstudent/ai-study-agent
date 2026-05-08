@@ -38,6 +38,10 @@ interface ChatProps {
   activePersonaId?: string | null;
   /** Called when the user confirms a mid-session persona switch */
   onSwitchPersona?: (newId: string | null, keepContext: boolean) => void;
+  /** F-020: paperclip in the chat input — uploads the file, attaches it to
+   *  the active thread (or creates a new doc-anchored thread if there
+   *  isn't one yet), and switches the workspace to doc-anchored mode. */
+  onAttachFile?: (file: File) => Promise<void>;
 }
 
 interface MainWorkspaceProps {
@@ -132,6 +136,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
     activePersonaName: chat.activePersonaName,
     activePersonaId:   chat.activePersonaId,
     onSwitchPersona:   chat.onSwitchPersona,
+    onAttachFile:      chat.onAttachFile,
   };
 
   // ── Shared header ─────────────────────────────────────────────────────────

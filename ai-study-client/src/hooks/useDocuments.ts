@@ -40,6 +40,21 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       });
   }, [isAuthenticated]);
 
+  /** Refresh the user's document list — call after an upload from outside
+   *  this hook (e.g. the F-020 attach-from-chat flow), so the new doc
+   *  appears in the Files lane and `handleSelectDocument` can resolve
+   *  it by id. */
+  const refreshUserDocs = async () => {
+    try {
+      const res = await api.getUserDocuments();
+      setUserDocs(res.data);
+      return res.data as any[];
+    } catch (err) {
+      console.error('[refreshUserDocs] failed:', err);
+      return null;
+    }
+  };
+
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
@@ -200,6 +215,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     isDeleting,
     handleFileChange,
     handleSelectDocument,
+    refreshUserDocs,
     handleDeleteConfirm,
     handleToggleVisibility,
     toggleVisibilityById,
