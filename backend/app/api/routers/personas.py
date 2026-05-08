@@ -91,7 +91,22 @@ def _to_response(p: Persona) -> PersonaResponse:
 # Canonical copy lives here so both the lifespan event and the manual
 # /seed fallback endpoint share it without circular imports.
 
-_SEED_PERSONAS = [
+_SEED_PERSONAS: list[dict[str, Any]] = []
+"""Default AI Teachers were removed (F-022) per the user's brief: 'I did
+NOT add any, they appeared as defaults. No defaults should exist for now.'
+
+The legacy seed list (global_socratic_mentor / community_bgu_data_structures
+/ personal_default_concise) is deleted from any pre-existing dev/prod DB
+by migration r3q4p5o6n7m8. Setting this list to empty here means
+`seed_db()` is a no-op going forward — the lifespan startup hook still
+calls it but there's nothing to insert.
+
+Cloned personas users created from these seeds (with author_id = user.id)
+are NOT touched — those are real user-owned data.
+"""
+
+# Kept for reference / forensic comparison if we ever re-introduce seeds.
+_LEGACY_SEED_PERSONAS = [
     {
         "id": "global_socratic_mentor",
         "display_name": "Socratic Mentor",

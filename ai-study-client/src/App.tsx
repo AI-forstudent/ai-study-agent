@@ -453,8 +453,6 @@ function App() {
             userDocs={docs.userDocs}
             isUploading={docs.isUploading}
             uploadError={docs.uploadError}
-            enableGlobalSummary={docs.enableGlobalSummary}
-            setEnableGlobalSummary={docs.setEnableGlobalSummary}
             onUploadFile={docs.handleFileChange}
             onSelectDocument={handleOpenPreFlight}
             onSelectSession={handleOpenSession}

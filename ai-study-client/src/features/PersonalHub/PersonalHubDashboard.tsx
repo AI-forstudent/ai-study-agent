@@ -137,7 +137,7 @@ export default function PersonalHubDashboard() {
     return (
       <div className="flex items-center justify-center h-full py-32 text-[#787774]">
         <Loader2 className="w-5 h-5 animate-spin mr-2" />
-        <span className="text-sm">Loading Personal Hub…</span>
+        <span className="text-sm">Loading My Space…</span>
       </div>
     );
   }
@@ -149,7 +149,7 @@ export default function PersonalHubDashboard() {
         {/* ── Page header ──────────────────────────────────────────────── */}
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold text-[#37352F]">Personal Hub</h1>
+            <h1 className="text-2xl font-semibold text-[#37352F]">My Space</h1>
             {profile?.university && (
               <p className="text-sm text-[#787774] mt-0.5">
                 {profile.degree ?? 'Student'} · {profile.university}

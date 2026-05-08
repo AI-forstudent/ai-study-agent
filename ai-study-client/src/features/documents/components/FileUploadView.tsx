@@ -5,16 +5,12 @@ interface FileUploadViewProps {
   isUploading: boolean;
   uploadError: string | null;
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  enableGlobalSummary: boolean;
-  setEnableGlobalSummary: (val: boolean) => void;
 }
 
 const FileUploadView: React.FC<FileUploadViewProps> = ({
   isUploading,
   uploadError,
   onFileChange,
-  enableGlobalSummary,
-  setEnableGlobalSummary
 }) => {
   return (
     <div className="bg-white p-12 rounded-2xl border border-[#E8E8E6] text-center max-w-lg w-full">
@@ -53,22 +49,8 @@ const FileUploadView: React.FC<FileUploadViewProps> = ({
         </div>
       )}
 
-      {!isUploading && (
-        <div className="mt-2 flex items-center justify-center gap-3">
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              className="sr-only peer"
-              checked={enableGlobalSummary}
-              onChange={(e) => setEnableGlobalSummary(e.target.checked)}
-            />
-            <div className="w-11 h-6 bg-[#E8E8E6] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#E8E8E6] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-          </label>
-          <span className="text-sm font-medium text-[#787774]">
-            Generate a smart summary of the whole document (uses more tokens 🪙)
-          </span>
-        </div>
-      )}
+      {/* Auto-summarize toggle removed (F-021). Per-page + on-demand
+          summaries still live in the chat panel's Summary tab. */}
 
       {uploadError === 'DOCUMENT_EXISTS' && (
         <div className="mt-4 flex items-start gap-2 p-3 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800 text-start">

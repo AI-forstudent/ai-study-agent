@@ -59,8 +59,6 @@ interface MyLibraryProps {
   userDocs: Doc[];
   isUploading: boolean;
   uploadError: string | null;
-  enableGlobalSummary: boolean;
-  setEnableGlobalSummary: (val: boolean) => void;
   onUploadFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onSelectDocument: (doc: { id: number }) => void;
   onSelectSession: (sessionId: number) => void;
@@ -88,8 +86,6 @@ export default function MyLibrary({
   userDocs,
   isUploading,
   uploadError,
-  enableGlobalSummary,
-  setEnableGlobalSummary,
   onUploadFile,
   onSelectDocument,
   onSelectSession,
@@ -214,22 +210,11 @@ export default function MyLibrary({
   }
 
   // ── Header ───────────────────────────────────────────────────────────────
+  // Auto-summarize toggle removed (F-021) per user feedback — uploads no
+  // longer trigger a full-doc Gemini summary at upload time. Per-page +
+  // on-demand summaries still live inside the chat panel's Summary tab.
   const headerActions = (
     <>
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <div className="relative">
-          <input
-            type="checkbox"
-            className="sr-only peer"
-            checked={enableGlobalSummary}
-            onChange={e => setEnableGlobalSummary(e.target.checked)}
-          />
-          <div className="w-8 h-4 bg-[#E8E8E6] rounded-full peer peer-checked:bg-indigo-600 transition-colors duration-150" />
-          <div className="absolute top-0.5 start-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-all duration-150 peer-checked:translate-x-4" />
-        </div>
-        <span className="text-xs text-[#787774]">Auto-summarize</span>
-      </label>
-
       <label
         className={`flex items-center gap-2 bg-white hover:bg-[#F7F7F5] text-[#37352F] text-sm font-medium px-3 py-2 rounded-lg border border-[#E8E8E6] transition-colors duration-150 cursor-pointer ${
           isUploading ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''

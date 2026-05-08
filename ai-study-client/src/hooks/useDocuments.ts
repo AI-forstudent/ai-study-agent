@@ -17,7 +17,6 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
   const [numPages, setNumPages]             = useState<number>(0);
   const [currentPage, setCurrentPage]       = useState<number>(1);
   const [userDocs, setUserDocs]             = useState<any[]>([]);
-  const [enableGlobalSummary, setEnableGlobalSummary] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   const [isUploading, setIsUploading]       = useState(false);
   const [uploadError, setUploadError]       = useState<string | null>(null);
@@ -56,7 +55,9 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     setIsUploading(true);
     setUploadError(null);
     try {
-      const response = await api.uploadDocument(selectedFile, enableGlobalSummary);
+      // Auto-summarize toggle removed (F-021) — never request a full-doc
+      // summary at upload time anymore.
+      const response = await api.uploadDocument(selectedFile, false);
       setDocumentId(response.data.id);   // triggers useChat to clear + re-fetch threads
       setFile(selectedFile);
       setActiveThread(null);
@@ -194,7 +195,6 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     numPages, setNumPages,
     currentPage, setCurrentPage,
     userDocs,
-    enableGlobalSummary, setEnableGlobalSummary,
     isUploading, uploadError,
     docToDelete, setDocToDelete,
     isDeleting,

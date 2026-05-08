@@ -121,7 +121,7 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
         />
         <NavItem
           icon={GraduationCap}
-          label="Personal Hub"
+          label="My Space"
           active={activeView === 'hub'}
           onClick={() => onNavigate('hub')}
         />
