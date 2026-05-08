@@ -168,6 +168,44 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     }
   };
 
+  /** Open a document in the workspace using a full doc object the caller has
+   *  already resolved against a fresh list (e.g. the array returned by
+   *  `refreshUserDocs()`).
+   *
+   *  Why this exists: `handleSelectDocument` looks the doc up inside its
+   *  closure-captured `userDocs`. For an attach-from-chat flow that just
+   *  uploaded a brand-new doc, that closure is stale — `userDocs.find()`
+   *  returns undefined and the function silently bails, leaving the user
+   *  bounced to My Library. Pass the freshly-fetched doc object here to
+   *  bypass the closure.
+   *
+   *  `preserveActiveThread` keeps the current Zustand `activeThread` intact
+   *  (used by the F-020 paperclip flow, where the user is mid-conversation
+   *  and we want their thread to keep rendering after the doc attaches).
+   *  Default false matches `handleSelectDocument`'s clear-on-select UX. */
+  const selectDocumentInList = async (
+    full: any,
+    options?: { preserveActiveThread?: boolean },
+  ): Promise<boolean> => {
+    if (!full || typeof full.id !== 'number' || !full.file_path) return false;
+    setDocumentId(full.id);
+    if (!options?.preserveActiveThread) setActiveThread(null);
+
+    const nowIso = new Date().toISOString();
+    setUserDocs(prev => prev.map(d => d.id === full.id ? { ...d, last_opened_at: nowIso } : d));
+    api.touchDocument(full.id).catch(() => { /* noop */ });
+
+    try {
+      const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
+      const response    = await api.getFile(encodedPath);
+      setFile(URL.createObjectURL(response.data));
+      return true;
+    } catch (error) {
+      console.error('[selectDocumentInList] blob fetch failed:', error);
+      return false;
+    }
+  };
+
   const handleDeleteConfirm = async () => {
     if (!docToDelete) return;
     setIsDeleting(true);
@@ -269,6 +307,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     isDeleting,
     handleFileChange,
     handleSelectDocument,
+    selectDocumentInList,
     refreshUserDocs,
     handleDeleteConfirm,
     handleToggleVisibility,
