@@ -8,7 +8,6 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
 import CoursesPage          from './features/courses/components/CoursesPage';
-import AdminPage            from './features/admin/components/AdminPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -413,7 +412,7 @@ function App() {
     <Sidebar
       activeView={view}
       onNavigate={(v) => {
-        if (v === 'main' || v === 'settings' || v === 'hub' || v === 'admin') {
+        if (v === 'main' || v === 'settings' || v === 'hub') {
           docs.clearDocument();
           setStandaloneMode(false);
         }
@@ -421,23 +420,8 @@ function App() {
       }}
       onLogout={handleLogout}
       onNewSession={handleStartNewSession}
-      showAdmin={!!me?.has_admin_role}
     />
   );
-
-  if (view === 'admin') {
-    if (!me?.has_admin_role) {
-      // Defensive — sidebar hides the link but a stale URL or refresh
-      // could still land here. Bounce back to My Library.
-      setView('main');
-      return null;
-    }
-    return (
-      <AppLayout sidebar={sidebar}>
-        <AdminPage me={me} onRolesChanged={refreshMe} />
-      </AppLayout>
-    );
-  }
 
   if (view === 'settings') {
     return (
@@ -445,6 +429,8 @@ function App() {
         <Settings
           treeViewMode={chat.treeViewMode}
           setTreeViewMode={chat.setTreeViewMode}
+          me={me}
+          onRolesChanged={refreshMe}
         />
         <ResumeToastContainer
           personaName={toastPersonaName}

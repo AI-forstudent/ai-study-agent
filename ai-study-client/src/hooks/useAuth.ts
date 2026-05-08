@@ -9,7 +9,7 @@ export function useAuth() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
     !!localStorage.getItem('access_token')
   );
-  const [view, setView] = useState<'main' | 'lab' | 'gallery' | 'settings' | 'hub' | 'admin'>('main');
+  const [view, setView] = useState<'main' | 'lab' | 'gallery' | 'settings' | 'hub'>('main');
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
 
   // Fire-and-forget health check on mount; failure is non-fatal.

@@ -1,10 +1,10 @@
 import React from 'react';
 import {
   Sparkles, Library, FlaskConical, Globe, LogOut, Settings,
-  GraduationCap, Plus, Users, Shield,
+  GraduationCap, Plus, Users,
 } from 'lucide-react';
 
-type SidebarView = 'main' | 'lab' | 'gallery' | 'settings' | 'hub' | 'admin';
+type SidebarView = 'main' | 'lab' | 'gallery' | 'settings' | 'hub';
 
 interface SidebarProps {
   activeView: SidebarView;
@@ -12,9 +12,6 @@ interface SidebarProps {
   onLogout: () => void;
   /** Called when the user clicks the prominent "+ New Session" button. */
   onNewSession?: () => void;
-  /** When true, render the Admin nav entry. The frontend guards this on
-   *  `me.has_admin_role` so non-admins never see the link. */
-  showAdmin?: boolean;
   /** Injected by AppLayout when the sidebar lives inside the mobile drawer.
    *  Every nav action calls this so the drawer dismisses on selection. */
   onCloseDrawer?: () => void;
@@ -65,7 +62,7 @@ function NavItem({ icon: Icon, label, active, disabled, badge, onClick }: NavIte
 
 // ── Main sidebar ────────────────────────────────────────────────────────────
 
-export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession, showAdmin, onCloseDrawer }: SidebarProps) {
+export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession, onCloseDrawer }: SidebarProps) {
   // Dismiss the mobile drawer (no-op on desktop) on every nav-style action.
   const nav = (v: SidebarView) => { onNavigate(v); onCloseDrawer?.(); };
   const newSession = () => { onNewSession?.(); onCloseDrawer?.(); };
@@ -133,14 +130,6 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
           active={activeView === 'hub'}
           onClick={() => nav('hub')}
         />
-        {showAdmin && (
-          <NavItem
-            icon={Shield}
-            label="Admin"
-            active={activeView === 'admin'}
-            onClick={() => nav('admin')}
-          />
-        )}
       </div>
 
       {/* ── Spacer ─────────────────────────────────────────────────────── */}
