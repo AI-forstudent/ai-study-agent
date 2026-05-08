@@ -307,6 +307,11 @@ export const api = {
 
   deleteLecture: (id: number) => apiClient.delete(`/api/v1/lectures/${id}`),
 
+  // ── Usage / billing (F-005 Phase 4) ──────────────────────────────────────
+  // Aggregated usage for the authenticated user. Drives the Settings
+  // "Usage" section + future quota bar.
+  getMyUsage: () => apiClient.get('/api/v1/profile/usage'),
+
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────
   listSessions: (limit = 50, offset = 0) =>
     apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),

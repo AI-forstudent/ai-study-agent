@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { GitBranch, Globe, LayoutList, Network, AlignLeft } from 'lucide-react';
+import UsageSection from './UsageSection';
 
 interface SettingsProps {
   treeViewMode: 'miller' | 'breadcrumbs' | 'graph';
@@ -98,6 +99,9 @@ export default function Settings({ treeViewMode, setTreeViewMode }: SettingsProp
 
       {/* ── Content ─────────────────────────────────────────────────────── */}
       <main className="flex-1 px-6 py-6 max-w-2xl mx-auto w-full flex flex-col gap-5">
+
+        {/* Section — Usage (F-005 Phase 4) */}
+        <UsageSection />
 
         {/* Section A — Display Preferences */}
         <SectionCard

@@ -16,6 +16,14 @@ interface AdminUser {
   subscription_tier:    string;
   home_organization_id: number | null;
   created_at:           string;
+  // F-005 Phase 4 — usage rollup. Period = trailing PERIOD_SECONDS
+  // window (24h by default). Lifetime = all-time.
+  period_credits:       number;
+  period_calls:         number;
+  period_cost_usd:      number;
+  lifetime_credits:     number;
+  lifetime_calls:       number;
+  lifetime_cost_usd:    number;
 }
 
 interface AdminOrg {
@@ -35,6 +43,19 @@ interface AdminCommunity {
 
 type Role       = 'super_user' | 'org_admin' | 'community_admin' | 'course_admin' | 'member';
 type ScopeType  = 'platform' | 'organization' | 'community' | 'course';
+
+// Each non-`member` role binds to exactly one scope_type per the §3.3
+// matrix in docs/plans/multi_tenancy.md. Mirrors the backend lookup at
+// admin.py::ROLE_REQUIRED_SCOPE — keep them in sync. `member` is the only
+// multi-scope role and is intentionally absent. The form uses this to
+// auto-pin the scope_type select when the user picks a pinned role, so
+// the request body and the visible UI can never disagree.
+const ROLE_REQUIRED_SCOPE: Partial<Record<Role, ScopeType>> = {
+  super_user:      'platform',
+  org_admin:       'organization',
+  community_admin: 'community',
+  course_admin:    'course',
+};
 
 interface AdminRoleAssignment {
   id:           number;
@@ -343,27 +364,52 @@ function UsersTab() {
           <Loader2 className="w-4 h-4 animate-spin" /> Loading…
         </div>
       ) : (
-        <div className="overflow-hidden bg-white border border-[#E8E8E6] rounded-xl">
+        <div className="overflow-x-auto bg-white border border-[#E8E8E6] rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-[#F7F7F5] text-xs uppercase tracking-wide text-[#787774]">
               <tr>
-                <th className="text-start font-semibold px-4 py-2">ID</th>
                 <th className="text-start font-semibold px-4 py-2">Email</th>
-                <th className="text-start font-semibold px-4 py-2">Auth</th>
                 <th className="text-start font-semibold px-4 py-2">Tier</th>
-                <th className="text-start font-semibold px-4 py-2">Home org</th>
+                <th className="text-start font-semibold px-4 py-2 hidden sm:table-cell">Joined</th>
+                <th className="text-end font-semibold px-4 py-2" title="Spend in the trailing 24h">24h spend</th>
+                <th className="text-end font-semibold px-4 py-2 hidden md:table-cell">24h calls</th>
+                <th className="text-end font-semibold px-4 py-2">Total spend</th>
+                <th className="text-end font-semibold px-4 py-2 hidden md:table-cell">Total calls</th>
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
-                <tr key={u.id} className="border-t border-[#E8E8E6]">
-                  <td className="px-4 py-2 text-xs text-[#787774]">{u.id}</td>
-                  <td className="px-4 py-2 font-medium text-[#37352F]">{u.email}</td>
-                  <td className="px-4 py-2 text-xs">{u.auth_provider}</td>
-                  <td className="px-4 py-2 text-xs">{u.subscription_tier}</td>
-                  <td className="px-4 py-2 text-xs">{u.home_organization_id ?? '—'}</td>
-                </tr>
-              ))}
+              {users.map(u => {
+                const fmtUsd = (v: number) =>
+                  v === 0 ? '$0' : v < 0.01 ? '<$0.01' : `$${v.toFixed(v < 1 ? 4 : 2)}`;
+                const burn = u.period_credits > 0 || u.period_calls > 0;
+                return (
+                  <tr key={u.id} className="border-t border-[#E8E8E6]">
+                    <td className="px-4 py-2 font-medium text-[#37352F] truncate max-w-[200px]" title={u.email}>
+                      <span className="text-[10px] text-[#C4C4C4] me-1.5 font-mono">#{u.id}</span>
+                      {u.email}
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      <span className="text-[#787774]">{u.subscription_tier}</span>
+                      <span className="text-[10px] text-[#C4C4C4] block">{u.auth_provider}</span>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-[#787774] hidden sm:table-cell whitespace-nowrap">
+                      {new Date(u.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                    </td>
+                    <td className={`px-4 py-2 text-end whitespace-nowrap ${burn ? 'text-[#37352F] font-medium' : 'text-[#C4C4C4]'}`}>
+                      {fmtUsd(u.period_cost_usd)}
+                    </td>
+                    <td className="px-4 py-2 text-end text-xs text-[#787774] hidden md:table-cell">
+                      {u.period_calls.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2 text-end text-[#37352F] whitespace-nowrap">
+                      {fmtUsd(u.lifetime_cost_usd)}
+                    </td>
+                    <td className="px-4 py-2 text-end text-xs text-[#787774] hidden md:table-cell">
+                      {u.lifetime_calls.toLocaleString()}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -400,6 +446,18 @@ function RolesTab({ onRolesChanged }: { onRolesChanged: () => void }) {
   };
   useEffect(() => { void refresh(); }, []);
 
+  // Derived scope must drive both the disabled-input UI AND the submit body —
+  // otherwise picking role=super_user (or any other admin role) after typing
+  // a different scope_type leaves the form *looking* one way while the
+  // request body carries the stale pair. The backend now has a converse-rule
+  // guard, but the UI must still not lie to the user about what it is sending.
+  // ROLE_REQUIRED_SCOPE pins the scope_type for every admin role; `member`
+  // is the only role that lets the user pick freely.
+  const requiredScope = ROLE_REQUIRED_SCOPE[role];
+  const isScopePinned = requiredScope !== undefined;
+  const effectiveScopeType: ScopeType = requiredScope ?? scopeType;
+  const platformOnly = effectiveScopeType === 'platform';
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -407,8 +465,8 @@ function RolesTab({ onRolesChanged }: { onRolesChanged: () => void }) {
       await api.adminCreateRoleAssignment({
         user_id:    Number(userId),
         role,
-        scope_type: scopeType,
-        scope_id:   scopeType === 'platform' ? null : Number(scopeId),
+        scope_type: effectiveScopeType,
+        scope_id:   platformOnly ? null : Number(scopeId),
       });
       setShowCreate(false);
       setUserId(''); setRole('member'); setScopeType('organization'); setScopeId('');
@@ -429,10 +487,6 @@ function RolesTab({ onRolesChanged }: { onRolesChanged: () => void }) {
       alert(err?.response?.data?.detail ?? 'Failed to revoke role');
     }
   }
-
-  // Auto-clear scope_id when switching to platform.
-  const platformOnly = role === 'super_user';
-  const effectiveScopeType: ScopeType = platformOnly ? 'platform' : scopeType;
 
   return (
     <div className="space-y-4">
@@ -472,11 +526,18 @@ function RolesTab({ onRolesChanged }: { onRolesChanged: () => void }) {
             </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-[#787774] block mb-1">Scope type</label>
+            <label className="text-xs font-medium text-[#787774] block mb-1">
+              Scope type
+              {isScopePinned && (
+                <span className="ml-1 text-[#C4C4C4] font-normal">
+                  (pinned by role)
+                </span>
+              )}
+            </label>
             <select
               value={effectiveScopeType}
               onChange={e => setScopeType(e.target.value as ScopeType)}
-              disabled={platformOnly}
+              disabled={isScopePinned}
               className="w-full bg-white border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400"
             >
               <option value="organization">organization</option>

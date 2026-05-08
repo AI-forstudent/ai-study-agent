@@ -32,7 +32,7 @@ from app.models.domain import (
 from app.services.document_service import extract_text
 from app.services.llm_json import LLMJsonError, user_message_for
 from app.services.permissions import (
-    CourseCapabilities, Scope, gate_or_403,
+    CourseCapabilities, Scope, gate_or_403, gate_or_403_shadow_404,
 )
 from app.services.syllabus_extractor import extract_syllabus
 
@@ -127,12 +127,32 @@ def _build_response(
 
 
 def _get_owned_course_or_404(course_id: int, user: User, db: Session) -> Course:
-    """Fetch a course the caller created, or 404. Cross-owner mutations 404."""
+    """Fetch a course the caller created, or 404. Cross-owner mutations 404.
+
+    Used by syllabus attach/detach (still owner-only by design today). The
+    write routes that participate in the Phase-2 admin matrix
+    (update_course, delete_course) call `_get_course_or_404` instead and
+    let `gate_or_403_shadow_404` make the access decision so non-owner
+    admins can be granted by their role assignment.
+    """
     course = (
         db.query(Course)
         .filter(Course.id == course_id, Course.owner_id == user.id)
         .first()
     )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+
+def _get_course_or_404(course_id: int, db: Session) -> Course:
+    """Fetch a course by id, or 404 — does NOT enforce ownership.
+
+    Pair this with `gate_or_403_shadow_404(...)` on Phase-2 write routes.
+    The gate is responsible for the access decision; this helper only
+    proves the row exists so the gate has an `owner_id` to consult.
+    """
+    course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     return course
@@ -339,15 +359,20 @@ def update_course(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    course = _get_owned_course_or_404(course_id, current_user, db)
+    # Existence-only fetch: the access decision is made by the gate below.
+    # (Previously this was `_get_owned_course_or_404`, which 404'd every
+    # non-owner before the role-based gate could ever run — making the
+    # Phase-2 admin matrix dead code on this route.)
+    course = _get_course_or_404(course_id, db)
 
-    # Phase 2 gate — owner-fallback in Default lets the existing 404-only
-    # ownership semantics keep working when the flag is off, and matches
-    # the role-based check (course_admin from Phase-1 backfill) when on.
-    gate_or_403(
+    # Phase 2 gate — in Default the owner-fallback grants the owner; outside
+    # Default (or for non-owner admins), the role-based check runs. With the
+    # flag off we still 404 cross-user writes (legacy UX, no existence leak).
+    gate_or_403_shadow_404(
         current_user, CourseCapabilities.update_course,
         Scope.course(course.id), db,
         owner_id=course.owner_id,
+        not_found_detail="Course not found",
     )
 
     if payload.visibility is not None:
@@ -379,14 +404,14 @@ def delete_course(
     top-level folders in the user's library) — never cascade-deletes documents
     or threads. Memberships pointing at this course are removed.
     """
-    course = _get_owned_course_or_404(course_id, current_user, db)
+    # Existence-only fetch + gate: see update_course for the rationale.
+    course = _get_course_or_404(course_id, db)
 
-    # Phase 2 gate — owner-fallback in Default mirrors the existing
-    # ownership-only behaviour; outside Default the matrix kicks in.
-    gate_or_403(
+    gate_or_403_shadow_404(
         current_user, CourseCapabilities.delete_course,
         Scope.course(course.id), db,
         owner_id=course.owner_id,
+        not_found_detail="Course not found",
     )
 
     db.query(Folder).filter(Folder.course_id == course_id).update(
@@ -441,13 +466,25 @@ def set_course_hidden(
     if not is_owner and membership is None and course.visibility != "public":
         raise HTTPException(status_code=404, detail="Course not found")
 
+    # A non-owner non-member hitting Hide on a public course used to silently
+    # get a `CourseMembership(role='starred')` here — implicitly starring a
+    # course they only asked to hide. After unhiding it would surface in
+    # `GET /courses/me` as a starred course they never starred. Reject the
+    # call instead — the user can star explicitly first if they want the
+    # course in their list.
+    if not is_owner and membership is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Star this course first if you want it in your list — Hide only acts on courses you already own or have a membership in.",
+        )
+
     if membership is None:
-        # Owners and public-course viewers without a membership row get one
-        # created on the spot so the hide flag has a home.
+        # Owners without an explicit membership row get one created on the
+        # spot so the hide flag has a home.
         membership = CourseMembership(
             user_id=current_user.id,
             course_id=course_id,
-            role="owner" if is_owner else "starred",
+            role="owner",
             is_hidden=payload.is_hidden,
         )
         db.add(membership)

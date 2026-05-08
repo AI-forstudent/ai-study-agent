@@ -305,3 +305,86 @@ class TestMatrixSanity:
         ) for c in caps}
         orphans = [k for k in ACTION_ROLES.keys() if k not in all_values]
         assert orphans == [], f"ACTION_ROLES entries with no Capability enum: {orphans}"
+
+
+# ── Regression tests for ultrareview-found bugs ─────────────────────────────
+
+class TestRegressions:
+    """Bugs found by ultrareview that we don't want to regress.
+
+    Each test names the bug ID from active_tracker.md so future readers can
+    grep the connection between the test and the underlying issue.
+    """
+
+    # B-014 — gate_or_403_shadow_404 must close the dead-code gap on Phase-2
+    # write routes. Behaviour:
+    #   • granted                 → no exception
+    #   • denied + flag enforced  → HTTPException(403)
+    #   • denied + flag shadow    → HTTPException(404)
+    def test_b014_gate_shadow_404_granted_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastapi import HTTPException
+        from app.services import permissions as perm
+
+        # Force a "granted" decision regardless of DB state.
+        monkeypatch.setattr(perm, "can_or_owner", lambda *a, **kw: True)
+        monkeypatch.setenv("PERMISSIONS_ENFORCE_WRITES", "true")
+
+        try:
+            perm.gate_or_403_shadow_404(
+                user=_FakeUser(id=1),
+                action=CourseCapabilities.update_course,
+                scope=Scope.course(42),
+                db=None,  # type: ignore[arg-type]  — can_or_owner is mocked
+                owner_id=1,
+            )
+        except HTTPException as e:
+            pytest.fail(f"granted call raised {e}")
+
+    def test_b014_gate_shadow_404_denied_flag_on_raises_403(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastapi import HTTPException
+        from app.services import permissions as perm
+
+        monkeypatch.setattr(perm, "can_or_owner", lambda *a, **kw: False)
+        monkeypatch.setenv("PERMISSIONS_ENFORCE_WRITES", "true")
+
+        with pytest.raises(HTTPException) as exc_info:
+            perm.gate_or_403_shadow_404(
+                user=_FakeUser(id=1),
+                action=CourseCapabilities.update_course,
+                scope=Scope.course(42),
+                db=None,  # type: ignore[arg-type]
+                owner_id=99,
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_b014_gate_shadow_404_denied_flag_off_raises_404(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastapi import HTTPException
+        from app.services import permissions as perm
+
+        monkeypatch.setattr(perm, "can_or_owner", lambda *a, **kw: False)
+        monkeypatch.delenv("PERMISSIONS_ENFORCE_WRITES", raising=False)
+
+        with pytest.raises(HTTPException) as exc_info:
+            perm.gate_or_403_shadow_404(
+                user=_FakeUser(id=1),
+                action=CourseCapabilities.update_course,
+                scope=Scope.course(42),
+                db=None,  # type: ignore[arg-type]
+                owner_id=99,
+                not_found_detail="Course not found",
+            )
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Course not found"
+
+
+@dataclass
+class _FakeUser:
+    """Tiny stand-in for app.models.domain.User — gate_or_403_shadow_404
+    only reads `.id` from the user object for log_decision."""
+    id: int

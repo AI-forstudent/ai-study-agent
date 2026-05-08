@@ -61,6 +61,14 @@ class UserOut(BaseModel):
     subscription_tier:    str
     home_organization_id: Optional[int] = None
     created_at:           datetime
+    # F-005 Phase 4 — usage rollup so the super-admin can see who's
+    # spending what. Period is the trailing PERIOD_SECONDS window.
+    period_credits:       int   = 0
+    period_calls:         int   = 0
+    period_cost_usd:      float = 0.0
+    lifetime_credits:     int   = 0
+    lifetime_calls:       int   = 0
+    lifetime_cost_usd:    float = 0.0
 
 
 class OrgOut(BaseModel):
@@ -125,6 +133,16 @@ class RoleAssignmentCreate(BaseModel):
 VALID_ROLES = {"super_user", "org_admin", "community_admin", "course_admin", "member"}
 VALID_SCOPES = {"platform", "organization", "community", "course"}
 
+# Each non-`member` role must be granted at exactly one scope_type — the
+# §3.3 capability matrix encodes its scope inherently. `member` is the only
+# multi-scope role.
+ROLE_REQUIRED_SCOPE = {
+    "super_user":      "platform",
+    "org_admin":       "organization",
+    "community_admin": "community",
+    "course_admin":    "course",
+}
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -155,6 +173,16 @@ def _validate_role_assignment_payload(payload: RoleAssignmentCreate) -> None:
     else:
         if payload.scope_id is None:
             raise HTTPException(422, f"scope_id is required for scope_type='{payload.scope_type}'.")
+    # Inverse rule: each admin role binds to exactly one scope_type. Without this,
+    # a payload like {role:'super_user', scope_type:'organization', scope_id:5}
+    # passes the platform-only branch (scope_type isn't 'platform') and inserts
+    # a malformed row that lights up the Admin UI but 403s on every action.
+    required_scope = ROLE_REQUIRED_SCOPE.get(payload.role)
+    if required_scope is not None and payload.scope_type != required_scope:
+        raise HTTPException(
+            422,
+            f"role='{payload.role}' is only valid at scope_type='{required_scope}'.",
+        )
 
 
 def _scope_from_payload(payload: RoleAssignmentCreate) -> Scope:
@@ -177,15 +205,83 @@ def list_all_users(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List every user in the system (super-user only). Useful for
-    picking a user when granting a role from the admin panel."""
+    """List every user in the system (super-user only).
+
+    Sorted newest-first by `created_at DESC` (was `id ASC` — newly
+    registered users were buried at the bottom of the 500-row cap).
+
+    Each row carries a usage rollup for the period window + lifetime so
+    the super-admin can spot who's burning credits without drilling in.
+    Aggregates are computed in two grouped queries (period + lifetime)
+    and joined in Python to keep the SQL legible — at the v1 scale the
+    user table is tiny.
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import func
+    from app.core.quota_config import PERIOD_SECONDS
+    from app.models.domain import UsageEvent
+
     require_can(current_user, AdminCapabilities.list_all_users, Scope.platform(), db)
 
-    q = db.query(User).order_by(User.id.asc())
+    q = db.query(User).order_by(User.created_at.desc(), User.id.desc())
     if email_contains:
         like = f"%{email_contains.lower()}%"
         q = q.filter(User.email.ilike(like))
-    return [UserOut.model_validate(u) for u in q.limit(500).all()]
+    users = q.limit(500).all()
+    user_ids = [u.id for u in users]
+    if not user_ids:
+        return []
+
+    period_start = datetime.now(timezone.utc) - timedelta(seconds=PERIOD_SECONDS)
+
+    period_rows = (
+        db.query(
+            UsageEvent.user_id,
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+            func.count(UsageEvent.id).label("calls"),
+        )
+        .filter(
+            UsageEvent.user_id.in_(user_ids),
+            UsageEvent.created_at >= period_start,
+        )
+        .group_by(UsageEvent.user_id)
+        .all()
+    )
+    period_by_uid = {r.user_id: r for r in period_rows}
+
+    lifetime_rows = (
+        db.query(
+            UsageEvent.user_id,
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+            func.count(UsageEvent.id).label("calls"),
+        )
+        .filter(UsageEvent.user_id.in_(user_ids))
+        .group_by(UsageEvent.user_id)
+        .all()
+    )
+    lifetime_by_uid = {r.user_id: r for r in lifetime_rows}
+
+    out: list[UserOut] = []
+    for u in users:
+        p = period_by_uid.get(u.id)
+        l = lifetime_by_uid.get(u.id)
+        out.append(UserOut(
+            id=u.id,
+            email=u.email,
+            auth_provider=u.auth_provider,
+            subscription_tier=u.subscription_tier,
+            home_organization_id=u.home_organization_id,
+            created_at=u.created_at,
+            period_credits=int(p.credits if p else 0),
+            period_calls=int(p.calls if p else 0),
+            period_cost_usd=(int(p.cost if p else 0)) / 1_000_000,
+            lifetime_credits=int(l.credits if l else 0),
+            lifetime_calls=int(l.calls if l else 0),
+            lifetime_cost_usd=(int(l.cost if l else 0)) / 1_000_000,
+        ))
+    return out
 
 
 # ── Organizations ──────────────────────────────────────────────────────────

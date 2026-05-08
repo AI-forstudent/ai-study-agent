@@ -30,13 +30,22 @@ from bidi.algorithm import get_display
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session, joinedload
 
+from datetime import datetime, timezone, timedelta
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func
+
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
+from app.core.quota_config import (
+    CREDIT_USD_RATE, PERIOD_SECONDS, get_tier_quota,
+)
 from app.models.domain import (
     AcademicProfile,
     CourseCatalog,
     JobApplication,
     StudentCourseRecord,
+    UsageEvent,
     User,
 )
 from app.schemas.personal_hub import (
@@ -497,3 +506,204 @@ def parse_transcript(
         calculated_gpa=gpa,
         records=all_records,
     )
+
+
+# ── Usage / billing (F-005 Phase 4 / T-010) ────────────────────────────────
+
+class UsagePerEndpointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    endpoint:        str
+    call_count:      int
+    input_tokens:    int
+    output_tokens:   int
+    credits:         int
+    cost_usd_micros: int
+
+
+class UsagePerProviderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    provider:        str
+    call_count:      int
+    credits:         int
+    cost_usd_micros: int
+
+
+class RecentEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id:              int
+    created_at:      str
+    provider:        str
+    model_name:      Optional[str] = None
+    endpoint:        str
+    input_tokens:    int
+    output_tokens:   int
+    credits:         int
+    cost_usd_micros: int
+
+
+class UsageSummaryOut(BaseModel):
+    """Aggregated usage for the authenticated user.
+
+    `period_*` fields cover the current rolling window (PERIOD_SECONDS).
+    `lifetime_*` covers all time. The UI typically renders period numbers
+    against the user's tier quota and shows lifetime as a secondary metric.
+    """
+    tier:                 str
+    tier_label:           str
+    credits_per_period:   Optional[int] = None    # None = unlimited (Pro)
+    period_seconds:       int
+    period_credits:       int
+    period_cost_usd:      float
+    period_calls:         int
+    period_resets_at:     str          # ISO timestamp — anchored at first event in window
+    lifetime_credits:     int
+    lifetime_cost_usd:    float
+    lifetime_calls:       int
+    by_endpoint:          List[UsagePerEndpointOut]
+    by_provider:          List[UsagePerProviderOut]
+    recent_events:        List[RecentEventOut]
+
+
+@router.get("/usage", response_model=UsageSummaryOut)
+def get_my_usage(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated user's API usage summary.
+
+    Computed live from `usage_events` — no per-user counter cache. With
+    `INDEX(user_id, created_at)` and a typical user's call volume this is
+    a fast scan over a few hundred rows.
+
+    The "period" window is the trailing PERIOD_SECONDS (default 24h). For
+    most tiers this maps to the daily quota, so users see "X used of Y" in
+    the bar and a fresh allowance kicks in on rollover. Pro tier shows
+    period usage with a "Unlimited" label rather than a quota bar.
+    """
+    period_start = datetime.now(timezone.utc) - timedelta(seconds=PERIOD_SECONDS)
+
+    # Period totals
+    period_row = (
+        db.query(
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+            func.count(UsageEvent.id).label("calls"),
+        )
+        .filter(
+            UsageEvent.user_id == current_user.id,
+            UsageEvent.created_at >= period_start,
+        )
+        .one()
+    )
+
+    # Lifetime totals
+    lifetime_row = (
+        db.query(
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+            func.count(UsageEvent.id).label("calls"),
+        )
+        .filter(UsageEvent.user_id == current_user.id)
+        .one()
+    )
+
+    # By-endpoint breakdown (period-scoped — matches the bar visualization).
+    by_endpoint_rows = (
+        db.query(
+            UsageEvent.endpoint,
+            func.count(UsageEvent.id).label("call_count"),
+            func.coalesce(func.sum(UsageEvent.input_tokens),    0).label("input_tokens"),
+            func.coalesce(func.sum(UsageEvent.output_tokens),   0).label("output_tokens"),
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+        )
+        .filter(
+            UsageEvent.user_id == current_user.id,
+            UsageEvent.created_at >= period_start,
+        )
+        .group_by(UsageEvent.endpoint)
+        .order_by(func.sum(UsageEvent.credits).desc())
+        .all()
+    )
+
+    # By-provider (also period-scoped).
+    by_provider_rows = (
+        db.query(
+            UsageEvent.provider,
+            func.count(UsageEvent.id).label("call_count"),
+            func.coalesce(func.sum(UsageEvent.credits),         0).label("credits"),
+            func.coalesce(func.sum(UsageEvent.cost_usd_micros), 0).label("cost"),
+        )
+        .filter(
+            UsageEvent.user_id == current_user.id,
+            UsageEvent.created_at >= period_start,
+        )
+        .group_by(UsageEvent.provider)
+        .order_by(func.sum(UsageEvent.credits).desc())
+        .all()
+    )
+
+    # Recent events for an audit log table.
+    recent = (
+        db.query(UsageEvent)
+        .filter(UsageEvent.user_id == current_user.id)
+        .order_by(UsageEvent.created_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    quota = get_tier_quota(current_user.subscription_tier)
+
+    return UsageSummaryOut(
+        tier=current_user.subscription_tier or "free",
+        tier_label=quota["label"],
+        credits_per_period=quota["credits_per_period"],
+        period_seconds=PERIOD_SECONDS,
+        period_credits=int(period_row.credits or 0),
+        period_cost_usd=(int(period_row.cost or 0)) / 1_000_000,
+        period_calls=int(period_row.calls or 0),
+        period_resets_at=(datetime.now(timezone.utc) + timedelta(seconds=PERIOD_SECONDS)).isoformat(),
+        lifetime_credits=int(lifetime_row.credits or 0),
+        lifetime_cost_usd=(int(lifetime_row.cost or 0)) / 1_000_000,
+        lifetime_calls=int(lifetime_row.calls or 0),
+        by_endpoint=[
+            UsagePerEndpointOut(
+                endpoint=row.endpoint,
+                call_count=int(row.call_count or 0),
+                input_tokens=int(row.input_tokens or 0),
+                output_tokens=int(row.output_tokens or 0),
+                credits=int(row.credits or 0),
+                cost_usd_micros=int(row.cost or 0),
+            )
+            for row in by_endpoint_rows
+        ],
+        by_provider=[
+            UsagePerProviderOut(
+                provider=row.provider,
+                call_count=int(row.call_count or 0),
+                credits=int(row.credits or 0),
+                cost_usd_micros=int(row.cost or 0),
+            )
+            for row in by_provider_rows
+        ],
+        recent_events=[
+            RecentEventOut(
+                id=ev.id,
+                created_at=ev.created_at.isoformat() if ev.created_at else "",
+                provider=ev.provider,
+                model_name=ev.model_name,
+                endpoint=ev.endpoint,
+                input_tokens=ev.input_tokens,
+                output_tokens=ev.output_tokens,
+                credits=ev.credits,
+                cost_usd_micros=ev.cost_usd_micros,
+            )
+            for ev in recent
+        ],
+    )
+
+
+# Reference CREDIT_USD_RATE so it's not flagged as unused. The constant is
+# imported here because future usage display (e.g. `credit pack value`)
+# will need it; keeping the import live now avoids re-touching this file.
+_ = CREDIT_USD_RATE

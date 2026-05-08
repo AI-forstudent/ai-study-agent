@@ -36,7 +36,7 @@ from app.services.document_service import extract_text
 from app.services.exam_processor import process_exam
 from app.services.llm_json import LLMJsonError, user_message_for
 from app.services.permissions import (
-    ExamCapabilities, Scope, gate_or_403,
+    ExamCapabilities, Scope, gate_or_403_shadow_404,
 )
 
 router = APIRouter(tags=["exams"])
@@ -162,17 +162,27 @@ class ExamDetailOut(ExamCardOut):
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _ensure_course_owner(course_id: int, user: User, db: Session) -> Course:
-    """Caller must own the course to upload/delete exams.
+    """Caller must own the course (legacy helper kept for retry_exam_processing
+    which is not part of the Phase-2 admin matrix yet).
 
-    Read access via `_ensure_course_readable` is more permissive (members +
-    public courses), but mutations are owner-only — admins/students should
-    not pollute the exam database with their own files.
+    The Phase-2 write routes — create_course_exam, delete_exam — use
+    `_get_course_or_404` + `gate_or_403_shadow_404` instead, so non-owner
+    admins (course_admin / community_admin / org_admin / super_user) can
+    pass when the flag is on without 404'ing them in shadow mode.
     """
     course = (
         db.query(Course)
         .filter(Course.id == course_id, Course.owner_id == user.id)
         .first()
     )
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+
+def _get_course_or_404(course_id: int, db: Session) -> Course:
+    """Existence-only fetch. Pair with `gate_or_403_shadow_404`."""
+    course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     return course
@@ -470,13 +480,16 @@ def create_course_exam(
 
     Duplicate detection is still TBD — see active_tracker T-015 / T-025.
     """
-    course = _ensure_course_owner(course_id, current_user, db)
+    # Existence-only fetch + shadow-404 gate so non-owner admins (per the
+    # Phase-2 capability matrix) actually reach the role-based check when
+    # the flag flips on. With the flag off, denied callers still see 404.
+    course = _get_course_or_404(course_id, db)
 
-    # Phase 2 gate.
-    gate_or_403(
+    gate_or_403_shadow_404(
         current_user, ExamCapabilities.upload_exam,
         Scope.course(course.id), db,
         owner_id=course.owner_id,
+        not_found_detail="Course not found",
     )
 
     # Validate the source doc
@@ -658,13 +671,15 @@ def delete_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    course = _ensure_course_owner(exam.course_id, current_user, db)
 
-    # Phase 2 gate.
-    gate_or_403(
+    # Existence-only fetch + shadow-404 gate (see create_course_exam).
+    course = _get_course_or_404(exam.course_id, db)
+
+    gate_or_403_shadow_404(
         current_user, ExamCapabilities.delete_exam,
         Scope.course(exam.course_id), db,
         owner_id=course.owner_id,
+        not_found_detail="Exam not found",
     )
 
     db.delete(exam)

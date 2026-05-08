@@ -463,3 +463,54 @@ def gate_or_403(
             status_code=403,
             detail=f"You do not have permission to perform '{action}' on this resource.",
         )
+
+
+def gate_or_403_shadow_404(
+    user: User,
+    action: str,
+    scope: Scope,
+    db: Session,
+    *,
+    owner_id: Optional[int] = None,
+    target_user_id: Optional[int] = None,
+    not_found_detail: str = "Not found",
+) -> None:
+    """Write-route gate that preserves today's legacy 'cross-user 404' UX
+    while the `PERMISSIONS_ENFORCE_WRITES` flag is off.
+
+    Routes that historically used a `_get_owned_*_or_404` helper before
+    `gate_or_403` made the role-based decision unreachable for non-owner
+    admins (community_admin / org_admin / super_user). Those helpers must
+    be replaced with an existence-only fetch — but doing so under the bare
+    `gate_or_403` would mean any logged-in user could mutate any row in
+    shadow mode, since `gate_or_403` only logs in shadow mode and lets the
+    request proceed. This helper closes that gap:
+
+      - granted                 → proceeds
+      - denied + flag enforced  → raises 403  (Phase-2 admin semantics)
+      - denied + flag shadowed  → raises 404  (preserves legacy UX, no
+                                                existence leak)
+
+    Use this on write routes that currently call `_get_owned_*_or_404` +
+    `gate_or_403`. The new pattern is: existence-only fetch + this helper.
+    """
+    from fastapi import HTTPException
+
+    if owner_id is not None:
+        granted = can_or_owner(user, action, scope, db, owner_id=owner_id)
+    else:
+        granted = can(user, action, scope, db, target_user_id=target_user_id)
+
+    enforce = enforce_writes_enabled()
+    log_decision(
+        user_id=user.id, action=action, scope=scope,
+        granted=granted, enforced=enforce,
+    )
+    if granted:
+        return
+    if enforce:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You do not have permission to perform '{action}' on this resource.",
+        )
+    raise HTTPException(status_code=404, detail=not_found_detail)

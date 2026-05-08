@@ -6,20 +6,25 @@ Multi-provider LLM routing layer.
 Supports: Gemini (Google), OpenAI (ChatGPT), Anthropic (Claude).
 Falls back to Gemini if a provider's API key is missing.
 
-Usage:
-    from app.services.llm_providers import call_llm
+Two entry points
+────────────────
+• `call_llm(...)` — backwards-compatible string return for existing callers.
+• `call_llm_with_usage(...)` — returns a `LLMReply` dataclass with the reply
+  text + token counts + cost. Use this from any new code path so the call
+  can record a UsageEvent (F-005 Phase 2 / T-008).
 
-    reply = call_llm(
-        provider="openai",          # "gemini" | "openai" | "anthropic"
-        model_tier="flash",         # "flash-lite" | "flash" | "pro"
-        system_prompt="You are...",
-        history=[{"role": "user", "content": "Hello"}],
-    )
+Usage logging is intentionally NOT done inside this module — keeping it
+provider-pure means tests don't need a DB session. The router is responsible
+for calling `write_usage_event(db, user_id, endpoint, reply)` after a
+successful call.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.core.config import ANTHROPIC_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY
+
 
 # ── Per-provider tier → model mapping ─────────────────────────────────────
 
@@ -49,9 +54,26 @@ def _resolve_model(provider: str, tier: str | None) -> str:
     return tier_map.get(tier or _DEFAULT_TIER, tier_map[_DEFAULT_TIER])
 
 
+# ── Reply container ───────────────────────────────────────────────────────
+
+@dataclass
+class LLMReply:
+    """Provider-agnostic shape returned from `call_llm_with_usage`.
+
+    Token counts are best-effort — providers occasionally omit usage fields
+    on streaming/error paths; we default to 0 in that case so the row still
+    inserts (the caller can decide whether 0-token rows are noise).
+    """
+    text:          str
+    provider:      str        # 'gemini' | 'openai' | 'anthropic'
+    model:         str        # raw provider model id
+    input_tokens:  int = 0
+    output_tokens: int = 0
+
+
 # ── Provider implementations ───────────────────────────────────────────────
 
-def _call_gemini(model: str, system_prompt: str, history: list[dict]) -> str:
+def _call_gemini(model: str, system_prompt: str, history: list[dict]) -> LLMReply:
     from google.genai import types as genai_types
     from app.services.genai_client import get_client
 
@@ -68,10 +90,20 @@ def _call_gemini(model: str, system_prompt: str, history: list[dict]) -> str:
         contents=contents,
         config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
     )
-    return response.text
+    # Gemini's usage_metadata fields are camelCase-ish in the SDK Python
+    # bindings. Use getattr defensively because SDK upgrades have shifted
+    # field names in the past.
+    um = getattr(response, "usage_metadata", None)
+    return LLMReply(
+        text=response.text or "",
+        provider="gemini",
+        model=model,
+        input_tokens=getattr(um, "prompt_token_count", 0) or 0,
+        output_tokens=getattr(um, "candidates_token_count", 0) or 0,
+    )
 
 
-def _call_openai(model: str, system_prompt: str, history: list[dict]) -> str:
+def _call_openai(model: str, system_prompt: str, history: list[dict]) -> LLMReply:
     from openai import OpenAI
 
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -79,10 +111,17 @@ def _call_openai(model: str, system_prompt: str, history: list[dict]) -> str:
         {"role": msg["role"], "content": msg["content"]} for msg in history
     ]
     response = client.chat.completions.create(model=model, messages=messages)
-    return response.choices[0].message.content or ""
+    usage = getattr(response, "usage", None)
+    return LLMReply(
+        text=response.choices[0].message.content or "",
+        provider="openai",
+        model=model,
+        input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+        output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+    )
 
 
-def _call_anthropic(model: str, system_prompt: str, history: list[dict]) -> str:
+def _call_anthropic(model: str, system_prompt: str, history: list[dict]) -> LLMReply:
     from anthropic import Anthropic
 
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -95,10 +134,38 @@ def _call_anthropic(model: str, system_prompt: str, history: list[dict]) -> str:
         system=system_prompt,
         messages=messages,
     )
-    return response.content[0].text
+    usage = getattr(response, "usage", None)
+    return LLMReply(
+        text=response.content[0].text,
+        provider="anthropic",
+        model=model,
+        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+    )
 
 
-# ── Public entry point ─────────────────────────────────────────────────────
+# ── Public entry points ────────────────────────────────────────────────────
+
+def call_llm_with_usage(
+    provider: str | None,
+    model_tier: str | None,
+    system_prompt: str,
+    history: list[dict],
+) -> LLMReply:
+    """Like `call_llm` but returns a `LLMReply` carrying token usage. Falls
+    back to Gemini if the requested provider's key is missing — the
+    `provider` field of the reply reflects what actually ran, not what was
+    requested, so usage logs aren't misleading."""
+    p = (provider or "gemini").lower()
+
+    if p == "openai" and OPENAI_API_KEY:
+        return _call_openai(_resolve_model("openai", model_tier), system_prompt, history)
+
+    if p == "anthropic" and ANTHROPIC_API_KEY:
+        return _call_anthropic(_resolve_model("anthropic", model_tier), system_prompt, history)
+
+    return _call_gemini(_resolve_model("gemini", model_tier), system_prompt, history)
+
 
 def call_llm(
     provider: str | None,
@@ -106,20 +173,7 @@ def call_llm(
     system_prompt: str,
     history: list[dict],
 ) -> str:
-    """Route to the correct provider and return the assistant reply text.
-
-    Falls back to Gemini if the requested provider's key is not configured.
-    """
-    p = (provider or "gemini").lower()
-
-    if p == "openai" and OPENAI_API_KEY:
-        model = _resolve_model("openai", model_tier)
-        return _call_openai(model, system_prompt, history)
-
-    if p == "anthropic" and ANTHROPIC_API_KEY:
-        model = _resolve_model("anthropic", model_tier)
-        return _call_anthropic(model, system_prompt, history)
-
-    # Default / fallback: Gemini
-    model = _resolve_model("gemini", model_tier)
-    return _call_gemini(model, system_prompt, history)
+    """Backwards-compatible string return. Existing callers (chat router,
+    document service, etc.) keep working unchanged. New code should prefer
+    `call_llm_with_usage` so it can record a UsageEvent."""
+    return call_llm_with_usage(provider, model_tier, system_prompt, history).text
