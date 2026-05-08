@@ -66,7 +66,7 @@ interface MainWorkspaceProps {
  */
 const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }) => {
   const { textSelection, setTextSelection, activeThread, setActiveThread } = useAppStore();
-  const { isPhone, isTablet, isDesktop } = useBreakpoint();
+  const { isPhone, isTablet } = useBreakpoint();
 
   // ── Local layout state ───────────────────────────────────────────────────
   const [scale, setScale]           = useState(1.0);
