@@ -1,12 +1,14 @@
 name: New Idea
-description: A new idea for the AI Study Partner. Claude analyzes ideas every weekday morning.
+description: Capture a product idea. Claude only analyzes ideas you've moved to the Ready for Analysis column.
 title: "[Idea] "
 labels: ["area:idea"]
 body:
   - type: markdown
     attributes:
       value: |
-        Claude will analyze this idea during the next daily run (weekdays at 09:00) and post a verdict, effort estimate, and a sketch of the design (if it's a UI feature) as a comment. The issue then moves to the **Idea Summary** column on the Ideas Pipeline project.
+        This issue will land in the **Drafts** column of the [Ideas Pipeline project](https://github.com/orgs/AI-forstudent/projects/1). Claude does **not** analyze drafts.
+
+        When the idea is ripe and you want a verdict + effort estimate + design, move the card to the **Ready for Analysis** column. The next weekday morning at 09:00, Claude will post the analysis as a comment and move the card to **Idea Summary**.
 
   - type: textarea
     id: motivation
