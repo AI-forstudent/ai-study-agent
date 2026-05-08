@@ -195,9 +195,17 @@ def upload_document(
             .first()
         )
         if existing_ud:
+            # Structured detail so the chat-attach orchestrator (F-020) can
+            # attach the existing doc transparently instead of bailing with
+            # a generic error. The My Library upload handler still gets a
+            # 409 status to show its "already in library" toast — it never
+            # parsed the detail string.
             raise HTTPException(
                 status_code=409,
-                detail="DOCUMENT_ALREADY_EXISTS_FOR_USER",
+                detail={
+                    "code": "DOCUMENT_ALREADY_EXISTS_FOR_USER",
+                    "existing_user_document_id": existing_ud.id,
+                },
             )
 
         # New user for an already-processed file — workspace replica only

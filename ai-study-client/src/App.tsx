@@ -229,26 +229,49 @@ function App() {
    *  it to the active thread (chat-in-progress case) or creates a fresh
    *  doc-anchored thread on the fly (New Session before first message),
    *  and switches the workspace UI to PDF + chat split via
-   *  `docs.handleSelectDocument`. */
+   *  `docs.handleSelectDocument`.
+   *
+   *  Duplicate-file handling: CAS dedup raises a 409 with structured detail
+   *  `{ code, existing_user_document_id }`. We treat that as a soft success
+   *  — attach the existing doc to the thread instead of bailing. Same
+   *  content, same hash, no need to ask the user; we surface a small toast
+   *  so the user knows what happened. */
   async function handleAttachFileToActiveSession(file: File): Promise<void> {
-    // 1. Upload (auto-summarize is off — F-021).
-    const uploadRes = await api.uploadDocument(file, false);
-    const newDocId: number = uploadRes.data.id;
+    // 1. Try to upload (auto-summarize is off — F-021).
+    let attachId: number;
+    let wasDuplicate = false;
+    try {
+      const uploadRes = await api.uploadDocument(file, false);
+      attachId = uploadRes.data.id;
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const existingId =
+        err?.response?.status === 409 && typeof detail === 'object'
+          ? detail?.existing_user_document_id
+          : undefined;
+      if (typeof existingId === 'number') {
+        attachId = existingId;
+        wasDuplicate = true;
+      } else {
+        throw err;   // unrecognised failure — propagate to ChatPanel's catch
+      }
+    }
 
     // 2. Refresh the user's docs list so handleSelectDocument can resolve
-    //    the new doc by id.
+    //    the doc by id (covers both fresh-upload and duplicate-already-in-list
+    //    cases).
     await docs.refreshUserDocs();
 
     // 3. Attach to thread or create one. The current activeThread lives in
     //    Zustand; we read it freshly to dodge stale closures.
     const currentThread = useAppStore.getState().activeThread;
     if (currentThread) {
-      await api.updateThread(currentThread.id, { document_id: newDocId });
+      await api.updateThread(currentThread.id, { document_id: attachId });
     } else {
       // Standalone session before any message — create a doc-anchored
       // thread now so subsequent /threads/.../messages calls have a target.
       const created = await api.createThread({
-        document_id: newDocId,
+        document_id: attachId,
         persona_id: activePersonaId,
         course_id: activeCourseId,
       });
@@ -259,8 +282,15 @@ function App() {
     //    useDocuments → useChat re-routes to the doc-anchored RAG path on
     //    the next message → MainWorkspace renders the PDF viewer alongside
     //    the chat panel.
-    await docs.handleSelectDocument({ id: newDocId });
+    await docs.handleSelectDocument({ id: attachId });
     setStandaloneMode(false);
+
+    if (wasDuplicate) {
+      // Browser-native is acceptable for v1; a toast component would be
+      // nicer but isn't worth the dependency right now.
+      // eslint-disable-next-line no-alert
+      alert('This file is already in your library — opened the existing copy.');
+    }
   }
 
   /** Folder click inside a course's Folders tab on the Courses page. Drills

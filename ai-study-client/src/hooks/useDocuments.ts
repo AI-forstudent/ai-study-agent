@@ -73,11 +73,30 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       // Auto-summarize toggle removed (F-021) — never request a full-doc
       // summary at upload time anymore.
       const response = await api.uploadDocument(selectedFile, false);
-      setDocumentId(response.data.id);   // triggers useChat to clear + re-fetch threads
-      setFile(selectedFile);
-      setActiveThread(null);
+      const newDoc = response.data;
+
+      // Refresh the user's docs first so handleSelectDocument can resolve
+      // the new doc by id.
       const docsRes = await api.getUserDocuments();
       setUserDocs(docsRes.data);
+
+      // Open the new doc in the workspace via the same blob-fetch path that
+      // clicking a doc card uses. The previous code set `setFile(File)`
+      // directly, which react-pdf could fail to render — leaving the user
+      // staring at an empty viewer and bouncing back to the library on the
+      // next navigation.
+      setActiveThread(null);
+      setDocumentId(newDoc.id);
+      try {
+        const encodedPath = newDoc.file_path.split('/').map(encodeURIComponent).join('/');
+        const blobRes = await api.getFile(encodedPath);
+        setFile(URL.createObjectURL(blobRes.data));
+      } catch (blobErr) {
+        // Fallback to the raw File object if the blob fetch fails — better
+        // than nothing.
+        console.error('[handleFileChange] blob fetch failed, using File object', blobErr);
+        setFile(selectedFile);
+      }
     } catch (err: any) {
       if (err?.response?.status === 409) {
         setUploadError('DOCUMENT_EXISTS');
