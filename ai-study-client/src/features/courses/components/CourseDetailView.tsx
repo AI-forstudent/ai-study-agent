@@ -81,26 +81,27 @@ export default function CourseDetailView({
 
   return (
     <PageContainer>
-      {/* ── Breadcrumb + actions ─────────────────────────────────────── */}
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <div className="flex items-center gap-2">
-          <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F]">
+      {/* ── Breadcrumb + actions — stack on phone, side-by-side on tablet+ ─ */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2 mb-4">
+        <div className="flex items-center gap-2 min-w-0">
+          <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F] shrink-0">
             <ArrowLeft className="w-4 h-4" /> Courses
           </button>
           <span className="text-[#C4C4C4]">/</span>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: accent }} />
-            <span className="text-sm font-semibold text-[#37352F]">{course.title}</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: accent }} />
+            <span className="text-sm font-semibold text-[#37352F] truncate">{course.title}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => onStartCourseChat(course.id)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors duration-150"
             title="Open a chat that knows this course's syllabus"
           >
             <MessageSquare className="w-4 h-4" />
-            Chat about this course
+            <span className="sm:hidden">Chat</span>
+            <span className="hidden sm:inline">Chat about this course</span>
           </button>
           {isOwner && (
             <button
@@ -113,11 +114,11 @@ export default function CourseDetailView({
         </div>
       </div>
 
-      {/* ── Tabs ─────────────────────────────────────────────────────── */}
-      <div className="flex border-b border-[#E8E8E6] mb-5">
+      {/* ── Tabs — scroll horizontally if they overflow ───────────────── */}
+      <div className="flex border-b border-[#E8E8E6] mb-5 overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
         <button
           onClick={() => setTab('folders')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
             tab === 'folders'
               ? 'border-indigo-600 text-indigo-600'
               : 'border-transparent text-[#787774] hover:text-[#37352F]'
@@ -129,7 +130,7 @@ export default function CourseDetailView({
         </button>
         <button
           onClick={() => setTab('syllabus')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
             tab === 'syllabus'
               ? 'border-indigo-600 text-indigo-600'
               : 'border-transparent text-[#787774] hover:text-[#37352F]'
@@ -140,7 +141,7 @@ export default function CourseDetailView({
         </button>
         <button
           onClick={() => setTab('exams')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
             tab === 'exams'
               ? 'border-indigo-600 text-indigo-600'
               : 'border-transparent text-[#787774] hover:text-[#37352F]'
@@ -152,7 +153,7 @@ export default function CourseDetailView({
         {isOwner && (
           <button
             onClick={() => setTab('settings')}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
               tab === 'settings'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-[#787774] hover:text-[#37352F]'

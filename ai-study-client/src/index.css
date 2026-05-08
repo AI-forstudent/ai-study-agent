@@ -12,6 +12,16 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* Prevent iOS Safari auto-zoom on focus when input font-size < 16px.
+     Applies only to phone-width viewports so desktop keeps its tighter typography. */
+  @media (max-width: 767px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    textarea,
+    select {
+      font-size: 16px;
+    }
+  }
 }
 
 /* Text selection — global (purple tint for AI feel) */

@@ -15,6 +15,9 @@ interface SidebarProps {
   /** When true, render the Admin nav entry. The frontend guards this on
    *  `me.has_admin_role` so non-admins never see the link. */
   showAdmin?: boolean;
+  /** Injected by AppLayout when the sidebar lives inside the mobile drawer.
+   *  Every nav action calls this so the drawer dismisses on selection. */
+  onCloseDrawer?: () => void;
 }
 
 // ── Reusable sub-components ─────────────────────────────────────────────────
@@ -41,7 +44,7 @@ function NavItem({ icon: Icon, label, active, disabled, badge, onClick }: NavIte
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
-      className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm transition-colors duration-150 text-start ${
+      className={`w-full flex items-center gap-2.5 px-3 py-2 lg:py-1.5 rounded-md text-sm transition-colors duration-150 text-start ${
         disabled
           ? 'text-[#C4C4C4] cursor-not-allowed'
           : active
@@ -62,13 +65,18 @@ function NavItem({ icon: Icon, label, active, disabled, badge, onClick }: NavIte
 
 // ── Main sidebar ────────────────────────────────────────────────────────────
 
-export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession, showAdmin }: SidebarProps) {
+export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession, showAdmin, onCloseDrawer }: SidebarProps) {
+  // Dismiss the mobile drawer (no-op on desktop) on every nav-style action.
+  const nav = (v: SidebarView) => { onNavigate(v); onCloseDrawer?.(); };
+  const newSession = () => { onNewSession?.(); onCloseDrawer?.(); };
+  const logout = () => { onCloseDrawer?.(); onLogout(); };
+
   return (
-    <aside className="w-60 h-screen flex flex-col bg-[#F7F7F5] border-e border-[#E8E8E6] shrink-0 overflow-hidden">
+    <aside className="w-full lg:w-60 h-full lg:h-screen flex flex-col bg-[#F7F7F5] lg:border-e lg:border-[#E8E8E6] shrink-0 overflow-y-auto">
 
       {/* ── Logo / home ────────────────────────────────────────────────── */}
       <button
-        onClick={() => onNavigate('main')}
+        onClick={() => nav('main')}
         className="flex items-center gap-2.5 px-4 py-4 hover:bg-[#EFEFED] transition-colors duration-150 shrink-0"
       >
         <div className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center shrink-0">
@@ -82,8 +90,8 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
       {/* ── + New Session — prominent CTA above the nav ────────────────── */}
       <div className="px-3 pt-3 shrink-0">
         <button
-          onClick={onNewSession}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium shadow-sm transition-colors duration-150"
+          onClick={newSession}
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium shadow-sm transition-colors duration-150"
         >
           <Plus className="w-4 h-4" />
           New Session
@@ -98,13 +106,13 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
           icon={Library}
           label="My Library"
           active={activeView === 'main'}
-          onClick={() => onNavigate('main')}
+          onClick={() => nav('main')}
         />
         <NavItem
           icon={Globe}
           label="Courses"
           active={activeView === 'gallery'}
-          onClick={() => onNavigate('gallery')}
+          onClick={() => nav('gallery')}
         />
         <NavItem
           icon={Users}
@@ -117,20 +125,20 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
           icon={FlaskConical}
           label="AI Teachers"
           active={activeView === 'lab'}
-          onClick={() => onNavigate('lab')}
+          onClick={() => nav('lab')}
         />
         <NavItem
           icon={GraduationCap}
           label="My Space"
           active={activeView === 'hub'}
-          onClick={() => onNavigate('hub')}
+          onClick={() => nav('hub')}
         />
         {showAdmin && (
           <NavItem
             icon={Shield}
             label="Admin"
             active={activeView === 'admin'}
-            onClick={() => onNavigate('admin')}
+            onClick={() => nav('admin')}
           />
         )}
       </div>
@@ -146,12 +154,12 @@ export default function Sidebar({ activeView, onNavigate, onLogout, onNewSession
           icon={Settings}
           label="Settings"
           active={activeView === 'settings'}
-          onClick={() => onNavigate('settings')}
+          onClick={() => nav('settings')}
         />
         <NavItem
           icon={LogOut}
           label="Sign out"
-          onClick={onLogout}
+          onClick={logout}
         />
       </div>
 

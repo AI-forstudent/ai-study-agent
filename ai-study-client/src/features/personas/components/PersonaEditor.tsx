@@ -183,11 +183,11 @@ export default function PersonaEditor({
         </button>
       </div>
 
-      {/* ── Split body ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
+      {/* ── Split body — stacks on phone, side-by-side on tablet+ ───────────── */}
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
 
         {/* LEFT: Structured Editor ──────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col overflow-y-auto px-8 py-6 gap-5 border-e border-[#E8E8E6]">
+        <div className="flex-1 flex flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6 gap-5 md:border-e border-[#E8E8E6]">
 
           {/* Name + Icon */}
           <div className="flex gap-3 items-end">
@@ -264,7 +264,7 @@ export default function PersonaEditor({
         </div>
 
         {/* RIGHT: AI Refinement Assistant ──────────────────────────────── */}
-        <div className="w-[360px] shrink-0 flex flex-col bg-[#F7F7F5]">
+        <div className="w-full md:w-[360px] shrink-0 flex flex-col bg-[#F7F7F5] border-t md:border-t-0 border-[#E8E8E6] max-h-[60vh] md:max-h-none">
 
           {/* Panel header */}
           <div className="px-5 py-4 border-b border-[#E8E8E6] flex items-center gap-2 shrink-0">

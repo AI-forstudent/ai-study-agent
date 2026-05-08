@@ -208,7 +208,7 @@ export default function PersonalHubDashboard() {
           const creditsEarned = completedCourses.reduce((sum, c) => sum + (c.course?.credits ?? 0), 0);
           const creditsTotal  = courses.reduce((sum, c) => sum + (c.course?.credits ?? 0), 0);
           return (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
               <GpaRing value={effectiveGpa} target={profile?.target_gpa ?? null} />
               <StatCard
                 label="Courses Completed"

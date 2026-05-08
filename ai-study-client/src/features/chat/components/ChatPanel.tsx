@@ -394,7 +394,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
   // ──────────────────────────────────────────────────────────────────────────
   return (
-    <div className="w-full bg-white border border-[#E8E8E6] rounded-xl flex flex-col overflow-hidden h-full max-h-full">
+    <div className="w-full bg-white sm:border sm:border-[#E8E8E6] sm:rounded-xl flex flex-col overflow-hidden h-full max-h-full">
 
       {/* ── Active persona bar ────────────────────────────────────────── */}
       {activePersonaName !== undefined && (
@@ -595,7 +595,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* ── Active chat tab ────────────────────────────────────────────── */}
       {activeTab === 'chat' && (
         <>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 bg-white">
 
             {/* Context banner — only meaningful for threads anchored to a
                 text selection in a document. Standalone /chat threads carry
@@ -693,8 +693,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           </div>
 
-          {/* Input bar */}
-          <div className="px-4 py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0 items-center">
+          {/* Input bar — taller touch targets on phone, padded for safe area */}
+          <div className="px-3 sm:px-4 py-2.5 sm:py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0 items-center pb-[max(0.625rem,env(safe-area-inset-bottom))]">
             {showAttachButton && (
               <>
                 <input
@@ -709,7 +709,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                   onClick={handleAttachClick}
                   disabled={isAttaching}
                   title="Attach a document to this conversation"
-                  className="p-2 rounded-lg text-[#787774] hover:text-indigo-600 hover:bg-[#F7F7F5] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+                  className="p-2.5 sm:p-2 rounded-lg text-[#787774] hover:text-indigo-600 hover:bg-[#F7F7F5] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
                 >
                   {isAttaching
                     ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -724,12 +724,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               placeholder="Continue the conversation…"
               dir="auto"
-              className="flex-1 border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
+              className="flex-1 min-w-0 border border-[#E8E8E6] rounded-lg px-3 py-2.5 sm:py-2 text-base sm:text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
             />
             <button
               onClick={handleSendMessage}
               disabled={!inputMessage.trim() || isSending}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 sm:p-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
             >
               <Send className="w-4 h-4" />
             </button>

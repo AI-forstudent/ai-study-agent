@@ -17,7 +17,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, message, isLoading,
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6 border border-slate-200"
+        className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-5 sm:p-6 max-h-[90dvh] overflow-y-auto border border-slate-200"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-base font-bold text-slate-800 mb-3">Confirm deletion</h2>
