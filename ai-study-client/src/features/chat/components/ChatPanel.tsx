@@ -396,24 +396,6 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   return (
     <div className="w-full bg-white sm:border sm:border-[#E8E8E6] sm:rounded-xl flex flex-col overflow-hidden h-full max-h-full">
 
-      {/* ── Active persona bar ────────────────────────────────────────── */}
-      {activePersonaName !== undefined && (
-        <div className="flex items-center justify-between px-4 py-2 bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
-          <span className="flex items-center gap-1.5 text-xs text-[#787774]">
-            <Wand2 className="w-3 h-3 text-indigo-500" />
-            <span className="font-medium text-[#37352F]">
-              {activePersonaName ?? 'No Agent'}
-            </span>
-          </span>
-          <button
-            onClick={() => setIsSwitchModalOpen(true)}
-            className="text-[10px] font-medium text-[#787774] hover:text-indigo-600 hover:bg-indigo-50 px-2 py-0.5 rounded-md transition-colors duration-150"
-          >
-            Change
-          </button>
-        </div>
-      )}
-
       {/* ── Switch Persona Modal ──────────────────────────────────────── */}
       <SwitchPersonaModal
         isOpen={isSwitchModalOpen}
@@ -426,31 +408,29 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         }}
       />
 
-      {/* ── Tabs ──────────────────────────────────────────────────────── */}
-      <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
-        {documentId !== null && (
+      {/* ── Tabs (only when there are multiple tabs to choose between) ──── */}
+      {documentId !== null && (
+        <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
           <button
             onClick={() => setActiveTab('tree')}
             className={`${tabBase} ${activeTab === 'tree' ? tabActive : tabInactive}`}
           >
             <Network className="w-3.5 h-3.5" /> Threads
           </button>
-        )}
-        <button
-          onClick={() => setActiveTab('chat')}
-          className={`${tabBase} ${activeTab === 'chat' ? tabActive : tabInactive}`}
-        >
-          <MessageSquare className="w-3.5 h-3.5" /> Active Chat
-        </button>
-        {documentId !== null && (
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`${tabBase} ${activeTab === 'chat' ? tabActive : tabInactive}`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" /> Active Chat
+          </button>
           <button
             onClick={() => setActiveTab('summary')}
             className={`${tabBase} ${activeTab === 'summary' ? tabActive : tabInactive}`}
           >
             <FileText className="w-3.5 h-3.5" /> Summary
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── Thread tree tab ────────────────────────────────────────────── */}
       {activeTab === 'tree' && (
@@ -650,8 +630,21 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             )}
           </div>
 
-          {/* Model picker — provider + tier, right above the input */}
+          {/* Persona + model picker — single bottom controls row */}
           <div className="px-4 pt-2 pb-1 bg-white border-t border-[#E8E8E6] flex items-center gap-2 flex-wrap text-xs">
+            {activePersonaName !== undefined && (
+              <>
+                <button
+                  onClick={() => setIsSwitchModalOpen(true)}
+                  title="Change AI Teacher for this session"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-[#E8E8E6] bg-white text-[#37352F] hover:border-indigo-300 hover:text-indigo-600 transition-colors duration-150"
+                >
+                  <Wand2 className="w-3 h-3 text-indigo-500" />
+                  <span className="font-medium">{activePersonaName ?? 'No Agent'}</span>
+                </button>
+                <span className="mx-1 w-px h-4 bg-[#E8E8E6]" />
+              </>
+            )}
             <span className="flex items-center gap-1 text-[#C4C4C4] me-1">
               <Zap className="w-3 h-3" />
               Model

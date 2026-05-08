@@ -187,10 +187,11 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
   );
 
   // ── Standalone chat mode (no PDF) ─────────────────────────────────────────
+  // No header here — its only signal would be the placeholder title
+  // "Chat Session", which is just noise. The chat panel fills the workspace.
   if (!doc.documentId) {
     return (
       <div className="flex flex-col w-full h-full overflow-hidden">
-        {header}
         <div className="flex flex-1 overflow-hidden items-start justify-center p-2 sm:p-4">
           <div className="max-w-4xl mx-auto w-full h-full">
             <ChatPanel {...chatPanelProps} />
