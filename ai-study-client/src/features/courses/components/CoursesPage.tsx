@@ -136,6 +136,11 @@ export default function CoursesPage({
           personas={personas}
           onBack={() => setActiveCourseId(null)}
           onEdit={c => { setEditingCourse(c); setCourseModalOpen(true); }}
+          onDelete={async c => {
+            await api.deleteCourse(c.id);
+            setActiveCourseId(null);
+            await refreshCourses();
+          }}
           onStartCourseChat={onStartCourseChat}
           onOpenFolderInLibrary={onOpenFolderInLibrary}
         />

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   ArrowLeft, FolderOpen, FileText, GraduationCap, MessageSquare,
+  Settings as SettingsIcon, AlertTriangle, Trash2, Loader2,
 } from 'lucide-react';
 import PageContainer from '../../../components/layout/PageContainer';
 import FolderCard from '../../documents/components/FolderCard';
@@ -10,7 +11,7 @@ import type { Course } from '../../../types/course';
 import type { Folder } from '../../documents/hooks/useFolders';
 import type { Persona } from '../../../types/persona';
 
-type CourseTab = 'folders' | 'syllabus' | 'exams';
+type CourseTab = 'folders' | 'syllabus' | 'exams' | 'settings';
 
 interface Doc {
   id:        number;
@@ -24,6 +25,10 @@ interface CourseDetailViewProps {
   personas:             Persona[];
   onBack:               () => void;
   onEdit:               (course: Course) => void;
+  /** Hard-deletes the course after the typed-confirmation in the Danger
+   *  Zone. Caller is responsible for closing this view + refreshing the
+   *  course list once the deletion succeeds (see CoursesPage). */
+  onDelete:             (course: Course) => Promise<void>;
   onStartCourseChat:    (courseId: number) => void;
   /** Cross-page navigation to My Library with this folder drilled in.
    *  Edit / delete folder actions are deliberately not exposed here in
@@ -44,6 +49,7 @@ export default function CourseDetailView({
   personas,
   onBack,
   onEdit,
+  onDelete,
   onStartCourseChat,
   onOpenFolderInLibrary,
 }: CourseDetailViewProps) {
@@ -52,6 +58,26 @@ export default function CourseDetailView({
   const isOwner = course.role === 'owner';
 
   const courseFolders = folders.filter(f => f.course_id === course.id);
+
+  // ── Danger-zone delete state (typed confirmation) ─────────────────────
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleting, setDeleting]           = useState(false);
+  const [deleteError, setDeleteError]     = useState<string | null>(null);
+  const deleteUnlocked = deleteConfirm.trim() === course.title;
+
+  async function handleDelete() {
+    if (!deleteUnlocked || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(course);
+      // Parent (CoursesPage) is responsible for navigating away — if it
+      // doesn't, the user just sees the Danger Zone clear back to idle.
+    } catch (err: any) {
+      setDeleteError(err?.response?.data?.detail ?? 'Failed to delete course.');
+      setDeleting(false);
+    }
+  }
 
   return (
     <PageContainer>
@@ -123,6 +149,19 @@ export default function CourseDetailView({
           <GraduationCap className="w-3.5 h-3.5" />
           Exams
         </button>
+        {isOwner && (
+          <button
+            onClick={() => setTab('settings')}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 ${
+              tab === 'settings'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-[#787774] hover:text-[#37352F]'
+            }`}
+          >
+            <SettingsIcon className="w-3.5 h-3.5" />
+            Settings
+          </button>
+        )}
       </div>
 
       {/* ── Tab body ─────────────────────────────────────────────────── */}
@@ -156,6 +195,75 @@ export default function CourseDetailView({
 
       {tab === 'exams' && (
         <CourseExamsTab courseId={course.id} isOwner={isOwner} />
+      )}
+
+      {tab === 'settings' && isOwner && (
+        <div className="max-w-2xl space-y-6">
+          {/* General — read-only summary that points at the existing edit modal. */}
+          <section className="bg-white border border-[#E8E8E6] rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-[#37352F] mb-1">General</h3>
+            <p className="text-xs text-[#787774] mb-4">
+              Title, description, color, icon, and visibility are edited from the
+              "Edit course" button in the page header.
+            </p>
+            <button
+              onClick={() => onEdit(course)}
+              className="text-sm font-medium text-indigo-600 hover:text-indigo-700"
+            >
+              Open edit dialog →
+            </button>
+          </section>
+
+          {/* Danger Zone — typed confirmation, red affordance. F-024. */}
+          <section className="border border-red-200 rounded-xl bg-red-50/30">
+            <header className="flex items-center gap-2 px-5 py-3 border-b border-red-200 bg-red-50/60 rounded-t-xl">
+              <AlertTriangle className="w-4 h-4 text-red-600" />
+              <h3 className="text-sm font-semibold text-red-700">Danger Zone</h3>
+            </header>
+            <div className="p-5 space-y-3">
+              <div>
+                <p className="text-sm font-medium text-[#37352F]">Delete this course</p>
+                <p className="text-xs text-[#787774] mt-1 leading-relaxed">
+                  Folders inside this course become top-level folders in your
+                  library — no documents or threads are deleted. Memberships
+                  pointing at this course are removed. This cannot be undone.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#787774] block mb-1">
+                  Type the course title to confirm: <span className="font-mono text-[#37352F]">{course.title}</span>
+                </label>
+                <input
+                  value={deleteConfirm}
+                  onChange={e => setDeleteConfirm(e.target.value)}
+                  placeholder={course.title}
+                  className="w-full bg-white border border-red-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400"
+                  disabled={deleting}
+                />
+              </div>
+
+              {deleteError && (
+                <p className="text-xs text-red-600">{deleteError}</p>
+              )}
+
+              <div className="flex justify-end">
+                <button
+                  onClick={handleDelete}
+                  disabled={!deleteUnlocked || deleting}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:bg-red-300 disabled:cursor-not-allowed rounded-lg transition-colors duration-150"
+                >
+                  {deleting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  Delete this course
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
       )}
     </PageContainer>
   );
