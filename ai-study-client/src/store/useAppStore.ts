@@ -261,7 +261,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSelectedModelTier: (tier) => set({ selectedModelTier: tier }),
 
   // ── AI Provider ─────────────────────────────────────────────────────────────
-  selectedAIProvider:    'openai',
+  selectedAIProvider:    'gemini',
   setSelectedAIProvider: (provider) => set({ selectedAIProvider: provider }),
 
   // ── Resume prompt ───────────────────────────────────────────────────────────
