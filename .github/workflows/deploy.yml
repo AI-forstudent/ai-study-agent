@@ -1,9 +1,9 @@
-name: Deploy to Droplet
+name: Deploy to Prod (Droplet)
 
 on:
   push:
     branches:
-      - Lior
+      - main
   workflow_dispatch:  # also allow manual trigger from GitHub UI
 
 jobs:
@@ -35,9 +35,9 @@ jobs:
             } > .env
             chmod 600 .env
 
-            echo "==> Resetting working directory to match origin/Lior..."
-            git fetch origin Lior
-            git reset --hard origin/Lior
+            echo "==> Resetting working directory to match origin/main..."
+            git fetch origin main
+            git reset --hard origin/main
             git clean -fd -e .env -e backend/uploads
 
             echo "==> Building and starting containers..."
