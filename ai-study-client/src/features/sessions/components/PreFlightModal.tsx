@@ -151,7 +151,7 @@ export default function PreFlightModal({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 flex flex-col border border-[#E8E8E6]"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 flex flex-col border border-[#E8E8E6] max-h-[90dvh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         {children}

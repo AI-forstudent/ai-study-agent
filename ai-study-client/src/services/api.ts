@@ -30,6 +30,11 @@ export const api = {
   googleLogin: (idToken: string) =>
     apiClient.post('/api/v1/auth/google', { id_token: idToken }),
 
+  // Returns the caller's identity + role assignments. Frontend uses
+  // `is_super_user` / `has_admin_role` to decide whether to show the
+  // Admin sidebar entry.
+  getMe: () => apiClient.get('/api/v1/auth/me'),
+
   // ── System ───────────────────────────────────────────────────────────────
   checkHealth: () => apiClient.get('/health'),
 
@@ -78,10 +83,12 @@ export const api = {
   // ── Folders ──────────────────────────────────────────────────────────────
   getFolders: () => apiClient.get('/api/v1/folders/'),
 
-  createFolder: (payload: { name: string; color?: string | null; persona_id?: string | null }) =>
+  // `course_id` (T-013 / F-031) attaches the new folder to a course; null
+  // / undefined leaves it top-level. Backend already accepts this field.
+  createFolder: (payload: { name: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null }) =>
     apiClient.post('/api/v1/folders/', payload),
 
-  updateFolder: (id: number, payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null }) =>
+  updateFolder: (id: number, payload: { name?: string; color?: string | null; is_starred?: boolean; persona_id?: string | null; course_id?: number | null }) =>
     apiClient.put(`/api/v1/folders/${id}`, payload),
 
   deleteFolder: (id: number) =>
@@ -92,6 +99,11 @@ export const api = {
 
   starDocument: (docId: number, isStarred: boolean) =>
     apiClient.patch(`/api/v1/documents/${docId}/star`, { is_starred: isStarred }),
+
+  // Bumps `last_opened_at` to now() — drives recency-of-use sorting in the
+  // My Library Files lane. Cheap fire-and-forget; ignore failures.
+  touchDocument: (docId: number) =>
+    apiClient.patch(`/api/v1/documents/${docId}/touch`),
 
   // ── Personas ─────────────────────────────────────────────────────────────
   // All persona traffic flows through here so the auth interceptor attaches
@@ -134,11 +146,22 @@ export const api = {
   createThread: (payload: unknown) =>
     apiClient.post('/api/v1/threads/', payload),
 
+  // Partial update for a thread the caller owns. Currently used by F-020
+  // to attach an uploaded document to an existing thread so future
+  // messages use the doc-anchored RAG path.
+  updateThread: (threadId: number, payload: { document_id?: number | null }) =>
+    apiClient.patch(`/api/v1/threads/${threadId}`, payload),
+
   sendMessage: (threadId: number, content: string) =>
     apiClient.post(`/api/v1/threads/${threadId}/messages`, { content }),
 
   forkThread: (threadId: number, messageId: number) =>
     apiClient.post(`/api/v1/threads/${threadId}/fork?message_id=${messageId}`),
+
+  // Copy a sub-thread (with descendants + messages) into a brand-new top-level
+  // session — original tree is left intact. Returns the new root thread.
+  promoteThreadToSession: (threadId: number) =>
+    apiClient.post(`/api/v1/threads/${threadId}/promote-to-session`),
 
   // ── Personal Hub ──────────────────────────────────────────────────────────
   getProfile: () =>
@@ -204,6 +227,12 @@ export const api = {
   starCourse: (id: number, isStarred: boolean) =>
     apiClient.post(`/api/v1/courses/${id}/star`, { is_starred: isStarred }),
 
+  // Toggle the caller's `is_hidden` flag on a course — drives the Visible /
+  // Hidden collapsibles on the new Courses tabbed page. Hiding does NOT
+  // unstar/unown — the course stays in the user's list, just collapsed.
+  setCourseHidden: (id: number, isHidden: boolean) =>
+    apiClient.patch(`/api/v1/courses/${id}/hide`, { is_hidden: isHidden }),
+
   // ── Course syllabus ───────────────────────────────────────────────────────
   // Returns { user_document_id, extracted, topics[], lecturers[] }.
   getCourseSyllabus: (courseId: number) =>
@@ -252,6 +281,37 @@ export const api = {
 
   deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
 
+  // ── Lectures (F-031) ──────────────────────────────────────────────────────
+  listCourseLectures: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/lectures`),
+
+  createCourseLecture: (courseId: number, payload: {
+    title:                       string;
+    lecture_date?:               string | null;     // ISO yyyy-mm-dd
+    manual_summary?:             string | null;
+    recording_user_document_id?: number | null;
+    notes_user_document_id?:     number | null;
+  }) => apiClient.post(`/api/v1/courses/${courseId}/lectures`, payload),
+
+  getLecture: (id: number) => apiClient.get(`/api/v1/lectures/${id}`),
+
+  // Partial update — only send the fields you actually want to change.
+  // Pass `null` for an attachment FK to detach without setting a new one.
+  updateLecture: (id: number, payload: {
+    title?:                       string;
+    lecture_date?:                string | null;
+    manual_summary?:              string | null;
+    recording_user_document_id?:  number | null;
+    notes_user_document_id?:      number | null;
+  }) => apiClient.put(`/api/v1/lectures/${id}`, payload),
+
+  deleteLecture: (id: number) => apiClient.delete(`/api/v1/lectures/${id}`),
+
+  // ── Usage / billing (F-005 Phase 4) ──────────────────────────────────────
+  // Aggregated usage for the authenticated user. Drives the Settings
+  // "Usage" section + future quota bar.
+  getMyUsage: () => apiClient.get('/api/v1/profile/usage'),
+
   // ── Sessions (read-only — sessions are created via /chat or /threads) ────
   listSessions: (limit = 50, offset = 0) =>
     apiClient.get(`/api/v1/sessions/?limit=${limit}&offset=${offset}`),
@@ -280,6 +340,42 @@ export const api = {
   // Patch a catalog entry's name or credits (used by Edit Course modal).
   updateCatalogEntry: (courseId: number, payload: { name?: string; credits?: number | null }) =>
     apiClient.put(`/api/v1/profile/catalog/${courseId}`, payload),
+
+  // ── Admin (Phase 5) ──────────────────────────────────────────────────────
+  // All gated server-side by require_can() — non-admins get 403. The frontend
+  // hides the sidebar entry from non-admins so these endpoints aren't even
+  // called in the normal case.
+  adminListUsers: (emailContains?: string) =>
+    apiClient.get('/api/v1/admin/users', { params: emailContains ? { email_contains: emailContains } : {} }),
+
+  adminListOrganizations: () =>
+    apiClient.get('/api/v1/admin/organizations'),
+
+  adminCreateOrganization: (payload: { name: string; slug: string }) =>
+    apiClient.post('/api/v1/admin/organizations', payload),
+
+  adminListCommunities: (organizationId: number) =>
+    apiClient.get('/api/v1/admin/communities', { params: { organization_id: organizationId } }),
+
+  adminCreateCommunity: (payload: { organization_id: number; name: string; slug: string }) =>
+    apiClient.post('/api/v1/admin/communities', payload),
+
+  adminListRoleAssignments: (filter: {
+    user_id?: number;
+    scope_type?: 'platform' | 'organization' | 'community' | 'course';
+    scope_id?: number;
+  }) =>
+    apiClient.get('/api/v1/admin/role-assignments', { params: filter }),
+
+  adminCreateRoleAssignment: (payload: {
+    user_id:    number;
+    role:       'super_user' | 'org_admin' | 'community_admin' | 'course_admin' | 'member';
+    scope_type: 'platform' | 'organization' | 'community' | 'course';
+    scope_id:   number | null;
+  }) => apiClient.post('/api/v1/admin/role-assignments', payload),
+
+  adminDeleteRoleAssignment: (assignmentId: number) =>
+    apiClient.delete(`/api/v1/admin/role-assignments/${assignmentId}`),
 };
 
 export default API_BASE;

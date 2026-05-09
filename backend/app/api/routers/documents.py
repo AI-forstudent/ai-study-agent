@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import (
-    BaseDocument, Chunk, Folder, Message, PageSummary,
+    BaseDocument, Chunk, Course, Exam, Folder, Message, PageSummary,
     Persona, Thread, User, UserDocument,
 )
 from app.schemas.schemas import (
@@ -51,6 +51,9 @@ from app.schemas.schemas import (
     PageSummaryResponse,
     PublicDocumentResponse,
     VisibilityUpdate,
+)
+from app.services.permissions import (
+    DEFAULT_ORG_ID, DocumentCapabilities, Scope, gate_or_403,
 )
 from app.services.document_service import (
     CODE_EXTENSIONS,
@@ -85,6 +88,7 @@ def _build_doc_response(ud: UserDocument) -> DocumentResponse:
         folder_id=ud.folder_id,
         shared_at=ud.shared_at,
         created_at=ud.created_at,
+        last_opened_at=ud.last_opened_at,
         file_path=bd.file_path if bd else None,
         base_hash=bd.hash_id if bd else "",
         doc_type=bd.doc_type if bd else "GENERAL",
@@ -99,9 +103,36 @@ def get_user_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """List the caller's UserDocuments for the My Library Files lane.
+
+    Excludes UserDocuments that are course-attached source files — i.e. the
+    underlying file rows for an Exam (`Exam.user_document_id`) or a Course
+    syllabus (`Course.syllabus_user_document_id`). Those documents already
+    surface inside the course's Exams / Syllabus tabs; double-showing them
+    in My Library → Files is just noise (B-014).
+
+    The exam-upload pipeline currently writes its source file with
+    `BaseDocument.doc_type = 'GENERAL'`, so a filter on `doc_type` alone
+    isn't enough — we have to consult the `exams` and `courses` tables.
+    """
+    exam_doc_ids = (
+        db.query(Exam.user_document_id)
+        .filter(Exam.user_document_id.isnot(None))
+        .subquery()
+    )
+    syllabus_doc_ids = (
+        db.query(Course.syllabus_user_document_id)
+        .filter(Course.syllabus_user_document_id.isnot(None))
+        .subquery()
+    )
+
     user_docs = (
         db.query(UserDocument)
-        .filter(UserDocument.user_id == current_user.id)
+        .filter(
+            UserDocument.user_id == current_user.id,
+            ~UserDocument.id.in_(db.query(exam_doc_ids)),
+            ~UserDocument.id.in_(db.query(syllabus_doc_ids)),
+        )
         .order_by(UserDocument.created_at.desc())
         .all()
     )
@@ -120,20 +151,40 @@ def upload_document(
     is_starred: bool = Form(False),
     db: Session = Depends(get_db),
 ):
+    # Phase 2 gate. Uploaded docs are owned by the uploader; in v1 they
+    # land under the user's home org (Default). Once Phase 5 lets users
+    # belong to real orgs the scope here will derive from `folder_id`'s
+    # course chain when a folder is supplied.
+    gate_or_403(
+        current_user, DocumentCapabilities.upload_document,
+        Scope.organization(DEFAULT_ORG_ID), db,
+        owner_id=current_user.id,
+    )
+
     if persona_id and not db.query(Persona).filter(Persona.id == persona_id).first():
         raise HTTPException(status_code=404, detail="PERSONA_NOT_FOUND")
 
     # ── 0. Validate file extension ───────────────────────────────────────────
+    # AUDIO + IMAGE were added for the Lecture feature (F-031). They share
+    # the same CAS storage path as text docs but skip the extract → chunk →
+    # embed pipeline below (no readable text). Phase 2 will run AUDIO files
+    # through Gemini's audio API for transcription.
     filename = file.filename or ""
     ext = os.path.splitext(filename)[1].lower()
+    AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+    IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
     if ext in (".pdf", ".docx", ".pptx"):
         doc_type = "GENERAL"
     elif ext in CODE_EXTENSIONS:
         doc_type = "SOURCE_CODE"
+    elif ext in AUDIO_EXTENSIONS:
+        doc_type = "AUDIO"
+    elif ext in IMAGE_EXTENSIONS:
+        doc_type = "IMAGE"
     else:
         raise HTTPException(
             status_code=422,
-            detail=f"Unsupported file type '{ext}'. Upload a PDF, Word/PowerPoint document, or source code file.",
+            detail=f"Unsupported file type '{ext}'. Upload a PDF, Word/PowerPoint, source code, audio recording, or image.",
         )
 
     # ── 1. Hash ─────────────────────────────────────────────────────────────
@@ -154,9 +205,17 @@ def upload_document(
             .first()
         )
         if existing_ud:
+            # Structured detail so the chat-attach orchestrator (F-020) can
+            # attach the existing doc transparently instead of bailing with
+            # a generic error. The My Library upload handler still gets a
+            # 409 status to show its "already in library" toast — it never
+            # parsed the detail string.
             raise HTTPException(
                 status_code=409,
-                detail="DOCUMENT_ALREADY_EXISTS_FOR_USER",
+                detail={
+                    "code": "DOCUMENT_ALREADY_EXISTS_FOR_USER",
+                    "existing_user_document_id": existing_ud.id,
+                },
             )
 
         # New user for an already-processed file — workspace replica only
@@ -182,7 +241,14 @@ def upload_document(
 
     # Office formats: extract raw text first, then convert to PDF for display.
     # PPTX has no dedicated text extractor — convert first, then read the PDF.
-    if ext == ".docx":
+    # AUDIO / IMAGE: store the file as-is, skip text extraction. Phase 2 of
+    # F-031 will run AUDIO through Gemini transcription before chunking; for
+    # now these uploads carry zero chunks and that's fine — the chat-search
+    # path filters them out via doc_type.
+    if doc_type in ("AUDIO", "IMAGE"):
+        pages_data: list[dict] = []
+        display_path = file_location
+    elif ext == ".docx":
         pages_data = extract_text_from_word(file_location)
         try:
             display_path = convert_to_pdf(file_location, UPLOADS_DIR)
@@ -300,6 +366,13 @@ def delete_document(
     )
     if not user_doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Phase 2 gate.
+    gate_or_403(
+        current_user, DocumentCapabilities.delete_document,
+        Scope.organization(user_doc.organization_id or DEFAULT_ORG_ID), db,
+        owner_id=user_doc.user_id,
+    )
 
     base_hash = user_doc.base_hash
 
@@ -422,6 +495,35 @@ def star_document(
     db.commit()
     db.refresh(user_doc)
     return _build_doc_response(user_doc)
+
+
+@router.patch("/{document_id}/touch", status_code=204)
+def touch_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Bump `last_opened_at` to now() for the calling user's UserDocument.
+
+    Drives recency-of-use sorting in the My Library Files lane (per the
+    2026-05-08 library restructure brief). Cheap idempotent write — the
+    frontend fires this every time a doc is opened. Cross-user touches
+    return 404 (no existence leak).
+    """
+    rows = (
+        db.query(UserDocument)
+        .filter(
+            UserDocument.id == document_id,
+            UserDocument.user_id == current_user.id,
+        )
+        .update(
+            {"last_opened_at": datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+    )
+    if rows == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    db.commit()
 
 
 # ── Code Review (Unified Annotation Engine — Phase 1) ────────────────────────

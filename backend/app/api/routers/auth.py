@@ -27,7 +27,7 @@ from app.core.config import (
 )
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.models.domain import User
+from app.models.domain import RoleAssignment, User
 from app.schemas.schemas import UserCreate, UserResponse
 
 router = APIRouter(tags=["auth"])
@@ -73,6 +73,69 @@ def _issue_token_for(user: User) -> dict:
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
+
+# ── Whoami ─────────────────────────────────────────────────────────────────
+
+class RoleAssignmentOut(BaseModel):
+    """Compact view of a role assignment, returned by /auth/me so the
+    frontend can decide which admin pages to expose without fetching
+    the full assignments list."""
+    id:           int
+    role:         str
+    scope_type:   str
+    scope_id:     int | None
+    granted_via:  str
+
+    class Config:
+        from_attributes = True
+
+
+class MeResponse(BaseModel):
+    id:                   int
+    email:                str
+    auth_provider:        str
+    subscription_tier:    str
+    home_organization_id: int | None
+    is_super_user:        bool
+    has_admin_role:       bool   # any of super_user / org_admin / community_admin / course_admin
+    role_assignments:     list[RoleAssignmentOut]
+
+
+@router.get("/me", response_model=MeResponse)
+def whoami(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the calling user's identity + their role assignments.
+
+    Drives the Admin sidebar entry's visibility on the frontend (shown
+    when `has_admin_role` is true) and the Phase-5 admin UI's gate
+    decisions on which sub-tabs to render. Cheap query — one row from
+    `users` + every row this user holds in `role_assignments`.
+    """
+    rows = (
+        db.query(RoleAssignment)
+        .filter(RoleAssignment.user_id == current_user.id)
+        .order_by(RoleAssignment.granted_at.asc())
+        .all()
+    )
+
+    is_super = any(r.role == "super_user" for r in rows)
+    has_admin = any(r.role in {
+        "super_user", "org_admin", "community_admin", "course_admin",
+    } for r in rows)
+
+    return MeResponse(
+        id=current_user.id,
+        email=current_user.email,
+        auth_provider=current_user.auth_provider,
+        subscription_tier=current_user.subscription_tier,
+        home_organization_id=current_user.home_organization_id,
+        is_super_user=is_super,
+        has_admin_role=has_admin,
+        role_assignments=[RoleAssignmentOut.model_validate(r) for r in rows],
+    )
+
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 def register(user: UserCreate, db: Session = Depends(get_db)):

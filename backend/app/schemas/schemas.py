@@ -71,6 +71,13 @@ class ThreadCreate(BaseModel):
     course_id: Optional[int] = None
 
 
+class ThreadUpdate(BaseModel):
+    """Partial update for a thread the caller owns. Currently only exposes
+    `document_id` so the F-020 chat-attach flow can promote a previously
+    standalone thread to a doc-anchored one mid-conversation."""
+    document_id: Optional[int] = None
+
+
 class ThreadResponse(BaseModel):
     id: int
     document_id: Optional[int] = None   # userdocuments.id
@@ -146,6 +153,10 @@ class DocumentResponse(BaseModel):
     folder_id:   Optional[int] = None
     shared_at:   Optional[datetime] = None
     created_at:  datetime
+    # Recency-of-use for the My Library Files lane sort. NULL until the
+    # doc is first opened post-restructure (PATCH /touch). Frontend
+    # treats NULL as `created_at` for sorting purposes.
+    last_opened_at: Optional[datetime] = None
     # From BaseDocument
     file_path:    Optional[str] = None
     base_hash:    str

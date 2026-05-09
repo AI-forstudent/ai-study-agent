@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -50,6 +50,10 @@ interface ChatPanelProps {
   activePersonaId?: string | null;
   /** Called when the user confirms a mid-session persona switch */
   onSwitchPersona?: (newId: string | null, keepContext: boolean) => void;
+  /** F-020 — uploads the picked file, attaches it to the active thread (or
+   *  creates a doc-anchored thread on the fly), and switches the workspace
+   *  to PDF + chat split. Hidden when the workspace already has a doc. */
+  onAttachFile?: (file: File) => Promise<void>;
 }
 
 const SummaryLoader = () => (
@@ -186,8 +190,35 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   activePersonaName,
   activePersonaId,
   onSwitchPersona,
+  onAttachFile,
 }) => {
   const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
+  const [isAttaching, setIsAttaching] = useState(false);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+
+  // F-020 — paperclip handler. Uploads, attaches to the active thread (or
+  // creates a doc-anchored one), then switches the workspace to doc-anchored.
+  // Hidden when the workspace already has a doc — adding multiple docs to
+  // a single thread is the M2M-attachments enhancement (deferred).
+  const showAttachButton = !documentId && !!onAttachFile;
+  const handleAttachClick = () => {
+    if (isAttaching) return;
+    attachInputRef.current?.click();
+  };
+  const handleAttachChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';   // reset so picking the same file twice still fires onChange
+    if (!file || !onAttachFile) return;
+    setIsAttaching(true);
+    try {
+      await onAttachFile(file);
+    } catch (err) {
+      console.error('[ChatPanel] attach failed', err);
+      alert('Failed to attach the document. Please try again.');
+    } finally {
+      setIsAttaching(false);
+    }
+  };
   const [pageSummaries, setPageSummaries] = useState<Record<number, string>>({});
   const [fullDocSummary, setFullDocSummary] = useState<string | null>(null);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -363,25 +394,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 
   // ──────────────────────────────────────────────────────────────────────────
   return (
-    <div className="w-full bg-white border border-[#E8E8E6] rounded-xl flex flex-col overflow-hidden h-full max-h-full">
-
-      {/* ── Active persona bar ────────────────────────────────────────── */}
-      {activePersonaName !== undefined && (
-        <div className="flex items-center justify-between px-4 py-2 bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
-          <span className="flex items-center gap-1.5 text-xs text-[#787774]">
-            <Wand2 className="w-3 h-3 text-indigo-500" />
-            <span className="font-medium text-[#37352F]">
-              {activePersonaName ?? 'No Agent'}
-            </span>
-          </span>
-          <button
-            onClick={() => setIsSwitchModalOpen(true)}
-            className="text-[10px] font-medium text-[#787774] hover:text-indigo-600 hover:bg-indigo-50 px-2 py-0.5 rounded-md transition-colors duration-150"
-          >
-            Change
-          </button>
-        </div>
-      )}
+    <div className="w-full bg-white sm:border sm:border-[#E8E8E6] sm:rounded-xl flex flex-col overflow-hidden h-full max-h-full">
 
       {/* ── Switch Persona Modal ──────────────────────────────────────── */}
       <SwitchPersonaModal
@@ -395,31 +408,29 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         }}
       />
 
-      {/* ── Tabs ──────────────────────────────────────────────────────── */}
-      <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
-        {documentId !== null && (
+      {/* ── Tabs (only when there are multiple tabs to choose between) ──── */}
+      {documentId !== null && (
+        <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
           <button
             onClick={() => setActiveTab('tree')}
             className={`${tabBase} ${activeTab === 'tree' ? tabActive : tabInactive}`}
           >
             <Network className="w-3.5 h-3.5" /> Threads
           </button>
-        )}
-        <button
-          onClick={() => setActiveTab('chat')}
-          className={`${tabBase} ${activeTab === 'chat' ? tabActive : tabInactive}`}
-        >
-          <MessageSquare className="w-3.5 h-3.5" /> Active Chat
-        </button>
-        {documentId !== null && (
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`${tabBase} ${activeTab === 'chat' ? tabActive : tabInactive}`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" /> Active Chat
+          </button>
           <button
             onClick={() => setActiveTab('summary')}
             className={`${tabBase} ${activeTab === 'summary' ? tabActive : tabInactive}`}
           >
             <FileText className="w-3.5 h-3.5" /> Summary
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── Thread tree tab ────────────────────────────────────────────── */}
       {activeTab === 'tree' && (
@@ -564,9 +575,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* ── Active chat tab ────────────────────────────────────────────── */}
       {activeTab === 'chat' && (
         <>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 bg-white">
 
-            {activeThread && (
+            {/* Context banner — only meaningful for threads anchored to a
+                text selection in a document. Standalone /chat threads carry
+                an empty `selected_text` and rendering the banner with empty
+                quotes is just noise (B-011). */}
+            {activeThread && activeThread.selected_text?.trim() && (
               <div className="bg-[#F7F7F5] border border-[#E8E8E6] p-3 rounded-lg text-xs text-[#787774] mb-4">
                 <span className="font-medium text-[#37352F] block mb-1">
                   {activeThread.emoji || '📌'} Context (selected text):
@@ -615,8 +630,21 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             )}
           </div>
 
-          {/* Model picker — provider + tier, right above the input */}
+          {/* Persona + model picker — single bottom controls row */}
           <div className="px-4 pt-2 pb-1 bg-white border-t border-[#E8E8E6] flex items-center gap-2 flex-wrap text-xs">
+            {activePersonaName !== undefined && (
+              <>
+                <button
+                  onClick={() => setIsSwitchModalOpen(true)}
+                  title="Change AI Teacher for this session"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-[#E8E8E6] bg-white text-[#37352F] hover:border-indigo-300 hover:text-indigo-600 transition-colors duration-150"
+                >
+                  <Wand2 className="w-3 h-3 text-indigo-500" />
+                  <span className="font-medium">{activePersonaName ?? 'No Agent'}</span>
+                </button>
+                <span className="mx-1 w-px h-4 bg-[#E8E8E6]" />
+              </>
+            )}
             <span className="flex items-center gap-1 text-[#C4C4C4] me-1">
               <Zap className="w-3 h-3" />
               Model
@@ -658,8 +686,30 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           </div>
 
-          {/* Input bar */}
-          <div className="px-4 py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0">
+          {/* Input bar — taller touch targets on phone, padded for safe area */}
+          <div className="px-3 sm:px-4 py-2.5 sm:py-3 bg-white border-t border-[#E8E8E6] flex gap-2 shrink-0 items-center pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+            {showAttachButton && (
+              <>
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.pptx,.txt,.md,.py,.js,.ts,.tsx,.jsx,.go,.rs,.java,.c,.cpp,.h,.hpp"
+                  className="hidden"
+                  onChange={handleAttachChange}
+                />
+                <button
+                  type="button"
+                  onClick={handleAttachClick}
+                  disabled={isAttaching}
+                  title="Attach a document to this conversation"
+                  className="p-2.5 sm:p-2 rounded-lg text-[#787774] hover:text-indigo-600 hover:bg-[#F7F7F5] disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+                >
+                  {isAttaching
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Paperclip className="w-4 h-4" />}
+                </button>
+              </>
+            )}
             <input
               type="text"
               value={inputMessage}
@@ -667,12 +717,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               placeholder="Continue the conversation…"
               dir="auto"
-              className="flex-1 border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
+              className="flex-1 min-w-0 border border-[#E8E8E6] rounded-lg px-3 py-2.5 sm:py-2 text-base sm:text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-colors duration-150"
             />
             <button
               onClick={handleSendMessage}
               disabled={!inputMessage.trim() || isSending}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white p-2.5 sm:p-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
             >
               <Send className="w-4 h-4" />
             </button>

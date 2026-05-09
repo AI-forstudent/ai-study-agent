@@ -2,7 +2,8 @@ import { MessageSquare, FileText, Trash2 } from 'lucide-react';
 import type { LibraryFeedItem } from '../../../types/course';
 
 interface SessionCardProps {
-  /** Either a session row from /library/recent or a SessionCard from /sessions. */
+  /** Either a session row from the legacy /library/recent feed or a row mapped
+   *  from GET /api/v1/sessions/ for the new dedicated Sessions lane. */
   session: Extract<LibraryFeedItem, { kind: 'session' }> | {
     session_id: number;
     session_title: string | null;
@@ -11,6 +12,10 @@ interface SessionCardProps {
     message_count: number;
     document_id: number | null;
     document_title: string | null;
+    /** ISO timestamp used for the relative-time chip. The legacy feed has
+     *  this on `sort_at`; for /sessions/ rows, callers map the row's
+     *  `created_at` into this slot. */
+    sort_at?: string;
   };
   onOpen: (sessionId: number) => void;
   onDelete?: (sessionId: number) => void;

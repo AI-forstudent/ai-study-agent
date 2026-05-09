@@ -12,16 +12,18 @@ Mounted at /api/v1/chat in app/main.py.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import Message, Thread, User
+from app.services.document_service import generate_session_title_background
 from app.services.prompt_builder import resolve_system_prompt
 from app.services.model_router import resolve_alias
-from app.services.llm_providers import call_llm
+from app.services.llm_providers import call_llm_with_usage
+from app.services.usage_logger import write_usage_event
 
 router = APIRouter(tags=["chat"])
 
@@ -58,6 +60,7 @@ class ChatResponse(BaseModel):
 @router.post("/", response_model=ChatResponse)
 def chat(
     payload: ChatRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -116,6 +119,14 @@ def chat(
         .order_by(Message.id.asc())
         .all()
     )
+    # Capture this BEFORE the assistant reply is persisted in step 7. With
+    # only the user message in history, len == 1 ⇔ this is the first
+    # exchange in the thread. We use this for the session-title BG-task
+    # gate (step 7b) — gating on `not thread.session_title` instead caused
+    # duplicate Gemini calls for fast-typing users, because BG tasks run
+    # AFTER the response and the column hasn't committed yet when the
+    # next request arrives.
+    is_first_exchange = len(history) == 1 and thread.parent_thread_id is None
 
     # ── 4. Resolve system prompt ────────────────────────────────────────────
     # Course scoping flows from the thread (set on creation) — payload.course_id
@@ -138,7 +149,7 @@ def chat(
     ]
 
     try:
-        reply_text: str = call_llm(
+        reply = call_llm_with_usage(
             provider=payload.ai_provider,
             model_tier=payload.model_tier,
             system_prompt=system_prompt,
@@ -151,16 +162,38 @@ def chat(
             detail="AI service temporarily unavailable. Please try again in a moment.",
         )
 
+    # ── 6b. Record usage (T-008). Best-effort — failure here never blocks
+    # the assistant reply, so the user's chat experience is unaffected by
+    # a usage-table hiccup.
+    write_usage_event(
+        db, current_user.id, "chat", reply, model_alias=alias,
+    )
+
     # ── 7. Persist assistant reply ──────────────────────────────────────────
     ai_msg = Message(
         thread_id=thread.id,
         role="assistant",
-        content=reply_text,
+        content=reply.text,
         model_alias=alias,
     )
     db.add(ai_msg)
     db.commit()
     db.refresh(ai_msg)
+
+    # ── 7b. Session-title generation on the very first exchange ────────────
+    # Gate on history length captured BEFORE the assistant reply was
+    # persisted (see step 3) — race-free, mirrors the doc-anchored sibling
+    # at threads.py:223. Gating on `not thread.session_title` would re-fire
+    # this BG task for every message until the title commits, which under
+    # fast typing means 3-5× duplicate Gemini calls and a write race; if
+    # Gemini fails on the first attempt, the bare except inside the BG
+    # function leaves `session_title` NULL forever and EVERY subsequent
+    # message re-burns tokens.
+    if is_first_exchange:
+        background.add_task(
+            generate_session_title_background,
+            thread.id, payload.message, reply.text, db,
+        )
 
     # ── 8. Return ───────────────────────────────────────────────────────────
     return ChatResponse(

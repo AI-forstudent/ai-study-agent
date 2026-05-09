@@ -14,14 +14,13 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, message, isLoading,
   return (
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      dir="rtl"
       onClick={onCancel}
     >
       <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6 border border-slate-200"
+        className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-5 sm:p-6 max-h-[90dvh] overflow-y-auto border border-slate-200"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-base font-bold text-slate-800 mb-3">אישור מחיקה</h2>
+        <h2 className="text-base font-bold text-slate-800 mb-3">Confirm deletion</h2>
         <p className="text-sm text-slate-600 leading-relaxed mb-6">{message}</p>
         <div className="flex gap-3 justify-end">
           <button
@@ -29,7 +28,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, message, isLoading,
             disabled={isLoading}
             className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50"
           >
-            ביטול
+            Cancel
           </button>
           <button
             onClick={onConfirm}
@@ -37,7 +36,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, message, isLoading,
             className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
           >
             {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-            מחק לצמיתות
+            Delete permanently
           </button>
         </div>
       </div>

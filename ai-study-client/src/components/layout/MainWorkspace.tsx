@@ -1,10 +1,12 @@
 import React, { useState, useRef, type Dispatch, type SetStateAction } from 'react';
+import { FileText, MessageSquare } from 'lucide-react';
 import PdfViewer from '../../features/documents/components/PdfViewer';
 import CodeViewer from '../../features/documents/components/CodeViewer';
 import ChatPanel from '../../features/chat/components/ChatPanel';
 import WorkspaceHeader from './WorkspaceHeader';
 import type { Thread } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 // ── Prop shape helpers ─────────────────────────────────────────────────────
 
@@ -38,6 +40,10 @@ interface ChatProps {
   activePersonaId?: string | null;
   /** Called when the user confirms a mid-session persona switch */
   onSwitchPersona?: (newId: string | null, keepContext: boolean) => void;
+  /** F-020: paperclip in the chat input — uploads the file, attaches it to
+   *  the active thread (or creates a new doc-anchored thread if there
+   *  isn't one yet), and switches the workspace to doc-anchored mode. */
+  onAttachFile?: (file: File) => Promise<void>;
 }
 
 interface MainWorkspaceProps {
@@ -50,17 +56,23 @@ interface MainWorkspaceProps {
 /**
  * Layout component for the study workspace.
  *
- * Two modes:
- * - Normal: WorkspaceHeader + PDF viewer (left) + resizable divider + Chat panel (right)
- * - Standalone: WorkspaceHeader + Chat panel centered (no PDF, no divider)
+ * Three responsive modes (in addition to standalone-chat):
+ * - Phone (<768px):     single-pane with a top toggle (Document | Chat).
+ * - Tablet (768-1024):  fixed 55/45 side-by-side, no resizable divider.
+ * - Desktop (≥1024px):  resizable side-by-side.
+ *
+ * The drag-to-resize divider is `mousemove`/`mouseup`-only and is therefore
+ * desktop-only.
  */
 const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }) => {
   const { textSelection, setTextSelection, activeThread, setActiveThread } = useAppStore();
+  const { isPhone, isTablet } = useBreakpoint();
 
   // ── Local layout state ───────────────────────────────────────────────────
   const [scale, setScale]           = useState(1.0);
   const [chatWidth, setChatWidth]   = useState(33);
   const [isDragging, setIsDragging] = useState(false);
+  const [phoneTab, setPhoneTab]     = useState<'doc' | 'chat'>('doc');
   const pdfContainerRef             = useRef<HTMLDivElement>(null);
 
   // ── Text selection: reads local scale, writes to Zustand ────────────────
@@ -100,10 +112,9 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
     });
   };
 
-  // ── Drag-divider handlers ────────────────────────────────────────────────
+  // ── Drag-divider handlers (desktop only) ─────────────────────────────────
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDragging) return;
-    // Dragging right (positive movementX) → divider moves right → chat gets narrower
     const delta = (e.movementX / window.innerWidth) * 100;
     setChatWidth(prev => {
       const next = prev - delta;
@@ -132,6 +143,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
     activePersonaName: chat.activePersonaName,
     activePersonaId:   chat.activePersonaId,
     onSwitchPersona:   chat.onSwitchPersona,
+    onAttachFile:      chat.onAttachFile,
   };
 
   // ── Shared header ─────────────────────────────────────────────────────────
@@ -143,12 +155,44 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
     />
   );
 
+  // ── Viewer pane ───────────────────────────────────────────────────────────
+  const viewerPane = doc.docType === 'SOURCE_CODE' ? (
+    <CodeViewer
+      file={doc.file}
+      filename={doc.documentTitle ?? 'file'}
+      documentId={doc.documentId!}
+      handleQuickAction={chat.handleQuickAction}
+      handleSmartAction={chat.handleSmartAction}
+      isCreatingThread={chat.isCreatingThread}
+    />
+  ) : (
+    <PdfViewer
+      file={doc.file}
+      numPages={doc.numPages}
+      onDocumentLoadSuccess={({ numPages }) => doc.setNumPages(numPages)}
+      threads={chat.threads}
+      activeThread={activeThread}
+      setActiveThread={setActiveThread}
+      textSelection={textSelection}
+      handleQuickAction={chat.handleQuickAction}
+      handleSmartAction={chat.handleSmartAction}
+      isCreatingThread={chat.isCreatingThread}
+      pdfContainerRef={pdfContainerRef}
+      handleTextSelection={handleTextSelection}
+      currentPage={doc.currentPage}
+      setCurrentPage={doc.setCurrentPage}
+      scale={scale}
+      setScale={setScale}
+    />
+  );
+
   // ── Standalone chat mode (no PDF) ─────────────────────────────────────────
+  // No header here — its only signal would be the placeholder title
+  // "Chat Session", which is just noise. The chat panel fills the workspace.
   if (!doc.documentId) {
     return (
       <div className="flex flex-col w-full h-full overflow-hidden">
-        {header}
-        <div className="flex flex-1 overflow-hidden items-start justify-center p-4">
+        <div className="flex flex-1 overflow-hidden items-start justify-center p-2 sm:p-4">
           <div className="max-w-4xl mx-auto w-full h-full">
             <ChatPanel {...chatPanelProps} />
           </div>
@@ -157,7 +201,70 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
     );
   }
 
-  // ── Normal mode (PDF + Chat) ──────────────────────────────────────────────
+  // ── Phone: tabbed single-pane ─────────────────────────────────────────────
+  if (isPhone) {
+    return (
+      <div className="flex flex-col w-full h-full overflow-hidden">
+        {header}
+
+        {/* Phone-only top toggle (Document | Chat) */}
+        <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
+          <button
+            onClick={() => setPhoneTab('doc')}
+            className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-xs font-medium border-b-2 transition-colors duration-150 ${
+              phoneTab === 'doc'
+                ? 'border-indigo-600 text-indigo-600 bg-white'
+                : 'border-transparent text-[#787774] hover:bg-[#EFEFED]'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" /> Document
+          </button>
+          <button
+            onClick={() => setPhoneTab('chat')}
+            className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-xs font-medium border-b-2 transition-colors duration-150 ${
+              phoneTab === 'chat'
+                ? 'border-indigo-600 text-indigo-600 bg-white'
+                : 'border-transparent text-[#787774] hover:bg-[#EFEFED]'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" /> Chat
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+          {phoneTab === 'doc' ? (
+            <div className="flex-1 h-full flex flex-col overflow-hidden">
+              {viewerPane}
+            </div>
+          ) : (
+            <div className="flex-1 h-full overflow-hidden">
+              <ChatPanel {...chatPanelProps} />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Tablet: fixed 55/45 split, no resizable divider ───────────────────────
+  if (isTablet) {
+    return (
+      <div className="flex flex-col w-full h-full overflow-hidden">
+        {header}
+        <div className="flex flex-1 overflow-hidden">
+          <div className="flex-1 h-full flex flex-col overflow-hidden ms-1 min-w-0">
+            {viewerPane}
+          </div>
+          <div className="w-px bg-[#E8E8E6] shrink-0" />
+          <div className="w-[45%] shrink-0 overflow-hidden">
+            <ChatPanel {...chatPanelProps} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Desktop: resizable side-by-side (current behaviour) ───────────────────
   return (
     <div className="flex flex-col w-full h-full overflow-hidden">
       {header}
@@ -168,43 +275,12 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        {/* Capture-layer while dragging prevents iframe/PDF from stealing events */}
         {isDragging && <div className="absolute inset-0 z-50 cursor-col-resize" />}
 
-        {/* Viewer pane */}
-        <div className="flex-1 h-full flex flex-col overflow-hidden ms-1">
-          {doc.docType === 'SOURCE_CODE' ? (
-            <CodeViewer
-              file={doc.file}
-              filename={doc.documentTitle ?? 'file'}
-              documentId={doc.documentId}
-              handleQuickAction={chat.handleQuickAction}
-              handleSmartAction={chat.handleSmartAction}
-              isCreatingThread={chat.isCreatingThread}
-            />
-          ) : (
-            <PdfViewer
-              file={doc.file}
-              numPages={doc.numPages}
-              onDocumentLoadSuccess={({ numPages }) => doc.setNumPages(numPages)}
-              threads={chat.threads}
-              activeThread={activeThread}
-              setActiveThread={setActiveThread}
-              textSelection={textSelection}
-              handleQuickAction={chat.handleQuickAction}
-              handleSmartAction={chat.handleSmartAction}
-              isCreatingThread={chat.isCreatingThread}
-              pdfContainerRef={pdfContainerRef}
-              handleTextSelection={handleTextSelection}
-              currentPage={doc.currentPage}
-              setCurrentPage={doc.setCurrentPage}
-              scale={scale}
-              setScale={setScale}
-            />
-          )}
+        <div className="flex-1 h-full flex flex-col overflow-hidden ms-1 min-w-0">
+          {viewerPane}
         </div>
 
-        {/* Resizable divider */}
         <div
           className={`w-1 cursor-col-resize transition-colors duration-150 z-20 flex-shrink-0 mx-2 rounded-full ${
             isDragging ? 'bg-indigo-400' : 'bg-[#E8E8E6] hover:bg-[#C4C4C4]'
@@ -213,7 +289,6 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }
           title="Drag to resize"
         />
 
-        {/* Chat pane */}
         <div style={{ width: `${chatWidth}%` }} className="flex-shrink-0 overflow-hidden">
           <ChatPanel {...chatPanelProps} />
         </div>

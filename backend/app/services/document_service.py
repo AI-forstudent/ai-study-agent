@@ -495,6 +495,70 @@ def generate_code_review(document_id: int, db: Session) -> dict:
 
 # ── Background task: thread metadata ──────────────────────────────────────
 
+def generate_session_title_background(
+    thread_id: int,
+    user_message: str,
+    assistant_reply: str,
+    db: Session,
+) -> None:
+    """Background task: write `Thread.session_title` for a root thread once the
+    first user+assistant exchange is on disk.
+
+    Per the locked 2026-05-08 decision, this fires **once** at session
+    creation and is **never** refreshed — sub-threads added later, or new
+    messages in the existing tree, do not re-run this. Only root threads
+    (parent_thread_id IS NULL) get a session_title; sub-threads inherit
+    visually via the workspace tree.
+
+    The generated title is a short topical phrase (3-6 words, no quotes)
+    in the language the user wrote in. Distinct from `Thread.title` which
+    is the per-thread short label used by the breadcrumb / Miller tree.
+    """
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if not thread:
+        return
+    if thread.parent_thread_id is not None:
+        return  # sub-threads don't get their own session title
+    if thread.session_title:
+        return  # frozen — never refresh
+
+    snippet_user = (user_message or "")[:600]
+    snippet_ai   = (assistant_reply or "")[:600]
+    cloud_prompt = (
+        "You are titling a chat session for a study-app sidebar.\n\n"
+        "USER MESSAGE:\n"
+        f"{snippet_user}\n\n"
+        "ASSISTANT REPLY:\n"
+        f"{snippet_ai}\n\n"
+        "Write ONE short title (3 to 6 words) describing the *topic* of "
+        "this conversation, in the same language the user wrote. No "
+        "quotes, no trailing punctuation, no prefixes like 'Title:'. "
+        "Respond with the title only."
+    )
+
+    try:
+        title = ask_gemini(cloud_prompt, use_smart_model=False).strip()
+    except Exception as e:
+        print(f"[ERROR] Session title generation failed: {e}")
+        return
+
+    # Defensive cleanup — strip surrounding quotes / "Title:" prefixes the
+    # model sometimes emits despite the instructions.
+    title = title.strip().strip('"').strip("'").strip()
+    for prefix in ("Title:", "title:", "כותרת:"):
+        if title.lower().startswith(prefix.lower()):
+            title = title[len(prefix):].strip()
+            break
+    # Cap defensively so a runaway response doesn't blow out the lane card.
+    if len(title) > 80:
+        title = title[:77] + "..."
+    if not title:
+        return
+
+    thread.session_title = title
+    db.commit()
+
+
 def generate_thread_metadata_background(
     thread_id: int,
     prompt_text: str,

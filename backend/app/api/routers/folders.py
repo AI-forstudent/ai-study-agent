@@ -23,8 +23,20 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import Course, Folder, User, UserDocument
+from app.services.permissions import (
+    DEFAULT_ORG_ID, FolderCapabilities, Scope, gate_or_403,
+)
 
 router = APIRouter(tags=["folders"])
+
+
+def _folder_scope(course_id: Optional[int]) -> Scope:
+    """Folders nested under a course gate at the course scope; top-level
+    personal folders gate at the Default org (v1 — until users can have
+    folders inside real orgs, which Phase 5 unlocks)."""
+    if course_id is not None:
+        return Scope.course(course_id)
+    return Scope.organization(DEFAULT_ORG_ID)
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -125,6 +137,13 @@ def create_folder(
     if payload.course_id is not None:
         _assert_owns_course(payload.course_id, current_user, db)
 
+    # Phase 2 gate. Owner = creator (folder is implicitly self-owned).
+    gate_or_403(
+        current_user, FolderCapabilities.create_folder,
+        _folder_scope(payload.course_id), db,
+        owner_id=current_user.id,
+    )
+
     folder = Folder(
         user_id=current_user.id,
         name=payload.name,
@@ -152,6 +171,13 @@ def update_folder(
     )
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
+
+    # Phase 2 gate — owner-fallback in Default keeps existing semantics.
+    gate_or_403(
+        current_user, FolderCapabilities.update_folder,
+        _folder_scope(folder.course_id), db,
+        owner_id=folder.user_id,
+    )
 
     if payload.name is not None:
         folder.name = payload.name
@@ -183,6 +209,12 @@ def delete_folder(
     )
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
+
+    gate_or_403(
+        current_user, FolderCapabilities.delete_folder,
+        _folder_scope(folder.course_id), db,
+        owner_id=folder.user_id,
+    )
 
     # Detach all documents rather than cascade-deleting them
     db.query(UserDocument).filter(UserDocument.folder_id == folder_id).update(

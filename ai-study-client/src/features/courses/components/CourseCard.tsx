@@ -1,4 +1,5 @@
-import { GraduationCap, Globe, Lock, Users, FileText, Pencil, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { GraduationCap, Globe, Lock, Users, FileText, Pencil, Trash2, MoreVertical, EyeOff, Eye } from 'lucide-react';
 import type { Course } from '../../../types/course';
 
 interface CourseCardProps {
@@ -6,6 +7,9 @@ interface CourseCardProps {
   onOpen: (courseId: number) => void;
   onEdit?: (course: Course) => void;
   onDelete?: (course: Course) => void;
+  /** Toggle the user's per-card hide flag (Visible <-> Hidden). When provided,
+   *  a three-dot menu appears with the Hide / Unhide action. */
+  onToggleHidden?: (course: Course) => void;
 }
 
 function visibilityBadge(visibility: Course['visibility']) {
@@ -30,9 +34,23 @@ function visibilityBadge(visibility: Course['visibility']) {
   );
 }
 
-export default function CourseCard({ course, onOpen, onEdit, onDelete }: CourseCardProps) {
+export default function CourseCard({ course, onOpen, onEdit, onDelete, onToggleHidden }: CourseCardProps) {
   const accent = course.color ?? '#6366F1';
   const isOwner = course.role === 'owner';
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close the three-dot menu when clicking outside it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const h = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [menuOpen]);
 
   return (
     <div
@@ -41,6 +59,40 @@ export default function CourseCard({ course, onOpen, onEdit, onDelete }: CourseC
     >
       {/* Color accent strip */}
       <div className="absolute top-0 inset-x-0 h-1" style={{ backgroundColor: accent }} />
+
+      {/* Three-dot menu — Hide / Unhide only. Course delete moves to
+          Course Settings → Danger Zone in commit 4 (F-024). */}
+      {onToggleHidden && (
+        <div ref={menuRef} className="absolute top-2 right-2 z-10">
+          <button
+            onClick={e => { e.stopPropagation(); setMenuOpen(v => !v); }}
+            title="More"
+            className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] transition-all duration-150"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+          {menuOpen && (
+            <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-[#E8E8E6] rounded-lg shadow-lg overflow-hidden">
+              <button
+                onClick={e => { e.stopPropagation(); setMenuOpen(false); onToggleHidden(course); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[#37352F] hover:bg-[#F7F7F5] text-start"
+              >
+                {course.is_hidden ? (
+                  <>
+                    <Eye className="w-3.5 h-3.5 text-[#787774]" />
+                    Unhide
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="w-3.5 h-3.5 text-[#787774]" />
+                    Hide
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-start gap-2 mt-1">
         <div

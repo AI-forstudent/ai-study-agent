@@ -31,7 +31,7 @@ const features = [
 
 export default function LandingPage({ onGetStarted, onOpenGallery }: LandingPageProps) {
   return (
-    <div className="min-h-screen w-full bg-white flex flex-col" dir="ltr">
+    <div className="min-h-dvh w-full bg-white flex flex-col" dir="ltr">
 
       {/* ── Nav bar ────────────────────────────────────────────────────── */}
       <header className="w-full px-6 py-5 flex items-center justify-between max-w-6xl mx-auto">
@@ -59,7 +59,7 @@ export default function LandingPage({ onGetStarted, onOpenGallery }: LandingPage
       </header>
 
       {/* ── Hero ───────────────────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col items-center justify-center px-6 pt-16 pb-24 text-center">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 pt-10 sm:pt-16 pb-12 sm:pb-24 text-center">
 
         {/* Eyebrow badge */}
         <div className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 text-xs font-semibold tracking-wide uppercase px-4 py-1.5 rounded-full mb-8 border border-indigo-100">
@@ -68,7 +68,7 @@ export default function LandingPage({ onGetStarted, onOpenGallery }: LandingPage
         </div>
 
         {/* Headline */}
-        <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold text-slate-900 leading-[1.1] tracking-tight max-w-3xl">
+        <h1 className="text-4xl sm:text-6xl lg:text-7xl font-extrabold text-slate-900 leading-[1.1] tracking-tight max-w-3xl">
           Your Personal{' '}
           <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
             AI Academic
@@ -85,7 +85,7 @@ export default function LandingPage({ onGetStarted, onOpenGallery }: LandingPage
         <div className="mt-10 flex flex-col sm:flex-row items-center gap-4">
           <button
             onClick={onGetStarted}
-            className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold px-8 py-4 rounded-2xl shadow-lg shadow-indigo-200 transition-all duration-200 hover:shadow-xl hover:shadow-indigo-300 hover:-translate-y-0.5 active:translate-y-0 text-base"
+            className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold px-6 py-3 sm:px-8 sm:py-4 rounded-2xl shadow-lg shadow-indigo-200 transition-all duration-200 hover:shadow-xl hover:shadow-indigo-300 hover:-translate-y-0.5 active:translate-y-0 text-base"
           >
             Get Started
             <ArrowRight className="w-5 h-5" />
@@ -100,7 +100,7 @@ export default function LandingPage({ onGetStarted, onOpenGallery }: LandingPage
         </div>
 
         {/* ── Feature cards ──────────────────────────────────────────────── */}
-        <div className="mt-24 grid grid-cols-1 sm:grid-cols-3 gap-6 w-full max-w-4xl text-left">
+        <div className="mt-12 sm:mt-24 grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 w-full max-w-4xl text-left">
           {features.map(({ icon: Icon, title, description, accent, border }) => (
             <div
               key={title}

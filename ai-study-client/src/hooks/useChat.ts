@@ -3,9 +3,13 @@ import { api } from '../services/api';
 import { useAppStore } from '../store/useAppStore';
 import type { Thread, Message } from '../types';
 
-// Grand Vision AI engine — standalone chat (no document)
+// Grand Vision AI engine — standalone chat (no document).
+// Trailing slash matters: chat.router is `@post("/")` mounted at `/api/v1/chat`,
+// so the canonical path is `/api/v1/chat/`. Hitting it without the slash relies
+// on FastAPI's 307 redirect, which is fragile behind nginx and currently
+// produces a hard 404 in dev — see B-010.
 const AI_API_BASE = import.meta.env.VITE_AI_API_URL || 'http://localhost:8001';
-const STANDALONE_CHAT_API = `${AI_API_BASE}/api/v1/chat`;
+const STANDALONE_CHAT_API = `${AI_API_BASE}/api/v1/chat/`;
 
 /**
  * Hook to manage the conversation tree and AI interactions.
@@ -77,13 +81,13 @@ export function useChat(
           setActiveThread(fresh.data);
           setThreads(prev => prev.map(t => t.id === newThread.id ? fresh.data : t));
         } catch {
-          alert('הייתה שגיאה בשליחת הפרומפט למודל.');
+          alert('Failed to send the prompt to the model.');
         } finally {
           setIsSending(false);
         }
       }
     } catch {
-      alert('שגיאה ביצירת השיחה');
+      alert('Failed to create the conversation.');
     } finally {
       setIsCreatingThread(false);
     }
@@ -174,7 +178,7 @@ export function useChat(
         setThreads(prev => prev.map(t => t.id === finalThread.id ? finalThread : t));
       }
     } catch {
-      alert('לא הצלחתי לשלוח את ההודעה...');
+      alert('Failed to send the message.');
     } finally {
       setIsSending(false);
     }

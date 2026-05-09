@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, type ChangeEvent } from 'react';
 import { api } from '../services/api';
 import { useAppStore } from '../store/useAppStore';
+import { showToast } from './useToast';
 
 /**
  * Hook to manage document lifecycle.
@@ -17,7 +18,6 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
   const [numPages, setNumPages]             = useState<number>(0);
   const [currentPage, setCurrentPage]       = useState<number>(1);
   const [userDocs, setUserDocs]             = useState<any[]>([]);
-  const [enableGlobalSummary, setEnableGlobalSummary] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   const [isUploading, setIsUploading]       = useState(false);
   const [uploadError, setUploadError]       = useState<string | null>(null);
@@ -41,6 +41,21 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       });
   }, [isAuthenticated]);
 
+  /** Refresh the user's document list — call after an upload from outside
+   *  this hook (e.g. the F-020 attach-from-chat flow), so the new doc
+   *  appears in the Files lane and `handleSelectDocument` can resolve
+   *  it by id. */
+  const refreshUserDocs = async () => {
+    try {
+      const res = await api.getUserDocuments();
+      setUserDocs(res.data);
+      return res.data as any[];
+    } catch (err) {
+      console.error('[refreshUserDocs] failed:', err);
+      return null;
+    }
+  };
+
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
@@ -56,17 +71,72 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     setIsUploading(true);
     setUploadError(null);
     try {
-      const response = await api.uploadDocument(selectedFile, enableGlobalSummary);
-      setDocumentId(response.data.id);   // triggers useChat to clear + re-fetch threads
-      setFile(selectedFile);
-      setActiveThread(null);
+      // Auto-summarize toggle removed (F-021) — never request a full-doc
+      // summary at upload time anymore.
+      const response = await api.uploadDocument(selectedFile, false);
+      const newDoc = response.data;
+
+      // Refresh the user's docs first so handleSelectDocument can resolve
+      // the new doc by id.
       const docsRes = await api.getUserDocuments();
       setUserDocs(docsRes.data);
+
+      // Open the new doc in the workspace via the same blob-fetch path that
+      // clicking a doc card uses. The previous code set `setFile(File)`
+      // directly, which react-pdf could fail to render — leaving the user
+      // staring at an empty viewer and bouncing back to the library on the
+      // next navigation.
+      setActiveThread(null);
+      setDocumentId(newDoc.id);
+      try {
+        const encodedPath = newDoc.file_path.split('/').map(encodeURIComponent).join('/');
+        const blobRes = await api.getFile(encodedPath);
+        setFile(URL.createObjectURL(blobRes.data));
+      } catch (blobErr) {
+        // Fallback to the raw File object if the blob fetch fails — better
+        // than nothing.
+        console.error('[handleFileChange] blob fetch failed, using File object', blobErr);
+        setFile(selectedFile);
+      }
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        setUploadError('DOCUMENT_EXISTS');
+        // Duplicate hash — same file already in the user's library.
+        // Open the existing copy in the workspace so the user lands on
+        // the doc they just tried to upload, instead of staring at a
+        // banner on the My Library root.
+        const detail = err?.response?.data?.detail;
+        const existingId =
+          typeof detail === 'object' ? detail?.existing_user_document_id : undefined;
+        if (typeof existingId === 'number') {
+          try {
+            const docsRes = await api.getUserDocuments();
+            setUserDocs(docsRes.data);
+            const existing = docsRes.data.find((d: any) => d.id === existingId);
+            if (existing) {
+              setActiveThread(null);
+              setDocumentId(existingId);
+              try {
+                const encodedPath = existing.file_path.split('/').map(encodeURIComponent).join('/');
+                const blobRes = await api.getFile(encodedPath);
+                setFile(URL.createObjectURL(blobRes.data));
+              } catch {
+                setFile(selectedFile);
+              }
+              showToast(
+                'This file is already in your library — opened the existing copy.',
+                'info',
+              );
+              return;
+            }
+          } catch (lookupErr) {
+            console.error('[handleFileChange] existing-doc lookup failed', lookupErr);
+          }
+        }
+        // Fallback if we couldn't resolve the existing doc — show a toast
+        // instead of the legacy DOCUMENT_EXISTS banner.
+        showToast('This file is already in your library.', 'info');
       } else {
-        setUploadError('UPLOAD_FAILED');
+        showToast('Upload failed. Please check the file and try again.', 'error');
       }
     } finally {
       setIsUploading(false);
@@ -78,6 +148,15 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     if (!full) return;
     setDocumentId(doc.id);  // triggers useChat to clear + re-fetch threads
     setActiveThread(null);
+
+    // Bump `last_opened_at` so the My Library Files lane re-sorts. Fire-and-
+    // forget — failure to record recency must not block opening the doc.
+    // Optimistically update local state too so the lane reorders without
+    // needing a round-trip to GET /documents/.
+    const nowIso = new Date().toISOString();
+    setUserDocs(prev => prev.map(d => d.id === doc.id ? { ...d, last_opened_at: nowIso } : d));
+    api.touchDocument(doc.id).catch(() => { /* noop */ });
+
     try {
       const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
       const response    = await api.getFile(encodedPath);
@@ -85,7 +164,45 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       setFile(blobUrl);
     } catch (error) {
       console.error('Failed to load document via Blob:', error);
-      alert('לא הצלחנו לטעון את המסמך. ייתכן שהוא פגום או נמחק מהשרת.');
+      alert('Could not load the document — it may be corrupted or removed from the server.');
+    }
+  };
+
+  /** Open a document in the workspace using a full doc object the caller has
+   *  already resolved against a fresh list (e.g. the array returned by
+   *  `refreshUserDocs()`).
+   *
+   *  Why this exists: `handleSelectDocument` looks the doc up inside its
+   *  closure-captured `userDocs`. For an attach-from-chat flow that just
+   *  uploaded a brand-new doc, that closure is stale — `userDocs.find()`
+   *  returns undefined and the function silently bails, leaving the user
+   *  bounced to My Library. Pass the freshly-fetched doc object here to
+   *  bypass the closure.
+   *
+   *  `preserveActiveThread` keeps the current Zustand `activeThread` intact
+   *  (used by the F-020 paperclip flow, where the user is mid-conversation
+   *  and we want their thread to keep rendering after the doc attaches).
+   *  Default false matches `handleSelectDocument`'s clear-on-select UX. */
+  const selectDocumentInList = async (
+    full: any,
+    options?: { preserveActiveThread?: boolean },
+  ): Promise<boolean> => {
+    if (!full || typeof full.id !== 'number' || !full.file_path) return false;
+    setDocumentId(full.id);
+    if (!options?.preserveActiveThread) setActiveThread(null);
+
+    const nowIso = new Date().toISOString();
+    setUserDocs(prev => prev.map(d => d.id === full.id ? { ...d, last_opened_at: nowIso } : d));
+    api.touchDocument(full.id).catch(() => { /* noop */ });
+
+    try {
+      const encodedPath = full.file_path.split('/').map(encodeURIComponent).join('/');
+      const response    = await api.getFile(encodedPath);
+      setFile(URL.createObjectURL(response.data));
+      return true;
+    } catch (error) {
+      console.error('[selectDocumentInList] blob fetch failed:', error);
+      return false;
     }
   };
 
@@ -103,7 +220,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
       }
       setDocToDelete(null);
     } catch {
-      alert('שגיאה במחיקת המסמך. אנא נסה שוב.');
+      alert('Failed to delete the document. Please try again.');
     } finally {
       setIsDeleting(false);
     }
@@ -185,12 +302,13 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     numPages, setNumPages,
     currentPage, setCurrentPage,
     userDocs,
-    enableGlobalSummary, setEnableGlobalSummary,
     isUploading, uploadError,
     docToDelete, setDocToDelete,
     isDeleting,
     handleFileChange,
     handleSelectDocument,
+    selectDocumentInList,
+    refreshUserDocs,
     handleDeleteConfirm,
     handleToggleVisibility,
     toggleVisibilityById,

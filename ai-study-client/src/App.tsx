@@ -7,7 +7,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 
 import PersonaLab            from './features/personas/components/PersonaLab';
 import PersonalHubDashboard from './features/PersonalHub/PersonalHubDashboard';
-import PublicCoursesPage    from './features/courses/components/PublicCoursesPage';
+import CoursesPage          from './features/courses/components/CoursesPage';
 import ConfirmModal   from './components/ConfirmModal';
 import PreFlightModal from './features/sessions/components/PreFlightModal';
 import PublicGallery  from './features/personas/components/PublicGallery';
@@ -18,11 +18,13 @@ import AppLayout      from './components/layout/AppLayout';
 import Sidebar        from './components/layout/Sidebar';
 import Settings       from './components/layout/Settings';
 import AuthModal      from './components/ui/AuthModal';
+import { showToast }  from './hooks/useToast';
 import { api }        from './services/api';
 import { ResumeToastContainer } from './features/sessions/components/ResumeToast';
 import SessionWrapUpModal       from './features/sessions/components/SessionWrapUpModal';
 
 import { useAuth }      from './hooks/useAuth';
+import { useMe }        from './hooks/useMe';
 import { useDocuments } from './hooks/useDocuments';
 import { useChat }      from './hooks/useChat';
 import { useFolders }   from './features/documents/hooks/useFolders';
@@ -69,14 +71,18 @@ function App() {
   /** True when a chat-only (no document) session is active. */
   const [standaloneMode, setStandaloneMode]               = useState(false);
   const [activeCourseId, setActiveCourseId]               = useState<number | null>(null);
-  /** When the user clicks into a public course we star it and stash the id
-   *  here; MyLibrary picks it up, refreshes its course list, and drills in. */
-  const [pendingLibraryCourseId, setPendingLibraryCourseId] = useState<number | null>(null);
+  /** Cross-page folder open. Set by the Courses page when the user clicks a
+   *  folder card inside a course's Folders tab; MyLibrary picks it up and
+   *  drills into the folder. (Course detail lives in the Courses page now,
+   *  so the matching `pendingLibraryCourseId` from B-009 is gone — courses
+   *  no longer round-trip through My Library.) */
+  const [pendingLibraryFolderId, setPendingLibraryFolderId] = useState<number | null>(null);
   const [isWrapUpOpen, setWrapUpOpen]                     = useState(false);
 
   const docs    = useDocuments(isAuthenticated, handleLogout);
   const folders = useFolders(isAuthenticated);
   const chat    = useChat(docs.documentId, docs.currentPage, activePersonaId, activeCourseId);
+  const { me, refresh: refreshMe } = useMe(isAuthenticated);
 
   // ── Derived state ───────────────────────────────────────────────────────────
   const activePersonaName: string | null = activePersonaId
@@ -219,20 +225,93 @@ function App() {
     startStandaloneSession(courseId);
   }
 
-  /** Card click on the public-courses catalog. Auto-stars the course (so it
-   *  appears in My Library's "My Courses" lane) and drills the user straight
-   *  into the course detail view. Owners and already-starred users skip the
-   *  star step. Failures fall back to switching to My Library so the user is
-   *  not stranded with no feedback. */
-  async function handleOpenPublicCourse(course: { id: number; is_starred: boolean }) {
+  /** F-020 — paperclip-in-chat handler. Uploads `file`, then either attaches
+   *  it to the active thread (chat-in-progress case) or creates a fresh
+   *  doc-anchored thread on the fly (New Session before first message),
+   *  and switches the workspace UI to PDF + chat split via
+   *  `docs.handleSelectDocument`.
+   *
+   *  Duplicate-file handling: CAS dedup raises a 409 with structured detail
+   *  `{ code, existing_user_document_id }`. We treat that as a soft success
+   *  — attach the existing doc to the thread instead of bailing. Same
+   *  content, same hash, no need to ask the user; we surface a small toast
+   *  so the user knows what happened. */
+  async function handleAttachFileToActiveSession(file: File): Promise<void> {
+    // 1. Try to upload (auto-summarize is off — F-021).
+    let attachId: number;
+    let wasDuplicate = false;
     try {
-      if (!course.is_starred) {
-        await api.starCourse(course.id, true);
+      const uploadRes = await api.uploadDocument(file, false);
+      attachId = uploadRes.data.id;
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const existingId =
+        err?.response?.status === 409 && typeof detail === 'object'
+          ? detail?.existing_user_document_id
+          : undefined;
+      if (typeof existingId === 'number') {
+        attachId = existingId;
+        wasDuplicate = true;
+      } else {
+        throw err;   // unrecognised failure — propagate to ChatPanel's catch
       }
-    } catch (err) {
-      console.error('[handleOpenPublicCourse] star failed', err);
     }
-    setPendingLibraryCourseId(course.id);
+
+    // 2. Refresh the user's docs list. We need the FRESH list (not the
+    //    closure-captured one inside the hook) to resolve the brand-new doc
+    //    by id below — `handleSelectDocument`'s closure would still hold the
+    //    pre-upload userDocs and silently bail on `find()` returning undefined.
+    const freshDocs = (await docs.refreshUserDocs()) ?? [];
+    const fullDoc = freshDocs.find((d: any) => d.id === attachId);
+    if (!fullDoc) {
+      console.error('[handleAttachFileToActiveSession] doc not in refreshed list', attachId);
+      throw new Error('Uploaded document did not appear in the refreshed list.');
+    }
+
+    // 3. Attach to thread or create one. The current activeThread lives in
+    //    Zustand; we read it freshly to dodge stale closures.
+    const currentThread = useAppStore.getState().activeThread;
+    if (currentThread) {
+      await api.updateThread(currentThread.id, { document_id: attachId });
+    } else {
+      // Standalone session before any message — create a doc-anchored
+      // thread now so subsequent /threads/.../messages calls have a target.
+      const created = await api.createThread({
+        document_id: attachId,
+        persona_id: activePersonaId,
+        course_id: activeCourseId,
+      });
+      useAppStore.getState().setActiveThread(created.data);
+    }
+
+    // 4. Flip the workspace to doc-anchored. We use `selectDocumentInList`
+    //    (not `handleSelectDocument`) because it (a) takes the freshly-
+    //    resolved doc object so it doesn't rely on a stale closure, and
+    //    (b) preserves the active thread we just attached/created — the
+    //    default `setActiveThread(null)` would drop the user's conversation
+    //    on the floor and bounce them to an empty Threads tree.
+    await docs.selectDocumentInList(fullDoc, { preserveActiveThread: true });
+    setStandaloneMode(false);
+
+    if (wasDuplicate) {
+      showToast(
+        'This file is already in your library — opened the existing copy.',
+        'info',
+      );
+    }
+  }
+
+  /** Folder click inside a course's Folders tab on the Courses page. Drills
+   *  the user across to My Library and opens that folder. Same cross-page
+   *  pattern as the (now retired) pendingLibraryCourseId flow, just for
+   *  folders. */
+  function handleOpenFolderInLibrary(folderId: number) {
+    docs.clearDocument();
+    chat.reset();
+    setStandaloneMode(false);
+    setActivePersonaId(null);
+    setActiveCourseId(null);
+    setPendingLibraryFolderId(folderId);
     setView('main');
   }
 
@@ -333,7 +412,10 @@ function App() {
     <Sidebar
       activeView={view}
       onNavigate={(v) => {
-        if (v === 'main' || v === 'settings' || v === 'hub') { docs.clearDocument(); setStandaloneMode(false); }
+        if (v === 'main' || v === 'settings' || v === 'hub') {
+          docs.clearDocument();
+          setStandaloneMode(false);
+        }
         setView(v);
       }}
       onLogout={handleLogout}
@@ -347,6 +429,8 @@ function App() {
         <Settings
           treeViewMode={chat.treeViewMode}
           setTreeViewMode={chat.setTreeViewMode}
+          me={me}
+          onRolesChanged={refreshMe}
         />
         <ResumeToastContainer
           personaName={toastPersonaName}
@@ -392,7 +476,14 @@ function App() {
   if (view === 'gallery') {
     return (
       <AppLayout sidebar={sidebar}>
-        <PublicCoursesPage onOpenCourse={handleOpenPublicCourse} />
+        <CoursesPage
+          folders={folders.folders}
+          userDocs={docs.userDocs}
+          personas={personas}
+          onStartCourseChat={handleStartCourseChat}
+          onOpenFolderInLibrary={handleOpenFolderInLibrary}
+          onCreateFolder={folders.createFolder}
+        />
         <ResumeToastContainer
           personaName={toastPersonaName}
           documentTitle={toastDocTitle}
@@ -426,13 +517,10 @@ function App() {
             userDocs={docs.userDocs}
             isUploading={docs.isUploading}
             uploadError={docs.uploadError}
-            enableGlobalSummary={docs.enableGlobalSummary}
-            setEnableGlobalSummary={docs.setEnableGlobalSummary}
             onUploadFile={docs.handleFileChange}
             onSelectDocument={handleOpenPreFlight}
             onSelectSession={handleOpenSession}
             onStartNewSession={handleStartNewSession}
-            onStartCourseChat={handleStartCourseChat}
             onDeleteRequest={docs.setDocToDelete}
             onStarDocument={docs.handleStarDocument}
             onMoveDocument={docs.handleMoveDocument}
@@ -441,8 +529,8 @@ function App() {
             onUpdateFolder={folders.updateFolder}
             onDeleteFolder={folders.deleteFolder}
             personas={personas}
-            pendingCourseId={pendingLibraryCourseId}
-            onPendingCourseConsumed={() => setPendingLibraryCourseId(null)}
+            pendingFolderId={pendingLibraryFolderId}
+            onPendingFolderConsumed={() => setPendingLibraryFolderId(null)}
           />
           <ResumeToastContainer
             personaName={toastPersonaName}
@@ -478,6 +566,7 @@ function App() {
             activePersonaName,
             activePersonaId,
             onSwitchPersona:    handleSwitchPersona,
+            onAttachFile:       handleAttachFileToActiveSession,
           }}
           onSaveMemory={handleOpenWrapUp}
         />

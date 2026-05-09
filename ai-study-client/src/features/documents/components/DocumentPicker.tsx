@@ -38,7 +38,7 @@ const DocumentPicker: React.FC<DocumentPickerProps> = ({ docs, selectedId, onSel
         className="flex items-center gap-1.5 focus:outline-none cursor-pointer w-44"
       >
         <span className="flex-1 text-sm font-semibold text-[#37352F] truncate text-start">
-          {selectedDoc ? selectedDoc.title : 'בחר מסמך...'}
+          {selectedDoc ? selectedDoc.title : 'Pick a document…'}
         </span>
         <ChevronDown
           className={`w-3.5 h-3.5 flex-shrink-0 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
@@ -49,7 +49,7 @@ const DocumentPicker: React.FC<DocumentPickerProps> = ({ docs, selectedId, onSel
       {isOpen && (
         <div className="absolute top-full mt-2 end-0 w-64 bg-white rounded-xl shadow-lg border border-[#E8E8E6] z-[100] overflow-hidden">
           {docs.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-slate-400 text-center">אין מסמכים עדיין</div>
+            <div className="px-4 py-3 text-sm text-slate-400 text-center">No documents yet</div>
           ) : (
             <ul className="max-h-72 overflow-y-auto py-1">
               {docs.map(doc => {
@@ -73,7 +73,7 @@ const DocumentPicker: React.FC<DocumentPickerProps> = ({ docs, selectedId, onSel
                       setIsOpen(false);
                     }}
                     className="opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all flex-shrink-0"
-                    title="מחק מסמך"
+                    title="Delete document"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

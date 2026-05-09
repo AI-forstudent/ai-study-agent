@@ -52,6 +52,8 @@ from app.api.routers import courses as courses_router
 from app.api.routers import sessions as sessions_router
 from app.api.routers import library as library_router
 from app.api.routers import exams as exams_router
+from app.api.routers import lectures as lectures_router
+from app.api.routers import admin as admin_router
 from app.api.routers.personas import seed_db as _seed_db
 
 
@@ -173,6 +175,9 @@ app.include_router(library_router.router,       prefix="/api/v1/library")
 # Exams use both /api/v1/courses/{id}/exams and /api/v1/exams/{id} so the
 # router declares full paths and is mounted at /api/v1.
 app.include_router(exams_router.router,         prefix="/api/v1")
+# Lectures (F-031) follow the same dual-path pattern as exams.
+app.include_router(lectures_router.router,      prefix="/api/v1")
+app.include_router(admin_router.router,         prefix="/api/v1/admin")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────

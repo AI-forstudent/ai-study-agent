@@ -25,8 +25,9 @@ from sqlalchemy.orm import Session
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import Chunk, Message, Thread, User, UserDocument
-from app.schemas.schemas import MessageCreate, MessageResponse, ThreadCreate, ThreadResponse
+from app.schemas.schemas import MessageCreate, MessageResponse, ThreadCreate, ThreadResponse, ThreadUpdate
 from app.services.document_service import (
+    generate_session_title_background,
     generate_thread_metadata_background,
     get_chat_response_for_thread,
     get_full_thread_history,
@@ -127,6 +128,35 @@ def create_thread(
     return new_thread
 
 
+# ── Patch thread (attach a document mid-conversation) ──────────────────────
+
+@router.patch("/{thread_id}", response_model=ThreadResponse)
+def update_thread(
+    thread_id: int,
+    payload: ThreadUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Partial update for a thread the caller owns. Drives F-020:
+    attaches a uploaded document to a thread so subsequent messages
+    use the doc-anchored RAG path (threads.py POST /messages) instead
+    of the standalone /chat/ path.
+
+    Currently the only mutable field is `document_id`; the doc must
+    belong to the calling user.
+    """
+    thread = _get_owned_thread_or_404(thread_id, current_user, db)
+
+    if payload.document_id is not None:
+        _assert_owns_userdoc(payload.document_id, current_user, db)
+        thread.document_id = payload.document_id
+
+    db.commit()
+    db.refresh(thread)
+    thread.messages = get_full_thread_history(thread.id, db)
+    return thread
+
+
 # ── Add message to thread ───────────────────────────────────────────────────
 
 @router.post("/{thread_id}/messages", response_model=MessageResponse)
@@ -188,7 +218,125 @@ def add_message_to_thread(
     db.add(ai_msg)
     db.commit()
     db.refresh(ai_msg)
+
+    # Session-title generation on the very first exchange. The function
+    # short-circuits on sub-threads or already-titled root threads, so it's
+    # safe to fire on every first-message and let the background task decide.
+    if len(history_so_far) == 1 and thread.parent_thread_id is None:
+        background_tasks.add_task(
+            generate_session_title_background,
+            thread_id, message.content, ai_response, db,
+        )
+
     return ai_msg
+
+
+# ── Promote sub-thread to its own session ───────────────────────────────────
+
+@router.post("/{thread_id}/promote-to-session", response_model=ThreadResponse)
+def promote_thread_to_session(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Copy a sub-thread (with all its descendants and messages) into a brand-
+    new top-level session.
+
+    Per the locked 2026-05-08 decision, this is a **copy** — the original tree
+    stays intact. The new tree's root has `parent_thread_id = NULL` so it shows
+    up as its own session card in the My Library Sessions lane. `session_title`
+    is left NULL on the new root; Commit 5's title generator (or the user's
+    next message exchange in the new session) will fill it.
+
+    Implementation walks the source sub-tree breadth-first so parents are
+    always created before children, then copies messages in a second pass and
+    rewires `forked_from_message_id` references within the new tree in a third
+    pass. Forks that pointed at messages OUTSIDE the promoted sub-tree are
+    detached (set to NULL on the copy) — they would dangle otherwise.
+    """
+    src = _get_owned_thread_or_404(thread_id, current_user, db)
+
+    # ── Pass 1: walk the sub-tree (BFS), preserve parent-before-child order.
+    to_visit: list[int] = [src.id]
+    ordered: list[Thread] = []
+    while to_visit:
+        rows = db.query(Thread).filter(Thread.id.in_(to_visit)).all()
+        ordered.extend(rows)
+        children = (
+            db.query(Thread.id)
+            .filter(Thread.parent_thread_id.in_(to_visit))
+            .all()
+        )
+        to_visit = [c[0] for c in children]
+
+    # ── Pass 2: clone every thread in the sub-tree, mapping old → new ids.
+    thread_id_map: dict[int, int] = {}
+    for old in ordered:
+        new_parent = (
+            thread_id_map.get(old.parent_thread_id)
+            if old.id != src.id else None
+        )
+        new_thread = Thread(
+            user_id=current_user.id,
+            document_id=old.document_id,
+            page_number=old.page_number,
+            selected_text=old.selected_text,
+            coordinates=old.coordinates,
+            emoji=old.emoji,
+            title=old.title,
+            session_title=None,                       # fresh title for the new session
+            persona_id=old.persona_id,
+            course_id=old.course_id,
+            community_id=old.community_id,
+            organization_id=old.organization_id,
+            parent_thread_id=new_parent,
+            forked_from_message_id=None,              # rewired in pass 4
+        )
+        db.add(new_thread)
+        db.flush()
+        thread_id_map[old.id] = new_thread.id
+
+    # ── Pass 3: clone every message in the sub-tree, mapping old → new ids.
+    old_messages = (
+        db.query(Message)
+        .filter(Message.thread_id.in_(thread_id_map.keys()))
+        .order_by(Message.id.asc())
+        .all()
+    )
+    message_id_map: dict[int, int] = {}
+    for old_msg in old_messages:
+        new_msg = Message(
+            thread_id=thread_id_map[old_msg.thread_id],
+            role=old_msg.role,
+            content=old_msg.content,
+            model_alias=old_msg.model_alias,
+        )
+        db.add(new_msg)
+        db.flush()
+        message_id_map[old_msg.id] = new_msg.id
+
+    # ── Pass 4: rewire forked_from_message_id within the new tree only.
+    for old in ordered:
+        if old.id == src.id or old.forked_from_message_id is None:
+            continue
+        new_fork_msg_id = message_id_map.get(old.forked_from_message_id)
+        if new_fork_msg_id is None:
+            # Fork-source lived OUTSIDE the promoted sub-tree — leave the
+            # copy detached rather than dangling at an unrelated message.
+            continue
+        db.query(Thread).filter(
+            Thread.id == thread_id_map[old.id]
+        ).update(
+            {"forked_from_message_id": new_fork_msg_id},
+            synchronize_session=False,
+        )
+
+    db.commit()
+
+    new_root_id = thread_id_map[src.id]
+    new_root = db.query(Thread).filter(Thread.id == new_root_id).first()
+    new_root.messages = get_full_thread_history(new_root.id, db)
+    return new_root
 
 
 # ── Fork thread ─────────────────────────────────────────────────────────────

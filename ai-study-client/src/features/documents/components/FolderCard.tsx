@@ -9,11 +9,15 @@ interface FolderCardProps {
   docCount: number;
   personaName?: string;
   onOpen: (id: number) => void;
-  onEdit: (folder: Folder) => void;
-  onDelete: (folder: Folder) => void;
+  /** Edit/delete are optional — the three-dot menu hides itself when neither
+   *  is wired (e.g. inside a course's Folders tab where folder mutation
+   *  happens in the My Library folder view, not in the course context). */
+  onEdit?: (folder: Folder) => void;
+  onDelete?: (folder: Folder) => void;
 }
 
 export default function FolderCard({ folder, docCount, personaName, onOpen, onEdit, onDelete }: FolderCardProps) {
+  const showMenu = Boolean(onEdit || onDelete);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const color = folder.color ?? '#6366F1';
@@ -66,38 +70,45 @@ export default function FolderCard({ folder, docCount, personaName, onOpen, onEd
         </div>
       </div>
 
-      {/* 3-dot menu — top-right corner, appears on hover */}
-      <div
-        ref={menuRef}
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
-        onClick={e => e.stopPropagation()}
-      >
-        <button
-          onClick={() => setMenuOpen(v => !v)}
-          className="p-1 rounded-md text-[#C4C4C4] hover:text-[#787774] hover:bg-white/80"
+      {/* 3-dot menu — top-right corner, appears on hover. Hidden entirely
+          when no edit/delete handlers are wired. */}
+      {showMenu && (
+        <div
+          ref={menuRef}
+          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-100"
+          onClick={e => e.stopPropagation()}
         >
-          <MoreVertical className="w-3.5 h-3.5" />
-        </button>
+          <button
+            onClick={() => setMenuOpen(v => !v)}
+            className="p-1 rounded-md text-[#C4C4C4] hover:text-[#787774] hover:bg-white/80"
+          >
+            <MoreVertical className="w-3.5 h-3.5" />
+          </button>
 
-        {menuOpen && (
-          <div className="absolute top-full right-0 mt-1 w-36 bg-white rounded-lg border border-[#E8E8E6] shadow-lg z-50 overflow-hidden">
-            <button
-              onClick={() => { onEdit(folder); setMenuOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#37352F] hover:bg-[#F7F7F5] transition-colors"
-            >
-              <Pencil className="w-3.5 h-3.5 text-[#787774]" />
-              Edit
-            </button>
-            <button
-              onClick={() => { onDelete(folder); setMenuOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
+          {menuOpen && (
+            <div className="absolute top-full right-0 mt-1 w-36 bg-white rounded-lg border border-[#E8E8E6] shadow-lg z-50 overflow-hidden">
+              {onEdit && (
+                <button
+                  onClick={() => { onEdit(folder); setMenuOpen(false); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-[#37352F] hover:bg-[#F7F7F5] transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-[#787774]" />
+                  Edit
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={() => { onDelete(folder); setMenuOpen(false); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

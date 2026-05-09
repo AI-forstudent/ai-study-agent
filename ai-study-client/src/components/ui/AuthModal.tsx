@@ -192,7 +192,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
     >
       {/* Card — stop backdrop propagation */}
       <div
-        className="bg-white rounded-2xl shadow-xl border border-[#E8E8E6] w-full max-w-md"
+        className="bg-white rounded-2xl shadow-xl border border-[#E8E8E6] w-full max-w-md max-h-[90dvh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         {/* ── Header row ──────────────────────────────────────────────── */}

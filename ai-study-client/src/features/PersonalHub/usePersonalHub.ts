@@ -63,7 +63,7 @@ export function usePersonalHub(): PersonalHubState & PersonalHubActions {
       setCourses(coursesRes.data);
       setJobs(jobsRes.data);
     } catch {
-      setError('Failed to load Personal Hub data. Please refresh the page.');
+      setError('Failed to load My Space data. Please refresh the page.');
     } finally {
       setIsLoading(false);
     }
