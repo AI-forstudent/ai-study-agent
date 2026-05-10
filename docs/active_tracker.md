@@ -91,7 +91,7 @@
 | ID | Area | Description | Priority |
 |----|------|-------------|----------|
 | F-018 | Sessions & Files | Drag-and-drop documents into folders + right-click context menu to assign to folder | High |
-| F-019 | Library display | Show **only ROOTS** in main lane (recent), with a dedicated "View All" / searchable screen — applies to Folders and Courses too | High |
+| F-019 | Library display | Show **only ROOTS** in main lane (recent), with a dedicated "View All" / searchable screen — applies to Folders and Courses too | High — **Files lane shipped 2026-05-10** (search icon on Files-lane header opens a local "All Files" rows-view with name filter; lives inside `MyLibrary.tsx` as a state branch — no router/view-enum change). Sessions, Folders, Courses still pending. |
 | F-020 | Chat | Document upload from inside a New Session / chat (currently library-only) | High |
 | F-021 | AI / Personas | Remove the Auto-Summarize feature entirely | Medium |
 | F-022 | AI / Personas | Remove all default AI Teachers — nothing should ship preinstalled | Medium |

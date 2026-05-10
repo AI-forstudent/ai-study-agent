@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload, Library, Loader2, AlertCircle, CheckCircle2,
   Plus, FolderPlus, MessageSquare, ArrowLeft,
-  Trash2, Star, FolderOpen, FileText,
+  Trash2, Star, FolderOpen, FileText, Search,
 } from 'lucide-react';
 import PageContainer from './PageContainer';
 import PageHeader from './PageHeader';
@@ -112,6 +112,12 @@ export default function MyLibrary({
 
   // Drilldown — when set we're viewing the contents of a Folder or a Course.
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
+
+  // F-019 — "All Files" search view. Local state (no router change) so the
+  // user can click the Files-lane search icon, see every doc as a row, and
+  // filter by title.
+  const [filesAllOpen, setFilesAllOpen] = useState(false);
+  const [fileQuery, setFileQuery]       = useState('');
 
   const [sessions, setSessions]     = useState<SessionRow[]>([]);
   const [moveDoc, setMoveDoc]       = useState<Doc | null>(null);
@@ -284,6 +290,107 @@ export default function MyLibrary({
     </>
   );
 
+  // ── All Files search view (F-019) ────────────────────────────────────────
+  // Vertical row list of every doc with a name filter. Triggered by the
+  // search icon on the Files lane header.
+  if (filesAllOpen) {
+    const q = fileQuery.trim().toLowerCase();
+    const filtered = q
+      ? sortedFiles.filter(d => d.title.toLowerCase().includes(q))
+      : sortedFiles;
+
+    return (
+      <PageContainer>
+        <div className="flex items-center gap-2 mb-5">
+          <button
+            onClick={() => { setFilesAllOpen(false); setFileQuery(''); }}
+            className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F]"
+          >
+            <ArrowLeft className="w-4 h-4" /> My Library
+          </button>
+          <span className="text-[#C4C4C4]">/</span>
+          <span className="text-sm font-semibold text-[#37352F]">All Files</span>
+          <span className="text-xs text-[#C4C4C4]">({sortedFiles.length})</span>
+        </div>
+
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C4C4C4]" />
+          <input
+            type="text"
+            value={fileQuery}
+            onChange={e => setFileQuery(e.target.value)}
+            placeholder="Search files by name…"
+            autoFocus
+            className="w-full pl-9 pr-3 py-2 bg-white border border-[#E8E8E6] rounded-lg text-sm text-[#37352F] placeholder-[#C4C4C4] focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-16 text-[#787774]">
+            <FileText className="w-8 h-8 opacity-30" />
+            <p className="text-sm">
+              {q ? `No files match “${fileQuery}”.` : 'No files yet.'}
+            </p>
+          </div>
+        ) : (
+          <div className="bg-white border border-[#E8E8E6] rounded-xl overflow-hidden">
+            {filtered.map((doc, idx) => (
+              <div
+                key={doc.id}
+                onClick={() => onSelectDocument({ id: doc.id })}
+                className={`group flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-[#F7F7F5] transition-colors duration-150 ${
+                  idx > 0 ? 'border-t border-[#E8E8E6]' : ''
+                }`}
+              >
+                <div className="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center shrink-0">
+                  <FileIcon filename={doc.title} className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-[#37352F] truncate" title={doc.title}>
+                    {doc.title}
+                  </p>
+                  {doc.summary && (
+                    <p className="text-xs text-[#787774] truncate mt-0.5">{doc.summary}</p>
+                  )}
+                </div>
+                <button
+                  onClick={e => { e.stopPropagation(); onStarDocument(doc.id, !doc.is_starred); }}
+                  className="p-1 rounded-md hover:bg-amber-50"
+                  title={doc.is_starred ? 'Remove star' : 'Star'}
+                >
+                  <Star className={`w-4 h-4 ${doc.is_starred ? 'text-amber-400 fill-amber-400' : 'text-[#C4C4C4]'}`} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); setMoveDoc(doc); }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#C4C4C4] hover:text-indigo-600 hover:bg-indigo-50"
+                  title="Move to…"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onDeleteRequest({ id: doc.id, title: doc.title }); }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#C4C4C4] hover:text-red-500 hover:bg-red-50"
+                  title="Delete"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <MoveToFolderModal
+          isOpen={!!moveDoc}
+          docTitle={moveDoc?.title ?? ''}
+          folders={folders}
+          currentFolderId={moveDoc?.folder_id ?? null}
+          onMove={folderId => moveDoc && onMoveDocument(moveDoc.id, folderId)}
+          onClose={() => setMoveDoc(null)}
+        />
+      </PageContainer>
+    );
+  }
+
   // ── Drilldown (folder OR course) ─────────────────────────────────────────
   if (activeFolder) {
     return (
@@ -442,6 +549,7 @@ export default function MyLibrary({
       <LibraryLane
         title="Files"
         count={sortedFiles.length}
+        onSearchClick={() => { setFileQuery(''); setFilesAllOpen(true); }}
         isEmpty={sortedFiles.length === 0}
         emptyState={
           <div className="flex flex-col items-center gap-2 text-[#787774]">
