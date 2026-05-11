@@ -67,16 +67,21 @@ function App() {
 
   // ── F-036: lecture accordion → document switch bus ─────────────────────
   // ChatPanel's Lecture tab sets `pendingDocumentSwitch` when the user
-  // picks a different summary. We pick it up here so the document load
-  // (which lives in the useDocuments hook) actually happens.
+  // picks a different summary OR when a freshly-generated unified-summary
+  // PDF lands. F-036.3: refresh userDocs first — `handleSelectDocument`
+  // silently bails when the id isn't already in the local list, which
+  // it isn't for any document just created on the backend.
   useEffect(() => {
     if (pendingDocumentSwitch == null) return;
     const id = pendingDocumentSwitch;
     setPendingDocumentSwitch(null);
-    docs.handleSelectDocument({ id });
-    setActiveSession({ documentId: id, personaId: null });
-    setActivePersonaId(null);
-    setStandaloneMode(false);
+    (async () => {
+      await docs.refreshUserDocs();
+      await docs.handleSelectDocument({ id });
+      setActiveSession({ documentId: id, personaId: null });
+      setActivePersonaId(null);
+      setStandaloneMode(false);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingDocumentSwitch]);
 
