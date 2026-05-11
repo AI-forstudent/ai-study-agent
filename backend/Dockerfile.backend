@@ -3,22 +3,28 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install LibreOffice (for DOCX/PPTX → PDF conversion) and uv (package manager).
-# Pango / harfbuzz / cairo also power weasyprint (F-036 — markdown → PDF for
-# AI-generated unified summaries). LibreOffice pulls most of these in
-# transitively, but listing them explicitly survives package-set drift.
+# Install LibreOffice (DOCX/PPTX → PDF) + Pandoc + XeLaTeX for the F-036
+# unified-summary PDF pipeline. Pandoc converts the AI-generated markdown
+# to a LaTeX document and xelatex renders it — needed because the AI
+# emits LaTeX math (`$\nabla\cdot\vec{E}$`, etc.) that an HTML renderer
+# can't typeset. The TeX Live subset (-xetex, -latex-extra, -lang-other,
+# -fonts-recommended) gives us polyglossia for Hebrew RTL, AMS math, and
+# tcolorbox without pulling the full ~5GB texlive-full.
+#
+# fonts-culmus carries the classic Debian Hebrew font set (David, Frank
+# Ruehl, Miriam); fonts-dejavu-core is the Latin fallback. Polyglossia
+# picks one of these automatically based on the script.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice \
         fonts-liberation \
         fonts-dejavu-core \
-        libpango-1.0-0 \
-        libpangoft2-1.0-0 \
-        libharfbuzz0b \
-        libfontconfig1 \
+        fonts-culmus \
+        pandoc \
+        texlive-xetex \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-lang-other \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-# fonts-dejavu-core ships DejaVu Sans which has Hebrew + Latin coverage,
-# good enough for the unified-summary PDFs without pulling fonts-noto-* (the
-# `fonts-noto-hebrew` package isn't available on Debian Trixie).
 
 RUN pip install uv
 
