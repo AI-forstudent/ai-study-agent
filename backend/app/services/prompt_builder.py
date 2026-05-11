@@ -21,7 +21,10 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.domain import Course, Lecture, Persona, SessionMemory
+from app.models.domain import (
+    Chunk, Course, Lecture, LectureLecturerSummary, Persona, SessionMemory,
+    UserDocument,
+)
 from app.services.syllabus_extractor import build_syllabus_system_block
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -124,22 +127,37 @@ def _lecture_block(lecture_id: int | None, db: Session) -> str:
         return ""
     lec: Lecture | None = (
         db.query(Lecture)
-        .options(selectinload(Lecture.lecturer_summaries))
+        .options(
+            selectinload(Lecture.lecturer_summaries)
+                .selectinload(LectureLecturerSummary.user_doc)
+                .selectinload(UserDocument.base_document),
+        )
         .filter(Lecture.id == lecture_id)
         .first()
     )
     if not lec:
         return ""
 
-    # Prefer the AI-generated unified summary (it already integrates the
-    # chosen lecturer summary plus notes / recording transcript). Fall back
-    # to the first lecturer-summary row's content if no unified has been
-    # generated yet — better grounding than nothing.
+    # Prefer the AI-generated unified summary. Otherwise fall back to text
+    # extracted from the FIRST lecturer-summary PDF (F-035: summaries are
+    # PDFs, not stored markdown — pull chunks from the CAS pipeline).
     body = (lec.unified_summary or "").strip()
     if not body:
         for s in (lec.lecturer_summaries or []):
-            if s.content and s.content.strip():
-                body = s.content.strip()
+            ud = s.user_doc
+            bd = ud.base_document if ud else None
+            if not bd or bd.doc_type == "IMAGE":
+                continue
+            chunks = (
+                db.query(Chunk)
+                .filter(Chunk.base_hash == bd.hash_id)
+                .order_by(Chunk.chunk_index.asc())
+                .limit(20)
+                .all()
+            )
+            text = "\n\n".join(c.text for c in chunks if c.text).strip()
+            if text:
+                body = text
                 break
     if not body:
         return ""

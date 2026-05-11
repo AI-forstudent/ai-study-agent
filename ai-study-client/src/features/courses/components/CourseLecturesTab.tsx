@@ -151,13 +151,9 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
                   })}
                 </p>
               )}
-              {(() => {
-                const firstLecturer = lec.lecturer_summaries?.[0]?.content;
-                const preview = lec.unified_summary || firstLecturer;
-                return preview ? (
-                  <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">{preview}</p>
-                ) : null;
-              })()}
+              {lec.unified_summary && (
+                <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">{lec.unified_summary}</p>
+              )}
               <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774] flex-wrap">
                 <span className={`flex items-center gap-1 ${lec.unified_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   <BookOpen className="w-3 h-3" /> מאוחד

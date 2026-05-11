@@ -655,56 +655,70 @@ class Lecture(Base):
 # ── F-034 sub-resources ────────────────────────────────────────────────────
 
 class LectureLecturerSummary(Base):
-    """One lecturer-authored summary inside a Lecture (F-034).
+    """One lecturer-authored summary inside a Lecture (F-034 → F-035).
+
+    F-035: summaries are now PDF uploads. `user_document_id` points at a
+    CAS-deduped UserDocument; the summary's content is the PDF itself,
+    rendered in the session viewer. The text used by the unified-summary
+    skill is extracted from the PDF's chunks (the existing CAS pipeline
+    already chunked & embedded the PDF on upload).
 
     `lecturer_id` points at the course's roster of lecturers (built by the
-    syllabus extractor) and may be NULL when the course has none yet. ON
-    DELETE SET NULL so removing a lecturer from the course roster doesn't
-    blow away their summaries. The unified-summary skill picks ONE of these
-    per generation (caller-chosen)."""
+    syllabus extractor) and may be NULL when the course has none yet."""
     __tablename__ = "lecture_lecturer_summaries"
 
-    id          = Column(Integer, primary_key=True, index=True)
-    lecture_id  = Column(
+    id               = Column(Integer, primary_key=True, index=True)
+    lecture_id       = Column(
         Integer,
         ForeignKey("lectures.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    lecturer_id = Column(
+    lecturer_id      = Column(
         Integer,
         ForeignKey("course_lecturers.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    title       = Column(String, nullable=False, server_default="סיכום מרצה")
-    content     = Column(Text,   nullable=True)
-    created_at  = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    user_document_id = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title            = Column(String, nullable=False, server_default="סיכום מרצה")
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     lecture  = relationship("Lecture",        back_populates="lecturer_summaries")
     lecturer = relationship("CourseLecturer")
+    user_doc = relationship("UserDocument",   foreign_keys=[user_document_id])
 
 
 class LectureStudentSummary(Base):
-    """A student-/peer-authored summary inside a Lecture (F-034). Title is
-    free text so the user can label each one. The unified-summary skill
-    IGNORES these — they're for the student's own reference only."""
+    """A student-/peer-authored summary inside a Lecture (F-034 → F-035).
+
+    Same PDF-backed shape as LectureLecturerSummary. The unified-summary
+    skill IGNORES these — they're for the student's own reference only."""
     __tablename__ = "lecture_student_summaries"
 
-    id          = Column(Integer, primary_key=True, index=True)
-    lecture_id  = Column(
+    id               = Column(Integer, primary_key=True, index=True)
+    lecture_id       = Column(
         Integer,
         ForeignKey("lectures.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    title       = Column(String, nullable=False, server_default="סיכום תלמיד")
-    content     = Column(Text,   nullable=True)
-    created_at  = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    user_document_id = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title            = Column(String, nullable=False, server_default="סיכום תלמיד")
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at       = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    lecture = relationship("Lecture", back_populates="student_summaries")
+    lecture  = relationship("Lecture",      back_populates="student_summaries")
+    user_doc = relationship("UserDocument", foreign_keys=[user_document_id])
 
 
 class LectureRecording(Base):

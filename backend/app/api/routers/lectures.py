@@ -59,47 +59,55 @@ class AttachedDocOut(BaseModel):
 
 
 class LectureLecturerSummaryOut(BaseModel):
+    """F-035: summary is a PDF; `file_path` + `doc_type` come from the
+    linked UserDocument so the frontend can render it directly."""
     model_config = ConfigDict(from_attributes=True)
-    id:            int
-    lecture_id:    int
-    lecturer_id:   Optional[int]  = None
-    lecturer_name: Optional[str]  = None     # denormalized for the sidebar
-    title:         str
-    content:       Optional[str]  = None
-    created_at:    Optional[str]  = None
-    updated_at:    Optional[str]  = None
+    id:               int
+    lecture_id:       int
+    lecturer_id:      Optional[int] = None
+    lecturer_name:    Optional[str] = None     # denormalized for the sidebar
+    user_document_id: Optional[int] = None
+    file_path:        Optional[str] = None
+    doc_type:         str           = "GENERAL"
+    title:            str
+    created_at:       Optional[str] = None
+    updated_at:       Optional[str] = None
 
 
 class LectureLecturerSummaryCreate(BaseModel):
-    title:       Optional[str] = None
-    content:     Optional[str] = None
-    lecturer_id: Optional[int] = None        # null → auto-resolve (single lecturer or syllabus head)
+    """F-035: `user_document_id` is required — the uploaded PDF.
+    `lecturer_id` null → auto-resolve (single lecturer or syllabus head)."""
+    user_document_id: int
+    title:            Optional[str] = None
+    lecturer_id:      Optional[int] = None
 
 
 class LectureLecturerSummaryUpdate(BaseModel):
-    title:       Optional[str] = None
-    content:     Optional[str] = None
-    lecturer_id: Optional[int] = None
+    title:            Optional[str] = None
+    user_document_id: Optional[int] = None
+    lecturer_id:      Optional[int] = None
 
 
 class LectureStudentSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    id:         int
-    lecture_id: int
-    title:      str
-    content:    Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    id:               int
+    lecture_id:       int
+    user_document_id: Optional[int] = None
+    file_path:        Optional[str] = None
+    doc_type:         str           = "GENERAL"
+    title:            str
+    created_at:       Optional[str] = None
+    updated_at:       Optional[str] = None
 
 
 class LectureStudentSummaryCreate(BaseModel):
-    title:   Optional[str] = None
-    content: Optional[str] = None
+    user_document_id: int
+    title:            Optional[str] = None
 
 
 class LectureStudentSummaryUpdate(BaseModel):
-    title:   Optional[str] = None
-    content: Optional[str] = None
+    title:            Optional[str] = None
+    user_document_id: Optional[int] = None
 
 
 class LectureAttachmentOut(BaseModel):
@@ -215,7 +223,8 @@ def _load_lecture_with_children(lecture_id: int, db: Session) -> Optional[Lectur
         db.query(Lecture)
         .options(
             selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.lecturer),
-            selectinload(Lecture.student_summaries),
+            selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.student_summaries).selectinload(LectureStudentSummary.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.recordings).selectinload(LectureRecording.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
         )
@@ -227,24 +236,32 @@ def _load_lecture_with_children(lecture_id: int, db: Session) -> Optional[Lectur
 # ── Serializers ───────────────────────────────────────────────────────────
 
 def _serialize_lecturer_summary(s: LectureLecturerSummary) -> LectureLecturerSummaryOut:
+    ud = s.user_doc
+    bd = ud.base_document if ud else None
     return LectureLecturerSummaryOut(
         id=s.id,
         lecture_id=s.lecture_id,
         lecturer_id=s.lecturer_id,
         lecturer_name=s.lecturer.name if s.lecturer else None,
+        user_document_id=s.user_document_id,
+        file_path=bd.file_path if bd else None,
+        doc_type=bd.doc_type if bd else "GENERAL",
         title=s.title or "סיכום מרצה",
-        content=s.content,
         created_at=s.created_at.isoformat() if s.created_at else None,
         updated_at=s.updated_at.isoformat() if s.updated_at else None,
     )
 
 
 def _serialize_student_summary(s: LectureStudentSummary) -> LectureStudentSummaryOut:
+    ud = s.user_doc
+    bd = ud.base_document if ud else None
     return LectureStudentSummaryOut(
         id=s.id,
         lecture_id=s.lecture_id,
+        user_document_id=s.user_document_id,
+        file_path=bd.file_path if bd else None,
+        doc_type=bd.doc_type if bd else "GENERAL",
         title=s.title or "סיכום תלמיד",
-        content=s.content,
         created_at=s.created_at.isoformat() if s.created_at else None,
         updated_at=s.updated_at.isoformat() if s.updated_at else None,
     )
@@ -471,7 +488,7 @@ def generate_unified_summary(
                 detail="יש כמה סיכומי מרצה — בחר איזה מהם ישמש כקלט.",
             )
     chosen = next((s for s in summaries if s.id == chosen_id), None)
-    if not chosen or not (chosen.content or "").strip():
+    if not chosen or not chosen.user_document_id:
         raise HTTPException(
             status_code=422,
             detail="הסיכום הנבחר ריק או לא נמצא.",
@@ -536,7 +553,6 @@ def create_lecturer_summary(
         default = _resolve_default_lecturer(lec.course_id, db)
         lecturer_id = default.id if default else None
     else:
-        # Validate the lecturer belongs to this course.
         cl = (
             db.query(CourseLecturer)
             .filter(CourseLecturer.id == lecturer_id, CourseLecturer.course_id == lec.course_id)
@@ -545,17 +561,24 @@ def create_lecturer_summary(
         if not cl:
             raise HTTPException(status_code=404, detail="Lecturer not in this course")
 
+    ud = _validate_user_doc(payload.user_document_id, current_user, db)
+    if not ud:
+        raise HTTPException(status_code=422, detail="user_document_id is required.")
+
     row = LectureLecturerSummary(
         lecture_id=lec.id,
         lecturer_id=lecturer_id,
-        title=(payload.title or "סיכום מרצה").strip() or "סיכום מרצה",
-        content=payload.content,
+        user_document_id=ud.id,
+        title=(payload.title or ud.custom_title or "סיכום מרצה").strip() or "סיכום מרצה",
     )
     db.add(row)
     db.commit()
     row = (
         db.query(LectureLecturerSummary)
-        .options(selectinload(LectureLecturerSummary.lecturer))
+        .options(
+            selectinload(LectureLecturerSummary.lecturer),
+            selectinload(LectureLecturerSummary.user_doc).selectinload(UserDocument.base_document),
+        )
         .filter(LectureLecturerSummary.id == row.id)
         .first()
     )
@@ -589,8 +612,9 @@ def update_lecturer_summary(
     sent = payload.model_fields_set
     if "title" in sent and payload.title is not None:
         row.title = payload.title.strip() or row.title
-    if "content" in sent:
-        row.content = payload.content
+    if "user_document_id" in sent:
+        ud = _validate_user_doc(payload.user_document_id, current_user, db)
+        row.user_document_id = ud.id if ud else None
     if "lecturer_id" in sent:
         if payload.lecturer_id is not None:
             cl = (
@@ -605,7 +629,10 @@ def update_lecturer_summary(
     db.commit()
     row = (
         db.query(LectureLecturerSummary)
-        .options(selectinload(LectureLecturerSummary.lecturer))
+        .options(
+            selectinload(LectureLecturerSummary.lecturer),
+            selectinload(LectureLecturerSummary.user_doc).selectinload(UserDocument.base_document),
+        )
         .filter(LectureLecturerSummary.id == row.id)
         .first()
     )
@@ -658,14 +685,23 @@ def create_student_summary(
         raise HTTPException(status_code=404, detail="Lecture not found")
     _ensure_course_owner(lec.course_id, current_user, db)
 
+    ud = _validate_user_doc(payload.user_document_id, current_user, db)
+    if not ud:
+        raise HTTPException(status_code=422, detail="user_document_id is required.")
+
     row = LectureStudentSummary(
         lecture_id=lec.id,
-        title=(payload.title or "סיכום תלמיד").strip() or "סיכום תלמיד",
-        content=payload.content,
+        user_document_id=ud.id,
+        title=(payload.title or ud.custom_title or "סיכום תלמיד").strip() or "סיכום תלמיד",
     )
     db.add(row)
     db.commit()
-    db.refresh(row)
+    row = (
+        db.query(LectureStudentSummary)
+        .options(selectinload(LectureStudentSummary.user_doc).selectinload(UserDocument.base_document))
+        .filter(LectureStudentSummary.id == row.id)
+        .first()
+    )
     return _serialize_student_summary(row)
 
 
@@ -696,11 +732,17 @@ def update_student_summary(
     sent = payload.model_fields_set
     if "title" in sent and payload.title is not None:
         row.title = payload.title.strip() or row.title
-    if "content" in sent:
-        row.content = payload.content
+    if "user_document_id" in sent:
+        ud = _validate_user_doc(payload.user_document_id, current_user, db)
+        row.user_document_id = ud.id if ud else None
 
     db.commit()
-    db.refresh(row)
+    row = (
+        db.query(LectureStudentSummary)
+        .options(selectinload(LectureStudentSummary.user_doc).selectinload(UserDocument.base_document))
+        .filter(LectureStudentSummary.id == row.id)
+        .first()
+    )
     return _serialize_student_summary(row)
 
 

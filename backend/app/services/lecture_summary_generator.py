@@ -258,7 +258,10 @@ def generate_unified_summary_sync(
             "יש כמה סיכומי מרצה — בחר איזה מהם ישמש כקלט."
         )
 
-    lecturer_summary     = (chosen.content or "").strip()
+    # F-035: summary is a PDF — pull text from its CAS chunks. Image-only
+    # PDFs would need OCR (deferred), so a chunk-empty result trips the
+    # "content missing" branch below.
+    lecturer_summary     = _extract_user_doc_text(chosen.user_doc, db).strip()
     recording_transcript = ""           # Phase 2 will fill from transcribed audio
     notes_text           = _collect_notes_text(lec, db)
     exercises_text       = ""           # no data model concept yet
@@ -266,7 +269,8 @@ def generate_unified_summary_sync(
 
     if not lecturer_summary and not recording_transcript:
         raise UnifiedSummaryInputError(
-            "הסיכום הנבחר ריק. מלא את תוכן הסיכום לפני יצירת הסיכום המאוחד."
+            "הסיכום הנבחר ריק או שלא ניתן לחלץ ממנו טקסט. בדוק שהקובץ הוא PDF "
+            "עם טקסט נגיש (לא סריקה בלבד)."
         )
 
     user_prompt = _build_user_prompt(
@@ -322,7 +326,9 @@ def process_unified_summary_background(
         lec: Optional[Lecture] = (
             db.query(Lecture)
             .options(
-                selectinload(Lecture.lecturer_summaries),
+                selectinload(Lecture.lecturer_summaries)
+                    .selectinload(LectureLecturerSummary.user_doc)
+                    .selectinload(UserDocument.base_document),
                 selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
             )
             .filter(Lecture.id == lecture_id)
