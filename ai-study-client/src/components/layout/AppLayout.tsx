@@ -1,5 +1,5 @@
 import { useEffect, useState, cloneElement, isValidElement, type ReactElement } from 'react';
-import { Menu, X, Sparkles, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Menu, X, Sparkles, ChevronLeft } from 'lucide-react';
 import ToastContainer from '../ui/ToastContainer';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useAppStore } from '../../store/useAppStore';
@@ -54,13 +54,30 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
     ? cloneElement(sidebar as ReactElement<any>, { onCloseDrawer: () => setDrawerOpen(false) })
     : sidebar;
 
+  // F-035: collapsed desktop sidebar renders an iconified rail (same nav
+  // items as the expanded sidebar, just narrow). The Sidebar component
+  // handles both modes via its `collapsed` prop.
+  const sidebarExpanded = isValidElement(sidebar)
+    ? cloneElement(sidebar as ReactElement<any>, {
+        collapsed: false,
+        onToggleCollapsed: () => setDesktopOpen(false),
+      })
+    : sidebar;
+  const sidebarCollapsed = isValidElement(sidebar)
+    ? cloneElement(sidebar as ReactElement<any>, {
+        collapsed: true,
+        onToggleCollapsed: () => setDesktopOpen(true),
+      })
+    : sidebar;
+
   return (
     <div className="flex h-dvh w-screen overflow-hidden bg-white font-sans">
       {/* ─── Desktop sidebar (inline-push, expanded state) ─────────────── */}
       {!isMobile && desktopOpen && (
         <div className="hidden lg:flex shrink-0 relative">
-          {sidebar}
-          {/* Collapse chevron — pinned to the inner edge of the expanded sidebar */}
+          {sidebarExpanded}
+          {/* Collapse chevron pinned to the inner edge — Sidebar itself
+              doesn't render a chevron in expanded mode, so we add one here. */}
           <button
             onClick={() => setDesktopOpen(false)}
             className="absolute top-3 end-2 p-1.5 rounded-md text-[#787774] hover:bg-[#EFEFED] z-10"
@@ -72,23 +89,10 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
         </div>
       )}
 
-      {/* ─── Desktop rail (always shown when sidebar is collapsed) ─────── */}
+      {/* ─── Desktop rail (iconified Sidebar) ─────────────────────────── */}
       {!isMobile && !desktopOpen && (
-        <div className="hidden lg:flex flex-col items-center gap-2 w-12 border-e border-[#E8E8E6] bg-[#F7F7F5] shrink-0 py-3">
-          <button
-            onClick={() => setDesktopOpen(true)}
-            className="p-2 rounded-md text-[#37352F] hover:bg-[#EFEFED]"
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
-          >
-            <ChevronRight className="w-4 h-4 rtl:rotate-180" />
-          </button>
-          <div
-            className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center"
-            title="StudyAgent"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-white" />
-          </div>
+        <div className="hidden lg:flex shrink-0">
+          {sidebarCollapsed}
         </div>
       )}
 

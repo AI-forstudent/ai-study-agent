@@ -314,31 +314,31 @@ export const api = {
   listLectureThreads: (id: number) =>
     apiClient.get(`/api/v1/lectures/${id}/threads`),
 
-  // ── F-034 sub-resources: lecturer summaries ──────────────────────────────
+  // ── F-035 sub-resources: lecturer summaries (PDF-backed) ─────────────────
   createLectureLecturerSummary: (lectureId: number, payload: {
-    title?:       string | null;
-    content?:     string | null;
-    lecturer_id?: number | null;      // null → auto-resolve (single lecturer / syllabus head)
+    user_document_id: number;
+    title?:           string | null;
+    lecturer_id?:     number | null;   // null → auto-resolve (single lecturer / syllabus head)
   }) => apiClient.post(`/api/v1/lectures/${lectureId}/lecturer-summaries`, payload),
 
   updateLectureLecturerSummary: (lectureId: number, summaryId: number, payload: {
-    title?:       string;
-    content?:     string | null;
-    lecturer_id?: number | null;
+    title?:            string;
+    user_document_id?: number | null;
+    lecturer_id?:      number | null;
   }) => apiClient.put(`/api/v1/lectures/${lectureId}/lecturer-summaries/${summaryId}`, payload),
 
   deleteLectureLecturerSummary: (lectureId: number, summaryId: number) =>
     apiClient.delete(`/api/v1/lectures/${lectureId}/lecturer-summaries/${summaryId}`),
 
-  // ── F-034 sub-resources: student summaries ───────────────────────────────
+  // ── F-035 sub-resources: student summaries (PDF-backed) ──────────────────
   createLectureStudentSummary: (lectureId: number, payload: {
-    title?:   string | null;
-    content?: string | null;
+    user_document_id: number;
+    title?:           string | null;
   }) => apiClient.post(`/api/v1/lectures/${lectureId}/student-summaries`, payload),
 
   updateLectureStudentSummary: (lectureId: number, summaryId: number, payload: {
-    title?:   string;
-    content?: string | null;
+    title?:            string;
+    user_document_id?: number | null;
   }) => apiClient.put(`/api/v1/lectures/${lectureId}/student-summaries/${summaryId}`, payload),
 
   deleteLectureStudentSummary: (lectureId: number, summaryId: number) =>
