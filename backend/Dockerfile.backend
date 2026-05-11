@@ -24,7 +24,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-latex-extra \
         texlive-fonts-recommended \
         texlive-lang-other \
+        texlive-plain-generic \
+        lmodern \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# `lmodern` is loaded by pandoc's default LaTeX template (\usepackage{lmodern}
+# in the preamble). On Debian Trixie it isn't pulled in by texlive-fonts-
+# recommended automatically — listing it explicitly avoids the
+# `! LaTeX Error: File 'lmodern.sty' not found.` that bubbled up to the
+# user's UI. `texlive-plain-generic` carries other small .sty files pandoc
+# templates sometimes reference (ifluatex, etoolbox helpers).
 
 RUN pip install uv
 
