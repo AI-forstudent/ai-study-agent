@@ -1,15 +1,14 @@
 import { useEffect, useState, cloneElement, isValidElement, type ReactElement } from 'react';
-import { Menu, X, Sparkles, ChevronRight } from 'lucide-react';
+import { Menu, X, Sparkles, ChevronRight, ChevronLeft } from 'lucide-react';
 import ToastContainer from '../ui/ToastContainer';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useAppStore } from '../../store/useAppStore';
 
 interface AppLayoutProps {
-  /** Sidebar component. On phone/tablet it renders inside a slide-in drawer
+  /** Sidebar component. On phone/tablet renders inside a slide-in drawer
    *  and is passed an extra `onClose` prop so nav clicks dismiss the drawer.
-   *  On desktop while `inSession=true` (F-033), the sidebar collapses to a
-   *  thin rail and slides out as a drawer on chevron click — the same
-   *  pattern as mobile but available on desktop too. */
+   *  On desktop the sidebar is ALWAYS collapsible — open by default on the
+   *  main screen, closed by default inside any session (F-034). */
   sidebar: React.ReactNode;
   children: React.ReactNode;
 }
@@ -17,17 +16,23 @@ interface AppLayoutProps {
 export default function AppLayout({ sidebar, children }: AppLayoutProps) {
   const { isMobile } = useBreakpoint();
   const inSession = useAppStore(s => s.inSession);
+
+  // ── Mobile drawer ───────────────────────────────────────────────────────
+  // Stays a slide-in overlay drawer — unchanged from F-030.
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // ── Drawer open/close lifecycle ────────────────────────────────────────
-  // Mobile uses a drawer always (no inline sidebar). Desktop uses a drawer
-  // ONLY when inSession=true; otherwise the sidebar is inline. We treat
-  // "drawer mode" as a derived flag so the desktop close-on-viewport-switch
-  // effect still cleans up on resize between modes.
-  const drawerMode = isMobile || inSession;
+  // ── Desktop sidebar (F-034) ─────────────────────────────────────────────
+  // Always inline-push, always collapsible. The user can toggle anytime;
+  // when `inSession` flips, we reset to its sensible default (open on
+  // main, closed in session) so the user doesn't have to manually
+  // re-collapse on entering a session.
+  const [desktopOpen, setDesktopOpen] = useState(!inSession);
+  useEffect(() => { setDesktopOpen(!inSession); }, [inSession]);
+
+  // Close mobile drawer on viewport switch back to desktop, or on Escape.
   useEffect(() => {
-    if (!drawerMode && drawerOpen) setDrawerOpen(false);
-  }, [drawerMode, drawerOpen]);
+    if (!isMobile && drawerOpen) setDrawerOpen(false);
+  }, [isMobile, drawerOpen]);
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawerOpen(false); };
@@ -35,7 +40,7 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [drawerOpen]);
 
-  // Lock background scroll while the drawer is open.
+  // Lock background scroll while the mobile drawer is open.
   useEffect(() => {
     if (!drawerOpen) return;
     const prev = document.body.style.overflow;
@@ -43,43 +48,53 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
     return () => { document.body.style.overflow = prev; };
   }, [drawerOpen]);
 
-  // Inject onClose into the sidebar element when rendering it inside the drawer
-  // so nav clicks dismiss the drawer automatically.
+  // Inject onClose into the sidebar element when rendering it inside the
+  // mobile drawer so nav clicks dismiss the drawer automatically.
   const sidebarWithClose = isValidElement(sidebar)
     ? cloneElement(sidebar as ReactElement<any>, { onCloseDrawer: () => setDrawerOpen(false) })
     : sidebar;
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden bg-white font-sans">
-      {/* Desktop sidebar — inline only when not in a session */}
-      {!isMobile && !inSession && (
-        <div className="hidden lg:flex shrink-0">
+      {/* ─── Desktop sidebar (inline-push, expanded state) ─────────────── */}
+      {!isMobile && desktopOpen && (
+        <div className="hidden lg:flex shrink-0 relative">
           {sidebar}
+          {/* Collapse chevron — pinned to the inner edge of the expanded sidebar */}
+          <button
+            onClick={() => setDesktopOpen(false)}
+            className="absolute top-3 end-2 p-1.5 rounded-md text-[#787774] hover:bg-[#EFEFED] z-10"
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
+          >
+            <ChevronLeft className="w-4 h-4 rtl:rotate-180" />
+          </button>
         </div>
       )}
 
-      {/* Desktop in-session collapsed rail — a thin column with an expand chevron.
-          Mobile keeps using the hamburger top-bar; we don't show the rail there. */}
-      {!isMobile && inSession && (
+      {/* ─── Desktop rail (always shown when sidebar is collapsed) ─────── */}
+      {!isMobile && !desktopOpen && (
         <div className="hidden lg:flex flex-col items-center gap-2 w-12 border-e border-[#E8E8E6] bg-[#F7F7F5] shrink-0 py-3">
           <button
-            onClick={() => setDrawerOpen(true)}
+            onClick={() => setDesktopOpen(true)}
             className="p-2 rounded-md text-[#37352F] hover:bg-[#EFEFED]"
-            title="Open menu"
-            aria-label="Open menu"
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
           >
             <ChevronRight className="w-4 h-4 rtl:rotate-180" />
           </button>
-          <div className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center" title="StudyAgent">
+          <div
+            className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center"
+            title="StudyAgent"
+          >
             <Sparkles className="w-3.5 h-3.5 text-white" />
           </div>
         </div>
       )}
 
-      {/* Drawer (mobile always, desktop in-session) — slides in from the start side */}
-      {drawerMode && (
+      {/* ─── Mobile drawer (slide-in overlay) ──────────────────────────── */}
+      {isMobile && (
         <>
-          {/* Backdrop */}
           <div
             onClick={() => setDrawerOpen(false)}
             className={`fixed inset-0 z-40 bg-black/40 transition-opacity duration-200 ${
@@ -87,7 +102,6 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
             }`}
             aria-hidden={!drawerOpen}
           />
-          {/* Drawer */}
           <div
             className={`fixed start-0 top-0 z-50 h-dvh w-[78%] max-w-[300px] bg-[#F7F7F5] border-e border-[#E8E8E6] shadow-xl transform transition-transform duration-200 ease-out ${
               drawerOpen ? 'translate-x-0' : '-translate-x-full rtl:translate-x-full'
@@ -108,7 +122,6 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
       )}
 
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
-        {/* Mobile/Tablet top bar with hamburger — desktop in-session uses the rail instead */}
         {isMobile && (
           <header className="flex items-center gap-2 px-3 py-2 border-b border-[#E8E8E6] bg-white shrink-0">
             <button

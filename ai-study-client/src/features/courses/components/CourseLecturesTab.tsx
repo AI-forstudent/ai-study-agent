@@ -151,24 +151,26 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
                   })}
                 </p>
               )}
-              {(lec.unified_summary || lec.lecturer_summary) && (
-                <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">
-                  {lec.unified_summary || lec.lecturer_summary}
-                </p>
-              )}
+              {(() => {
+                const firstLecturer = lec.lecturer_summaries?.[0]?.content;
+                const preview = lec.unified_summary || firstLecturer;
+                return preview ? (
+                  <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">{preview}</p>
+                ) : null;
+              })()}
               <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774] flex-wrap">
                 <span className={`flex items-center gap-1 ${lec.unified_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   <BookOpen className="w-3 h-3" /> מאוחד
                 </span>
-                <span className={`flex items-center gap-1 ${lec.lecturer_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
-                  <BookOpen className="w-3 h-3" /> מרצה
+                <span className={`flex items-center gap-1 ${(lec.lecturer_summaries?.length ?? 0) > 0 ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  <BookOpen className="w-3 h-3" /> מרצה ({lec.lecturer_summaries?.length ?? 0})
                 </span>
-                <span className={`flex items-center gap-1 ${lec.recording ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
-                  <Mic className="w-3 h-3" /> Recording
+                <span className={`flex items-center gap-1 ${(lec.recordings?.length ?? 0) > 0 ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  <Mic className="w-3 h-3" /> הקלטות ({lec.recordings?.length ?? 0})
                 </span>
-                <span className={`flex items-center gap-1 ${lec.notes ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
-                  {lec.notes?.doc_type === 'IMAGE' ? <Image className="w-3 h-3" /> : <FileText className="w-3 h-3" />}
-                  Notes
+                <span className={`flex items-center gap-1 ${(lec.notes?.length ?? 0) > 0 ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  {lec.notes?.[0]?.doc_type === 'IMAGE' ? <Image className="w-3 h-3" /> : <FileText className="w-3 h-3" />}
+                  הערות ({lec.notes?.length ?? 0})
                 </span>
               </div>
             </button>
