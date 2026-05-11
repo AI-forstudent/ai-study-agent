@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip, ChevronDown, ChevronRight, Mic as MicIcon, Image as ImageIconLR, ArrowLeft, Plus } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip, ChevronDown, ChevronRight, Mic as MicIcon, Image as ImageIconLR, ArrowLeft, Plus, RefreshCw, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -817,13 +817,65 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
   const recordingInputRef = useRef<HTMLInputElement>(null);
   const notesInputRef     = useRef<HTMLInputElement>(null);
 
-  async function refreshLecture() {
+  // F-036.2 — unified summary generation: kicks off the BG task, polls
+  // while `unified_summary_processing=true`, and auto-switches the main
+  // pane to the rendered PDF the moment it lands.
+  const [genStarting, setGenStarting] = useState(false);
+  const [pickerOpen,  setPickerOpen]  = useState(false);
+
+  async function refreshLecture(): Promise<any | null> {
     try {
       const res = await api.getLecture(lecture.id);
       setActiveLecture(res.data);
+      return res.data;
     } catch {
       // best-effort — leave the stale lecture in store on failure
+      return null;
     }
+  }
+
+  // Poll while a generation is in flight, refresh on completion, and
+  // jump the main pane to the rendered PDF when it shows up.
+  React.useEffect(() => {
+    if (!lecture.unified_summary_processing) return;
+    let cancelled = false;
+    const tick = async () => {
+      const fresh = await refreshLecture();
+      if (cancelled || !fresh) return;
+      if (!fresh.unified_summary_processing && fresh.unified_summary_document_id) {
+        // Generation finished and the PDF is available — open it.
+        setPendingDocumentSwitch(fresh.unified_summary_document_id);
+      }
+    };
+    const t = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lecture.id, lecture.unified_summary_processing]);
+
+  async function startGeneration(lecturerSummaryId: number | null) {
+    setUploadError(null);
+    setGenStarting(true);
+    try {
+      const res = await api.generateLectureUnifiedSummary(lecture.id, lecturerSummaryId);
+      setActiveLecture(res.data);
+    } catch (err: any) {
+      setUploadError(err?.response?.data?.detail ?? 'Failed to start generation.');
+    } finally {
+      setGenStarting(false);
+    }
+  }
+
+  function handleGenerateClick() {
+    const summaries = lecture.lecturer_summaries ?? [];
+    if (summaries.length === 0) {
+      setUploadError('צריך לפחות סיכום מרצה אחד לפני יצירת הסיכום המאוחד.');
+      return;
+    }
+    if (summaries.length === 1) {
+      void startGeneration(summaries[0].id);
+      return;
+    }
+    setPickerOpen(true);
   }
 
   async function handleUploadAndAttach(
@@ -932,27 +984,57 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
       )}
 
       {/* Unified summary row */}
-      <button
-        onClick={() => switchToDoc(lecture.unified_summary_document_id)}
-        disabled={!lecture.unified_summary_document_id}
-        className={[
-          'w-full flex items-center gap-2 px-2 py-2 rounded-lg text-start',
-          lecture.unified_summary_document_id === activeDocumentId
-            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-            : 'hover:bg-[#F7F7F5] text-[#37352F] border border-transparent',
-          lecture.unified_summary_document_id ? '' : 'opacity-50 cursor-not-allowed',
-        ].join(' ')}
-      >
-        <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-        <span className="flex-1 truncate text-sm font-medium">סיכום מאוחד</span>
-        <span className="text-[10px] font-medium text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded shrink-0">AI</span>
-        {lecture.unified_summary_processing && (
-          <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
-        )}
-        {!lecture.unified_summary_document_id && !lecture.unified_summary_processing && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[#C4C4C4]" title="עוד לא יוצר" />
-        )}
-      </button>
+      <div className={[
+        'flex items-center gap-1 rounded-lg',
+        lecture.unified_summary_document_id === activeDocumentId
+          ? 'bg-indigo-50 border border-indigo-200'
+          : 'border border-transparent',
+      ].join(' ')}>
+        <button
+          onClick={() => switchToDoc(lecture.unified_summary_document_id)}
+          disabled={!lecture.unified_summary_document_id}
+          className={[
+            'flex-1 flex items-center gap-2 px-2 py-2 rounded-lg text-start',
+            lecture.unified_summary_document_id === activeDocumentId
+              ? 'text-indigo-700'
+              : lecture.unified_summary_document_id
+                ? 'text-[#37352F] hover:bg-[#F7F7F5]'
+                : 'text-[#37352F] opacity-60 cursor-not-allowed',
+          ].join(' ')}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+          <span className="flex-1 truncate text-sm font-medium">סיכום מאוחד</span>
+          <span className="text-[10px] font-medium text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded shrink-0">AI</span>
+          {!lecture.unified_summary_document_id && !lecture.unified_summary_processing && (
+            <span className="w-1.5 h-1.5 rounded-full bg-[#C4C4C4]" title="עוד לא יוצר" />
+          )}
+        </button>
+        {/* F-036.2 — generate / regenerate button. Backend gates writes
+            to course owners; non-owners get a 404 surfaced inline. */}
+        <button
+          onClick={handleGenerateClick}
+          disabled={lecture.unified_summary_processing || genStarting}
+          className="p-1.5 me-1 rounded text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+          title={lecture.unified_summary_document_id ? 'ייצר מחדש' : 'ייצר סיכום מאוחד'}
+          aria-label="Generate unified summary"
+        >
+          {lecture.unified_summary_processing || genStarting
+            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            : lecture.unified_summary_document_id
+              ? <RefreshCw className="w-3.5 h-3.5" />
+              : <Sparkles className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+      {lecture.unified_summary_processing && (
+        <p className="text-[10px] text-[#787774] px-2 mt-0.5">
+          מייצר סיכום מאוחד — לוקח 30–90 שניות, ייפתח אוטומטית כשיהיה מוכן.
+        </p>
+      )}
+      {lecture.unified_summary_error && !lecture.unified_summary_processing && (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1 mt-1">
+          {lecture.unified_summary_error}
+        </p>
+      )}
 
       {uploadError && (
         <div className="mt-1 p-2 bg-red-50 border border-red-100 rounded text-xs text-red-700 flex items-start gap-1.5">
@@ -1123,6 +1205,39 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
           );
         })}
       </LectureSection>
+
+      {/* F-036.2 — pick which lecturer summary feeds the unified-summary skill */}
+      {pickerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setPickerOpen(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md p-5 border border-[#E8E8E6]">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-semibold text-[#37352F]">Pick a lecturer summary</h3>
+              <button onClick={() => setPickerOpen(false)} className="p-1.5 text-[#787774] hover:bg-[#F7F7F5] rounded">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-[#787774] mb-3">
+              The chosen summary feeds the AI as the primary input. Others stay available in the accordion.
+            </p>
+            <ul className="space-y-1 max-h-[50vh] overflow-y-auto">
+              {(lecture.lecturer_summaries ?? []).map((s: any) => (
+                <li key={s.id}>
+                  <button
+                    onClick={async () => { setPickerOpen(false); await startGeneration(s.id); }}
+                    className="w-full text-start px-3 py-2 rounded-lg border border-[#E8E8E6] hover:border-indigo-300 hover:bg-indigo-50"
+                  >
+                    <div className="text-sm font-medium text-[#37352F]" dir="auto">{s.title}</div>
+                    {s.lecturer_name && (
+                      <div className="text-[11px] text-[#787774] mt-0.5" dir="auto">{s.lecturer_name}</div>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
