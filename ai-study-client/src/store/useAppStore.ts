@@ -106,6 +106,25 @@ interface AppState {
    */
   inSession: boolean;
   setInSession: (v: boolean) => void;
+
+  // ── Active lecture (F-036) ──────────────────────────────────────────────────
+  /**
+   * When the user opens a lecture, MainWorkspace renders the lecture's unified-
+   * summary PDF (or fallback summary) as the active document, and ChatPanel
+   * surfaces a "Lecture" tab built from this object. Going back to My Library
+   * or starting a non-lecture session clears it.
+   *
+   * Typed loosely (`any`) here because the canonical Lecture interface lives
+   * inside features/courses; importing it would create a circular dependency.
+   * Consumers cast at the boundary.
+   */
+  activeLecture: any | null;
+  setActiveLecture: (lec: any | null) => void;
+  /** Bus pattern: ChatPanel's Lecture-tab accordion sets this when the
+   *  user clicks a different summary; App.tsx watches it via useEffect,
+   *  calls `docs.handleSelectDocument({id})`, then clears it. */
+  pendingDocumentSwitch: number | null;
+  setPendingDocumentSwitch: (id: number | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -283,4 +302,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── In-session collapse flag ─────────────────────────────────────────────
   inSession: false,
   setInSession: (v) => set({ inSession: v }),
+
+  // ── Active lecture (F-036) ───────────────────────────────────────────────
+  activeLecture: null,
+  setActiveLecture: (lec) => set({ activeLecture: lec }),
+  pendingDocumentSwitch: null,
+  setPendingDocumentSwitch: (id) => set({ pendingDocumentSwitch: id }),
 }));

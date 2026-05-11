@@ -52,6 +52,9 @@ function App() {
   const saveSessionMemory   = useAppStore(state => state.saveSessionMemory);
   const clonePersona        = useAppStore(state => state.clonePersona);
   const dismissResumePrompt = useAppStore(state => state.dismissResumePrompt);
+  const setActiveLecture    = useAppStore(state => state.setActiveLecture);
+  const pendingDocumentSwitch    = useAppStore(state => state.pendingDocumentSwitch);
+  const setPendingDocumentSwitch = useAppStore(state => state.setPendingDocumentSwitch);
 
   // ── Hydrate personas whenever auth becomes available ──────────────────────
   // Depending on `isAuthenticated` (not just on mount) ensures a fresh login
@@ -61,6 +64,21 @@ function App() {
     if (!isAuthenticated) return;
     fetchPersonas();
   }, [isAuthenticated, fetchPersonas]);
+
+  // ── F-036: lecture accordion → document switch bus ─────────────────────
+  // ChatPanel's Lecture tab sets `pendingDocumentSwitch` when the user
+  // picks a different summary. We pick it up here so the document load
+  // (which lives in the useDocuments hook) actually happens.
+  useEffect(() => {
+    if (pendingDocumentSwitch == null) return;
+    const id = pendingDocumentSwitch;
+    setPendingDocumentSwitch(null);
+    docs.handleSelectDocument({ id });
+    setActiveSession({ documentId: id, personaId: null });
+    setActivePersonaId(null);
+    setStandaloneMode(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingDocumentSwitch]);
 
   // ── Pre-flight & persona session state ─────────────────────────────────────
   const [isPreFlightOpen, setPreFlightOpen]               = useState(false);
@@ -168,6 +186,9 @@ function App() {
   /** Called when PreFlight confirms a session. */
   async function handleStartSession(personaId: string | null, documentId: number | null) {
     const docId = documentId ?? selectedDocForSession?.id ?? null;
+    // F-036 — entering a non-lecture session clears any prior lecture
+    // context so ChatPanel hides the Lecture tab.
+    setActiveLecture(null);
     if (docId) {
       docs.handleSelectDocument({ id: docId });
     }
@@ -210,6 +231,37 @@ function App() {
     setStandaloneMode(activeSession?.documentId === null);
     setActivePersonaId(activeSession?.personaId ?? null);
     dismissResumePrompt();
+    setView('main');
+  }
+
+  /** F-036 — open a lecture in MainWorkspace as a session.
+   *
+   *  Priority for which document opens first:
+   *    1. The unified summary's rendered PDF (if generated).
+   *    2. The first lecturer-summary PDF.
+   *    3. The first student-summary PDF.
+   *    4. The first PDF-type notes attachment.
+   *    5. Otherwise null — MainWorkspace shows the "no doc" state but
+   *       the Lecture tab still surfaces the accordion so the user can
+   *       upload / generate from there.
+   *
+   *  Stores the lecture in the global store so ChatPanel's Lecture tab
+   *  can render the accordion without prop drilling. */
+  function handleOpenLecture(lecture: any) {
+    const pickedId =
+      lecture?.unified_summary_document_id
+      ?? lecture?.lecturer_summaries?.[0]?.user_document_id
+      ?? lecture?.student_summaries?.[0]?.user_document_id
+      ?? lecture?.notes?.find((n: any) => n?.doc_type !== 'IMAGE' && n?.doc_type !== 'AUDIO')?.user_document_id
+      ?? null;
+
+    setActiveLecture(lecture);
+    if (pickedId) {
+      docs.handleSelectDocument({ id: pickedId });
+    }
+    setActivePersonaId(null);
+    setActiveSession({ documentId: pickedId, personaId: null });
+    setStandaloneMode(pickedId === null);
     setView('main');
   }
 
@@ -483,6 +535,7 @@ function App() {
           onStartCourseChat={handleStartCourseChat}
           onOpenFolderInLibrary={handleOpenFolderInLibrary}
           onCreateFolder={folders.createFolder}
+          onOpenLecture={handleOpenLecture}
         />
         <ResumeToastContainer
           personaName={toastPersonaName}

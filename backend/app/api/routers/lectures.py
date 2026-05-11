@@ -148,8 +148,8 @@ class LectureOut(BaseModel):
     """Full nested lecture shape used by both the list and detail endpoints.
 
     Embeds the four sub-resource lists so the frontend can render the
-    accordion sidebar from a single GET. List view stays cheap because
-    sub-resource tables are small per-lecture (~10 rows max).
+    accordion from a single GET. List view stays cheap because sub-resource
+    tables are small per-lecture (~10 rows max).
     """
     model_config = ConfigDict(from_attributes=True)
     id:                          int
@@ -160,6 +160,11 @@ class LectureOut(BaseModel):
     unified_summary_processing:  bool           = False
     unified_summary_error:       Optional[str]  = None
     unified_summary_generated_at: Optional[str] = None
+    # F-036: the rendered PDF UserDocument for the unified summary, so the
+    # lecture viewer can open it inside MainWorkspace like any other doc.
+    unified_summary_document_id: Optional[int]  = None
+    unified_summary_file_path:   Optional[str]  = None
+    unified_summary_doc_type:    Optional[str]  = None
     lecturer_summaries:          List[LectureLecturerSummaryOut] = []
     student_summaries:           List[LectureStudentSummaryOut]  = []
     recordings:                  List[LectureAttachmentOut]      = []
@@ -227,6 +232,7 @@ def _load_lecture_with_children(lecture_id: int, db: Session) -> Optional[Lectur
             selectinload(Lecture.student_summaries).selectinload(LectureStudentSummary.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.recordings).selectinload(LectureRecording.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.unified_summary_doc).selectinload(UserDocument.base_document),
         )
         .filter(Lecture.id == lecture_id)
         .first()
@@ -284,6 +290,8 @@ def _serialize_attachment(att) -> LectureAttachmentOut:
 
 
 def _serialize(lec: Lecture) -> LectureOut:
+    unified_ud = lec.unified_summary_doc
+    unified_bd = unified_ud.base_document if unified_ud else None
     return LectureOut(
         id=lec.id,
         course_id=lec.course_id,
@@ -296,6 +304,9 @@ def _serialize(lec: Lecture) -> LectureOut:
             lec.unified_summary_generated_at.isoformat()
             if lec.unified_summary_generated_at else None
         ),
+        unified_summary_document_id=lec.unified_summary_document_id,
+        unified_summary_file_path=unified_bd.file_path if unified_bd else None,
+        unified_summary_doc_type=unified_bd.doc_type if unified_bd else None,
         lecturer_summaries=[_serialize_lecturer_summary(s) for s in (lec.lecturer_summaries or [])],
         student_summaries=[_serialize_student_summary(s) for s in (lec.student_summaries or [])],
         recordings=[_serialize_attachment(r) for r in (lec.recordings or [])],
@@ -330,9 +341,11 @@ def list_course_lectures(
         db.query(Lecture)
         .options(
             selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.lecturer),
-            selectinload(Lecture.student_summaries),
+            selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.student_summaries).selectinload(LectureStudentSummary.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.recordings).selectinload(LectureRecording.user_doc).selectinload(UserDocument.base_document),
             selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.unified_summary_doc).selectinload(UserDocument.base_document),
         )
         .filter(Lecture.course_id == course_id)
         .all()

@@ -25,6 +25,10 @@ export interface Lecture {
   unified_summary_processing:    boolean;
   unified_summary_error:         string | null;
   unified_summary_generated_at:  string | null;
+  // F-036: rendered PDF of the unified summary (opens in MainWorkspace).
+  unified_summary_document_id:   number | null;
+  unified_summary_file_path:     string | null;
+  unified_summary_doc_type:      string | null;
   lecturer_summaries:            LectureLecturerSummary[];
   student_summaries:             LectureStudentSummary[];
   recordings:                    LectureAttachment[];

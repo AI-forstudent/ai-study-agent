@@ -39,7 +39,10 @@ like a versioned API.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -47,7 +50,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import SessionLocal
 from app.models.domain import (
-    Chunk, Course, Lecture, LectureLecturerSummary, LectureNote, UserDocument,
+    BaseDocument, Chunk, Course, Lecture, LectureLecturerSummary, LectureNote,
+    UserDocument,
 )
 from app.services.llm_providers import call_llm_with_usage
 from app.services.usage_logger import write_usage_event
@@ -205,6 +209,113 @@ def _extract_user_doc_text(ud: Optional[UserDocument], db: Session) -> str:
     return "\n\n".join(c.text for c in chunks if c.text)
 
 
+# ── PDF persistence helpers (F-036) ────────────────────────────────────────
+
+_UPLOADS_DIR = "uploads"
+
+# Strip the rendered-summary file name down to something filesystem-safe.
+_SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+def _persist_unified_pdf_as_user_document(
+    pdf_bytes:     bytes,
+    *,
+    lecture_title: str,
+    user_id:       int,
+    db:            Session,
+) -> UserDocument:
+    """Drop the rendered unified-summary PDF into the CAS pipeline so the
+    lecture viewer can open it inside MainWorkspace identically to any
+    other library PDF.
+
+    Returns the UserDocument owned by `user_id`. If a previous generation
+    produced the same bytes (SHA-256 match) we reuse the BaseDocument and
+    just mint a new UserDocument for the caller. Chunking + embedding the
+    PDF text is delegated to the existing text-extraction pipeline.
+    """
+    # Local imports so a missing pdfplumber on module import doesn't kill
+    # the rest of the service. These deps are heavy.
+    from app.services.document_service import (
+        extract_text_from_pdf, get_embedding_model, split_text_into_chunks,
+    )
+
+    hash_id = hashlib.sha256(pdf_bytes).hexdigest()
+
+    # Safe filename based on the lecture title so disk listings stay
+    # readable; the hash prefix makes collisions impossible.
+    safe_stem = _SAFE_FILENAME_RE.sub("_", (lecture_title or "lecture").strip())[:64] or "lecture"
+    filename = f"{safe_stem}_unified.pdf"
+
+    base_doc = db.query(BaseDocument).filter(BaseDocument.hash_id == hash_id).first()
+    if base_doc:
+        # Same bytes already known. Just create the UserDocument link.
+        ud = UserDocument(
+            user_id=user_id,
+            base_hash=hash_id,
+            custom_title=filename,
+        )
+        db.add(ud)
+        db.commit()
+        db.refresh(ud)
+        return ud
+
+    # Brand-new content — write to disk first.
+    os.makedirs(_UPLOADS_DIR, exist_ok=True)
+    safe_filename = f"{hash_id[:16]}_{filename}"
+    file_location = os.path.join(_UPLOADS_DIR, safe_filename)
+    with open(file_location, "wb") as fh:
+        fh.write(pdf_bytes)
+
+    base_doc = BaseDocument(
+        hash_id=hash_id,
+        original_filename=filename,
+        file_path=file_location,
+        source_type="UPLOAD",
+        doc_type="GENERAL",
+    )
+    db.add(base_doc)
+    db.flush()
+
+    ud = UserDocument(
+        user_id=user_id,
+        base_hash=hash_id,
+        custom_title=filename,
+    )
+    db.add(ud)
+    db.commit()
+    db.refresh(ud)
+
+    # Extract + chunk + embed — best effort; a chunking failure leaves the
+    # PDF readable in the viewer but breaks the RAG context for chat. We
+    # warn-log instead of raising because the user already has the PDF
+    # they wanted.
+    try:
+        pages_data = extract_text_from_pdf(file_location)
+        embedding_model = get_embedding_model()
+        chunk_counter = 0
+        for page in pages_data:
+            page_chunks_text = split_text_into_chunks(page["text"])
+            if not page_chunks_text:
+                continue
+            vectors = embedding_model.embed_documents(page_chunks_text)
+            for i, chunk_text in enumerate(page_chunks_text):
+                vec = vectors[i].tolist() if hasattr(vectors[i], "tolist") else vectors[i]
+                db.add(Chunk(
+                    base_hash=hash_id,
+                    text=chunk_text,
+                    chunk_index=chunk_counter,
+                    page_number=page["page_number"],
+                    embedding=vec,
+                ))
+                chunk_counter += 1
+        db.commit()
+    except Exception:                                       # pragma: no cover
+        log.exception("[unified_summary] chunking failed for lecture %s", lecture_title)
+        db.rollback()
+
+    return ud
+
+
 def _collect_notes_text(lec: Lecture, db: Session) -> str:
     """F-034 — concatenate text from every LectureNote attachment.
 
@@ -356,6 +467,31 @@ def process_unified_summary_background(
             lec.unified_summary              = text
             lec.unified_summary_error        = None
             lec.unified_summary_generated_at = datetime.now(timezone.utc)
+
+            # F-036: render the markdown to a PDF and stash it as a
+            # UserDocument so the lecture viewer can open it in
+            # MainWorkspace like any other library PDF.
+            try:
+                from app.services.markdown_to_pdf import render_unified_summary_pdf
+                pdf_bytes = render_unified_summary_pdf(
+                    text,
+                    lecture_title=lec.title or "Lecture summary",
+                    course_title=course.title,
+                )
+                ud = _persist_unified_pdf_as_user_document(
+                    pdf_bytes,
+                    lecture_title=lec.title or "lecture",
+                    user_id=user_id,
+                    db=db,
+                )
+                lec.unified_summary_document_id = ud.id
+            except Exception:
+                # PDF rendering failed — keep the markdown so the user
+                # still has the AI output, but log so we can debug.
+                log.exception(
+                    "[lecture_summary] PDF render/persist failed for lecture %s",
+                    lecture_id,
+                )
         except UnifiedSummaryInputError as exc:
             lec.unified_summary_error = str(exc)
         except Exception:

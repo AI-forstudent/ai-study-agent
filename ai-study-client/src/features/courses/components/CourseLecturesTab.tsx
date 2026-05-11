@@ -1,34 +1,34 @@
 import { useEffect, useState } from 'react';
 import {
-  Plus, Mic, FileText, Image, BookOpen, Loader2, Calendar, AlertCircle,
+  Plus, Mic, FileText, Image, BookOpen, Loader2, Calendar, AlertCircle, Sparkles,
 } from 'lucide-react';
 import { api } from '../../../services/api';
 import LectureModal from './LectureModal';
-import LectureSessionView, { type Lecture } from './LectureSessionView';
+import type { Lecture } from './LectureSessionView';
 
 interface CourseLecturesTabProps {
   courseId: number;
   isOwner:  boolean;
+  /** F-036: bubble up to App.tsx so it can open the lecture in
+   *  MainWorkspace as a real session. */
+  onOpenLecture?: (lecture: Lecture) => void;
 }
 
 /**
- * Lectures tab inside a Course (F-031 Phase 1).
+ * Lectures tab inside a Course (F-036).
  *
- * Two modes:
- *   • list:   cards grid + "+ New lecture" button (owner-only)
- *   • detail: a single Lecture rendered by LectureDetailView
- *
- * Phase 2 — DEFERRED:
- *   • Auto-transcription of recordings via Gemini audio.
- *   • Smart fused summary (transcript + notes + manual summary).
+ * Renders the list of lectures only — clicking a lecture bubbles up to
+ * App.tsx via `onOpenLecture`, which opens the appropriate summary
+ * document inside the existing MainWorkspace. The lecture's accordion
+ * (switch between summaries / recordings / notes) lives inside
+ * ChatPanel's "Lecture" tab once the session is open.
  */
-export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesTabProps) {
-  const [lectures, setLectures]     = useState<Lecture[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState<string | null>(null);
-  const [modalOpen, setModalOpen]   = useState(false);
-  const [editing, setEditing]       = useState<Lecture | null>(null);
-  const [activeId, setActiveId]     = useState<number | null>(null);
+export default function CourseLecturesTab({ courseId, isOwner, onOpenLecture }: CourseLecturesTabProps) {
+  const [lectures, setLectures]   = useState<Lecture[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing]     = useState<Lecture | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -45,8 +45,6 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
 
   useEffect(() => { void refresh(); }, [courseId]);
 
-  const active = activeId != null ? lectures.find(l => l.id === activeId) ?? null : null;
-
   async function handleSave(payload: { title: string; lecture_date: string | null }) {
     if (editing) {
       const res = await api.updateLecture(editing.id, payload);
@@ -57,37 +55,6 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
     }
   }
 
-  async function handleDelete(id: number) {
-    await api.deleteLecture(id);
-    setLectures(prev => prev.filter(l => l.id !== id));
-    setActiveId(null);
-  }
-
-  // ── Detail mode ───────────────────────────────────────────────────────
-  if (active) {
-    return (
-      <>
-        <LectureSessionView
-          lecture={active}
-          isOwner={isOwner}
-          onBack={() => setActiveId(null)}
-          onChange={updated => {
-            setLectures(prev => prev.map(l => l.id === updated.id ? updated : l));
-          }}
-          onDelete={() => handleDelete(active.id)}
-          onRename={() => { setEditing(active); setModalOpen(true); }}
-        />
-        <LectureModal
-          isOpen={modalOpen}
-          editing={editing ? { id: editing.id, title: editing.title, lecture_date: editing.lecture_date } : null}
-          onClose={() => { setModalOpen(false); setEditing(null); }}
-          onSave={handleSave}
-        />
-      </>
-    );
-  }
-
-  // ── List mode ─────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -96,7 +63,7 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
             Lectures <span className="text-sm font-normal text-[#C4C4C4]">({lectures.length})</span>
           </h2>
           <p className="text-xs text-[#787774] mt-0.5">
-            Each lecture can carry a recording, notes, and a written summary.
+            Click a lecture to open it in a session. The unified summary opens by default.
           </p>
         </div>
         {isOwner && (
@@ -139,10 +106,10 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
           {lectures.map(lec => (
             <button
               key={lec.id}
-              onClick={() => setActiveId(lec.id)}
+              onClick={() => onOpenLecture?.(lec)}
               className="text-start bg-white border border-[#E8E8E6] rounded-xl p-4 hover:border-indigo-300 hover:shadow-sm transition-all duration-150"
             >
-              <h3 className="text-sm font-semibold text-[#37352F] line-clamp-2">{lec.title}</h3>
+              <h3 className="text-sm font-semibold text-[#37352F] line-clamp-2" dir="auto">{lec.title}</h3>
               {lec.lecture_date && (
                 <p className="text-xs text-[#787774] mt-1 flex items-center gap-1.5">
                   <Calendar className="w-3 h-3" />
@@ -152,11 +119,11 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
                 </p>
               )}
               {lec.unified_summary && (
-                <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">{lec.unified_summary}</p>
+                <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed" dir="auto">{lec.unified_summary}</p>
               )}
               <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774] flex-wrap">
-                <span className={`flex items-center gap-1 ${lec.unified_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
-                  <BookOpen className="w-3 h-3" /> מאוחד
+                <span className={`flex items-center gap-1 ${lec.unified_summary_document_id ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  <Sparkles className="w-3 h-3" /> מאוחד
                 </span>
                 <span className={`flex items-center gap-1 ${(lec.lecturer_summaries?.length ?? 0) > 0 ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   <BookOpen className="w-3 h-3" /> מרצה ({lec.lecturer_summaries?.length ?? 0})
