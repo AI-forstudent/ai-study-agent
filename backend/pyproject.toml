@@ -25,11 +25,8 @@ dependencies = [
     "uvicorn>=0.40.0",
     "pytest>=8.0.0",
     "httpx>=0.27.0",
-    # F-036: render the AI-generated unified-summary markdown to a PDF
-    # so the lecture viewer can open it inside MainWorkspace like any
-    # other library document. `markdown` does md → HTML; `weasyprint`
-    # renders HTML → PDF (uses cairo / pango which are already in the
-    # backend image for libreoffice).
-    "markdown>=3.6",
-    "weasyprint>=63.0",
 ]
+# F-036.4: the unified-summary PDF pipeline switched from weasyprint to
+# pandoc + xelatex (system binaries installed via Dockerfile) so the AI's
+# LaTeX math markers actually typeset. No Python deps required for the
+# renderer — `subprocess` call is enough.
