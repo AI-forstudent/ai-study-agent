@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip, ChevronDown, ChevronRight, Mic as MicIcon, Image as ImageIconLR, ArrowLeft } from 'lucide-react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip, ChevronDown, ChevronRight, Mic as MicIcon, Image as ImageIconLR, ArrowLeft, Plus } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -192,12 +192,27 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   onSwitchPersona,
   onAttachFile,
 }) => {
-  const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary' | 'lecture'>('tree');
   // F-036 — when a lecture session is active, surface a "Lecture" tab
   // with the unified summary + lecturer / student / recording / notes
   // accordion. Clicking an item swaps the active document.
   const activeLecture     = useAppStore(s => s.activeLecture);
   const setActiveLecture  = useAppStore(s => s.setActiveLecture);
+  // Default tab when entering a session: 'lecture' if the user just
+  // opened a lecture; 'tree' otherwise. Sending a message auto-flips
+  // to 'chat' (see the send handlers below).
+  const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary' | 'lecture'>(
+    activeLecture ? 'lecture' : 'tree',
+  );
+  // When the user opens a different lecture mid-session, default back
+  // to the Lecture tab so the new context is visible.
+  const lectureIdSeen = useRef<number | null>(activeLecture?.id ?? null);
+  React.useEffect(() => {
+    const id = activeLecture?.id ?? null;
+    if (id !== lectureIdSeen.current) {
+      lectureIdSeen.current = id;
+      if (id != null) setActiveTab('lecture');
+    }
+  }, [activeLecture?.id]);
   const [isAttaching, setIsAttaching] = useState(false);
   const attachInputRef = useRef<HTMLInputElement>(null);
 
@@ -782,15 +797,83 @@ interface LectureAccordionPaneProps {
 
 function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAccordionPaneProps) {
   const setPendingDocumentSwitch = useAppStore(s => s.setPendingDocumentSwitch);
+  const setActiveLecture         = useAppStore(s => s.setActiveLecture);
   const [open, setOpen] = useState({
     lecturer:  true,
     student:   (lecture.student_summaries?.length ?? 0) > 0,
     recording: (lecture.recordings?.length ?? 0) > 0,
     note:      (lecture.notes?.length ?? 0) > 0,
   });
-  // Inline previews for audio + image (no main-pane swap; render in-place).
   const [inlineAudio, setInlineAudio] = useState<{ id: number; title: string; url: string } | null>(null);
   const [inlineImage, setInlineImage] = useState<{ id: number; title: string; url: string } | null>(null);
+  // F-036.1 — owner-only uploads from inside the accordion. The backend
+  // enforces owner-only; we surface the affordance to everyone and let
+  // the API return 404 for non-owners (mirrors how documents.py handles
+  // unauthorized writes elsewhere).
+  const [uploading, setUploading] = useState<'lecturer' | 'student' | 'recording' | 'note' | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const lecturerInputRef  = useRef<HTMLInputElement>(null);
+  const studentInputRef   = useRef<HTMLInputElement>(null);
+  const recordingInputRef = useRef<HTMLInputElement>(null);
+  const notesInputRef     = useRef<HTMLInputElement>(null);
+
+  async function refreshLecture() {
+    try {
+      const res = await api.getLecture(lecture.id);
+      setActiveLecture(res.data);
+    } catch {
+      // best-effort — leave the stale lecture in store on failure
+    }
+  }
+
+  async function handleUploadAndAttach(
+    file: File,
+    kind: 'lecturer' | 'student' | 'recording' | 'note',
+  ) {
+    setUploading(kind);
+    setUploadError(null);
+    try {
+      // CAS-upload (or reuse existing UserDocument on 409 dedup).
+      let userDocId: number;
+      try {
+        const upRes = await api.uploadDocument(file, false);
+        userDocId = upRes.data.id;
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+        const existing = err?.response?.status === 409 && typeof detail === 'object'
+          ? detail?.existing_user_document_id : undefined;
+        if (typeof existing === 'number') userDocId = existing;
+        else throw err;
+      }
+      const title = file.name.replace(/\.(pdf|docx?|mp3|m4a|wav|ogg|aac|flac|webm|png|jpe?g|webp|heic)$/i, '');
+      if (kind === 'lecturer') {
+        const res = await api.createLectureLecturerSummary(lecture.id, {
+          user_document_id: userDocId,
+          title,
+        });
+        // Optimistic refresh + jump straight to the new doc in MainWorkspace.
+        await refreshLecture();
+        setPendingDocumentSwitch(res.data.user_document_id ?? userDocId);
+      } else if (kind === 'student') {
+        const res = await api.createLectureStudentSummary(lecture.id, {
+          user_document_id: userDocId,
+          title,
+        });
+        await refreshLecture();
+        setPendingDocumentSwitch(res.data.user_document_id ?? userDocId);
+      } else if (kind === 'recording') {
+        await api.createLectureRecording(lecture.id, { user_document_id: userDocId, title });
+        await refreshLecture();
+      } else if (kind === 'note') {
+        await api.createLectureNote(lecture.id, { user_document_id: userDocId, title });
+        await refreshLecture();
+      }
+    } catch (err: any) {
+      setUploadError(err?.response?.data?.detail ?? err?.message ?? 'Upload failed.');
+    } finally {
+      setUploading(null);
+    }
+  }
 
   const lecturerGroups = useMemo(() => {
     const groups = new Map<number | 'none', { name: string; items: any[] }>();
@@ -871,12 +954,51 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
         )}
       </button>
 
+      {uploadError && (
+        <div className="mt-1 p-2 bg-red-50 border border-red-100 rounded text-xs text-red-700 flex items-start gap-1.5">
+          <span className="flex-1">{uploadError}</span>
+          <button onClick={() => setUploadError(null)} className="text-[#787774] hover:text-red-600 text-[10px]">close</button>
+        </div>
+      )}
+
+      {/* Hidden file inputs that the section "+" buttons trigger */}
+      <input
+        ref={lecturerInputRef} type="file" accept=".pdf,.docx,.doc" className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = '';
+          if (f) void handleUploadAndAttach(f, 'lecturer');
+        }}
+      />
+      <input
+        ref={studentInputRef} type="file" accept=".pdf,.docx,.doc" className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = '';
+          if (f) void handleUploadAndAttach(f, 'student');
+        }}
+      />
+      <input
+        ref={recordingInputRef} type="file" accept=".mp3,.m4a,.wav,.webm,.ogg,.aac,.flac" className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = '';
+          if (f) void handleUploadAndAttach(f, 'recording');
+        }}
+      />
+      <input
+        ref={notesInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.heic" className="hidden"
+        onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = '';
+          if (f) void handleUploadAndAttach(f, 'note');
+        }}
+      />
+
       {/* Lecturer summaries */}
       <LectureSection
         label="סיכומי מרצה"
         count={lecture.lecturer_summaries?.length ?? 0}
         isOpen={open.lecturer}
         onToggle={() => setOpen(o => ({ ...o, lecturer: !o.lecturer }))}
+        onAdd={() => lecturerInputRef.current?.click()}
+        adding={uploading === 'lecturer'}
       >
         {lecturerGroups.length === 0 ? (
           <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי מרצה.</p>
@@ -902,6 +1024,8 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
         count={lecture.student_summaries?.length ?? 0}
         isOpen={open.student}
         onToggle={() => setOpen(o => ({ ...o, student: !o.student }))}
+        onAdd={() => studentInputRef.current?.click()}
+        adding={uploading === 'student'}
       >
         {(lecture.student_summaries ?? []).length === 0 ? (
           <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי תלמידים.</p>
@@ -922,6 +1046,8 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
         count={lecture.recordings?.length ?? 0}
         isOpen={open.recording}
         onToggle={() => setOpen(o => ({ ...o, recording: !o.recording }))}
+        onAdd={() => recordingInputRef.current?.click()}
+        adding={uploading === 'recording'}
       >
         {(lecture.recordings ?? []).length === 0 ? (
           <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הקלטות.</p>
@@ -958,6 +1084,8 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
         count={lecture.notes?.length ?? 0}
         isOpen={open.note}
         onToggle={() => setOpen(o => ({ ...o, note: !o.note }))}
+        onAdd={() => notesInputRef.current?.click()}
+        adding={uploading === 'note'}
       >
         {(lecture.notes ?? []).length === 0 ? (
           <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הערות.</p>
@@ -1000,22 +1128,37 @@ function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAcc
 }
 
 function LectureSection({
-  label, count, isOpen, onToggle, children,
+  label, count, isOpen, onToggle, children, onAdd, adding,
 }: {
-  label: string; count: number; isOpen: boolean; onToggle: () => void; children: React.ReactNode;
+  label: string; count: number; isOpen: boolean; onToggle: () => void;
+  children: React.ReactNode;
+  onAdd?: () => void; adding?: boolean;
 }) {
   return (
     <div className="mt-1">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-1.5 px-1.5 py-1.5 text-xs font-semibold text-[#37352F] hover:bg-[#F7F7F5] rounded"
-      >
-        {isOpen
-          ? <ChevronDown className="w-3 h-3 rtl:rotate-180 shrink-0" />
-          : <ChevronRight className="w-3 h-3 rtl:rotate-180 shrink-0" />}
-        <span className="truncate flex-1 text-start">{label}</span>
-        <span className="text-[#C4C4C4] font-normal">({count})</span>
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={onToggle}
+          className="flex-1 flex items-center gap-1.5 px-1.5 py-1.5 text-xs font-semibold text-[#37352F] hover:bg-[#F7F7F5] rounded"
+        >
+          {isOpen
+            ? <ChevronDown className="w-3 h-3 rtl:rotate-180 shrink-0" />
+            : <ChevronRight className="w-3 h-3 rtl:rotate-180 shrink-0" />}
+          <span className="truncate flex-1 text-start">{label}</span>
+          <span className="text-[#C4C4C4] font-normal">({count})</span>
+        </button>
+        {onAdd && (
+          <button
+            onClick={onAdd}
+            disabled={Boolean(adding)}
+            className="p-1 rounded text-[#787774] hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+            title="Upload"
+            aria-label="Upload"
+          >
+            {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+          </button>
+        )}
+      </div>
       {isOpen && <div className="ps-2">{children}</div>}
     </div>
   );

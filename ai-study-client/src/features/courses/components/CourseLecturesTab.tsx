@@ -118,9 +118,6 @@ export default function CourseLecturesTab({ courseId, isOwner, onOpenLecture }: 
                   })}
                 </p>
               )}
-              {lec.unified_summary && (
-                <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed" dir="auto">{lec.unified_summary}</p>
-              )}
               <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774] flex-wrap">
                 <span className={`flex items-center gap-1 ${lec.unified_summary_document_id ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   <Sparkles className="w-3 h-3" /> מאוחד
