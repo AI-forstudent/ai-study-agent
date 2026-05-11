@@ -576,6 +576,7 @@ function App() {
             isUploading={docs.isUploading}
             uploadError={docs.uploadError}
             onUploadFile={docs.handleFileChange}
+            onUploadFileQuiet={docs.uploadFileQuietly}
             onSelectDocument={handleOpenPreFlight}
             onSelectSession={handleOpenSession}
             onStartNewSession={handleStartNewSession}
