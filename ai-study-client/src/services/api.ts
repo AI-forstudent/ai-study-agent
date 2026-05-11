@@ -281,14 +281,15 @@ export const api = {
 
   deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
 
-  // ── Lectures (F-031) ──────────────────────────────────────────────────────
+  // ── Lectures (F-031 + F-033) ─────────────────────────────────────────────
   listCourseLectures: (courseId: number) =>
     apiClient.get(`/api/v1/courses/${courseId}/lectures`),
 
   createCourseLecture: (courseId: number, payload: {
     title:                       string;
     lecture_date?:               string | null;     // ISO yyyy-mm-dd
-    manual_summary?:             string | null;
+    lecturer_summary?:           string | null;
+    student_summaries?:          string | null;
     recording_user_document_id?: number | null;
     notes_user_document_id?:     number | null;
   }) => apiClient.post(`/api/v1/courses/${courseId}/lectures`, payload),
@@ -300,12 +301,26 @@ export const api = {
   updateLecture: (id: number, payload: {
     title?:                       string;
     lecture_date?:                string | null;
-    manual_summary?:              string | null;
+    lecturer_summary?:            string | null;
+    student_summaries?:           string | null;
     recording_user_document_id?:  number | null;
     notes_user_document_id?:      number | null;
   }) => apiClient.put(`/api/v1/lectures/${id}`, payload),
 
   deleteLecture: (id: number) => apiClient.delete(`/api/v1/lectures/${id}`),
+
+  // F-033 — kick off (async) unified-summary generation. Returns the row
+  // immediately with `unified_summary_processing=true`; the frontend polls
+  // GET /lectures/{id} until processing flips back to false. Backend runs a
+  // BackgroundTask through the locked skill prompt.
+  generateLectureUnifiedSummary: (id: number) =>
+    apiClient.post(`/api/v1/lectures/${id}/unified-summary`),
+
+  // F-033 — the user's chat threads pinned to this lecture. Each carries
+  // its full message list so the right pane can render the active thread
+  // immediately without a follow-up fetch.
+  listLectureThreads: (id: number) =>
+    apiClient.get(`/api/v1/lectures/${id}/threads`),
 
   // ── Usage / billing (F-005 Phase 4) ──────────────────────────────────────
   // Aggregated usage for the authenticated user. Drives the Settings

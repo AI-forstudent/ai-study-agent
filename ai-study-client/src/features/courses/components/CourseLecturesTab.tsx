@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../../services/api';
 import LectureModal from './LectureModal';
-import LectureDetailView, { type Lecture } from './LectureDetailView';
+import LectureSessionView, { type Lecture } from './LectureSessionView';
 
 interface CourseLecturesTabProps {
   courseId: number;
@@ -67,7 +67,7 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
   if (active) {
     return (
       <>
-        <LectureDetailView
+        <LectureSessionView
           lecture={active}
           isOwner={isOwner}
           onBack={() => setActiveId(null)}
@@ -151,21 +151,24 @@ export default function CourseLecturesTab({ courseId, isOwner }: CourseLecturesT
                   })}
                 </p>
               )}
-              {lec.manual_summary && (
+              {(lec.unified_summary || lec.lecturer_summary) && (
                 <p className="text-xs text-[#787774] mt-2 line-clamp-3 leading-relaxed">
-                  {lec.manual_summary}
+                  {lec.unified_summary || lec.lecturer_summary}
                 </p>
               )}
-              <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774]">
+              <div className="mt-3 flex items-center gap-3 text-[10px] text-[#787774] flex-wrap">
+                <span className={`flex items-center gap-1 ${lec.unified_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  <BookOpen className="w-3 h-3" /> מאוחד
+                </span>
+                <span className={`flex items-center gap-1 ${lec.lecturer_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
+                  <BookOpen className="w-3 h-3" /> מרצה
+                </span>
                 <span className={`flex items-center gap-1 ${lec.recording ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   <Mic className="w-3 h-3" /> Recording
                 </span>
                 <span className={`flex items-center gap-1 ${lec.notes ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
                   {lec.notes?.doc_type === 'IMAGE' ? <Image className="w-3 h-3" /> : <FileText className="w-3 h-3" />}
                   Notes
-                </span>
-                <span className={`flex items-center gap-1 ${lec.manual_summary ? 'text-indigo-600' : 'text-[#C4C4C4]'}`}>
-                  <BookOpen className="w-3 h-3" /> Summary
                 </span>
               </div>
             </button>

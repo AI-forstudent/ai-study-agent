@@ -570,13 +570,23 @@ exam_lecturers = Table(
 
 class Lecture(Base):
     """
-    A learning unit inside a Course (F-031 Phase 1).
+    A learning unit inside a Course (F-031 Phase 1 + F-033 unified summary).
 
-    Holds a manual summary the user types in plus up to one recording and
-    one notes file linked from the user's library (UserDocuments). Phase 2
-    will fuse the recording transcript + notes + manual_summary into an
-    AI-generated structured summary; that output lands on a future column
-    so this `manual_summary` field stays the user-owned source of truth.
+    Three classes of summary content, kept separate by design:
+
+    • lecturer_summary   — the lecturer's / official lecture notes. The
+                           unified-summary skill treats this as the
+                           AUTHORITATIVE structural backbone.
+    • student_summaries  — peer / student-written summaries the user pastes
+                           in alongside the lecturer's. The skill IGNORES
+                           this column on purpose — student summaries are
+                           not authoritative input to the AI synthesis.
+    • unified_summary    — AI-generated fusion of lecturer_summary +
+                           (eventually) recording_transcript + notes +
+                           exercises + homework, cached after generation.
+
+    Phase 2 (deferred) will populate a `recording_transcript` field via
+    Gemini audio transcription and feed it into the same generator.
     """
     __tablename__ = "lectures"
 
@@ -604,7 +614,23 @@ class Lecture(Base):
     )
     title                       = Column(String,  nullable=False)
     lecture_date                = Column(Date,    nullable=True)
-    manual_summary              = Column(Text,    nullable=True)
+    # Renamed from `manual_summary` in migration u6t7s8r9q0p1. This column
+    # is the AUTHORITATIVE input to the unified-summary skill.
+    lecturer_summary            = Column(Text,    nullable=True)
+    # Student-written summaries. Single free-text field — caller is expected
+    # to format multiple summaries with their own headers if they want.
+    # NOT consumed by the unified-summary skill.
+    student_summaries           = Column(Text,    nullable=True)
+    # ── Unified summary cache (F-033) ─────────────────────────────────────
+    # `unified_summary` holds the markdown the skill returned. The processing
+    # flag toggles while a BackgroundTask is in flight. On failure the error
+    # column carries the user-facing message and `unified_summary` is left
+    # untouched (we never lose a previously-good summary because the next
+    # regeneration crashed).
+    unified_summary             = Column(Text,    nullable=True)
+    unified_summary_processing  = Column(Boolean, nullable=False, server_default="false")
+    unified_summary_error       = Column(Text,    nullable=True)
+    unified_summary_generated_at = Column(DateTime(timezone=True), nullable=True)
     # Both attachments are optional. SET NULL on delete so the user can
     # garbage-collect a UserDocument without losing the lecture row.
     recording_user_document_id  = Column(
@@ -812,6 +838,16 @@ class Thread(Base):
     # course's syllabus summary into the system prompt so the AI Teacher
     # answers within the course's framing.
     course_id     = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    # Optional lecture context (F-033). When set, the prompt builder also
+    # injects a "## LECTURE CONTEXT" block from the lecture's cached
+    # unified_summary (falling back to lecturer_summary). ON DELETE SET NULL
+    # so deleting a lecture preserves the chat history.
+    lecture_id    = Column(
+        Integer,
+        ForeignKey("lectures.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Denormalized scope (Phase 1). NULL when course_id is NULL, i.e. for
     # personal scratchpad threads (per A.3). Populated from course on writes.
     community_id    = Column(
@@ -832,6 +868,7 @@ class Thread(Base):
     user_document = relationship("UserDocument", back_populates="threads")
     persona       = relationship("Persona",      back_populates="threads")
     course        = relationship("Course")
+    lecture       = relationship("Lecture")
     community     = relationship("Community",    foreign_keys=[community_id])
     organization  = relationship("Organization", foreign_keys=[organization_id])
     messages      = relationship("Message",      back_populates="thread",
