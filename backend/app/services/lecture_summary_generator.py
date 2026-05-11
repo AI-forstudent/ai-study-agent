@@ -394,16 +394,23 @@ def generate_unified_summary_sync(
         homework_text        = homework_text,
     )
 
+    # F-036.6 — user picked Claude Opus 4.7 as the unified-summary model.
+    # provider="anthropic" + tier="pro" maps to claude-opus-4-7 via
+    # llm_providers._PROVIDER_TIER_MAP. ANTHROPIC_API_KEY is already
+    # wired through the deploy workflow.
     reply = call_llm_with_usage(
-        provider     = "gemini",
+        provider     = "anthropic",
         model_tier   = model_tier,
         system_prompt = _SYSTEM_PROMPT,
         history      = [{"role": "user", "content": user_prompt}],
     )
 
     if user_id is not None:
+        # model_alias is a free-form 16-char audit label on UsageEvent.
+        # The actual cost lookup in `usage_logger._PRICING` uses the
+        # raw `reply.model` ("claude-opus-4-7"), not this string.
         write_usage_event(db, user_id, "lecture_unified_summary", reply,
-                          model_alias="ATLAS")
+                          model_alias="CLAUDE-OPUS")
 
     text = (reply.text or "").strip()
     if not text:
