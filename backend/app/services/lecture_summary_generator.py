@@ -485,13 +485,23 @@ def process_unified_summary_background(
                     db=db,
                 )
                 lec.unified_summary_document_id = ud.id
-            except Exception:
-                # PDF rendering failed — keep the markdown so the user
-                # still has the AI output, but log so we can debug.
+            except Exception as exc:
+                # F-036.5 — surface PDF render failures to the UI instead
+                # of swallowing them. Without this, the previous polling
+                # loop saw `processing=false` + the OLD document_id still
+                # set, and re-opened the prior PDF, making the regenerate
+                # look like a no-op. We keep the OLD `unified_summary_doc-
+                # ument_id` so the user can still read a prior PDF if one
+                # exists, but the error banner tells them generation
+                # actually failed at the PDF step.
                 log.exception(
                     "[lecture_summary] PDF render/persist failed for lecture %s",
                     lecture_id,
                 )
+                # Trim long pandoc/xelatex tracebacks so the UI banner
+                # stays readable; full trace is in the BG-task log.
+                msg = (str(exc) or repr(exc))[:600]
+                lec.unified_summary_error = f"ייצור ה-PDF נכשל: {msg}"
         except UnifiedSummaryInputError as exc:
             lec.unified_summary_error = str(exc)
         except Exception:
