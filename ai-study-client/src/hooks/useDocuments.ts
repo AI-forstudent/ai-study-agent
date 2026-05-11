@@ -56,6 +56,65 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     }
   };
 
+  /** F-037 — upload a file into the library without opening it in the
+   *  workspace. Optionally drops the new doc into a target folder. Used
+   *  by the My Library upload button; the PreFlight modal still uses the
+   *  legacy `handleFileChange` flow that auto-opens the workspace.
+   *
+   *  Returns the newly-created UserDocument (or the deduped existing one
+   *  on a 409). Returns null on hard failure — callers display
+   *  `uploadError` from store. */
+  const uploadFileQuietly = async (
+    file: File,
+    folderId: number | null = null,
+  ): Promise<any | null> => {
+    setIsUploading(true);
+    setUploadError(null);
+    try {
+      let newDoc: any;
+      try {
+        const res = await api.uploadDocument(file, false);
+        newDoc = res.data;
+      } catch (err: any) {
+        // CAS dedup — file already in the user's library.
+        const detail = err?.response?.data?.detail;
+        const existingId =
+          err?.response?.status === 409 && typeof detail === 'object'
+            ? detail?.existing_user_document_id
+            : undefined;
+        if (typeof existingId === 'number') {
+          showToast('File already in your library — using the existing copy.', 'info');
+          const docs = await refreshUserDocs();
+          newDoc = docs?.find((d: any) => d.id === existingId) ?? { id: existingId };
+        } else {
+          throw err;
+        }
+      }
+
+      // Drop into the target folder if the caller supplied one.
+      if (folderId != null && newDoc?.id != null) {
+        try {
+          await api.moveDocument(newDoc.id, folderId);
+          newDoc = { ...newDoc, folder_id: folderId };
+        } catch (moveErr) {
+          console.error('[uploadFileQuietly] move-to-folder failed:', moveErr);
+          // Non-fatal — the doc is in the library, just unfiled.
+        }
+      }
+
+      await refreshUserDocs();
+      return newDoc;
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (err?.message ?? 'Upload failed.');
+      setUploadError(msg);
+      showToast(`Upload failed: ${msg}`, 'error');
+      return null;
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (!selectedFile) return;
@@ -306,6 +365,7 @@ export function useDocuments(isAuthenticated: boolean, onAuthError: () => void) 
     docToDelete, setDocToDelete,
     isDeleting,
     handleFileChange,
+    uploadFileQuietly,
     handleSelectDocument,
     selectDocumentInList,
     refreshUserDocs,

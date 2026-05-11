@@ -304,8 +304,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   setInSession: (v) => set({ inSession: v }),
 
   // ── Active lecture (F-036) ───────────────────────────────────────────────
-  activeLecture: null,
-  setActiveLecture: (lec) => set({ activeLecture: lec }),
+  // F-037: persisted to localStorage so a hard refresh while inside a
+  // lecture session restores it instead of dumping the user to home.
+  // The lecture payload is small (<100 lines of JSON for a normal lecture).
+  activeLecture: (() => {
+    try {
+      const raw = localStorage.getItem('studyagent_active_lecture');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })(),
+  setActiveLecture: (lec) => {
+    try {
+      if (lec) localStorage.setItem('studyagent_active_lecture', JSON.stringify(lec));
+      else localStorage.removeItem('studyagent_active_lecture');
+    } catch { /* quota / private mode */ }
+    set({ activeLecture: lec });
+  },
   pendingDocumentSwitch: null,
   setPendingDocumentSwitch: (id) => set({ pendingDocumentSwitch: id }),
 }));

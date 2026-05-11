@@ -59,7 +59,12 @@ interface MyLibraryProps {
   userDocs: Doc[];
   isUploading: boolean;
   uploadError: string | null;
+  /** F-037 — `onUploadFile` is legacy (used by PreFlight: auto-opens
+   *  the workspace). Inside My Library we use `onUploadFileQuiet`
+   *  which uploads + drops into `activeFolderId` (if drilled in) and
+   *  does NOT open the workspace. */
   onUploadFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onUploadFileQuiet?: (file: File, folderId: number | null) => Promise<any | null>;
   onSelectDocument: (doc: { id: number }) => void;
   onSelectSession: (sessionId: number) => void;
   onStartNewSession: () => void;
@@ -87,6 +92,7 @@ export default function MyLibrary({
   isUploading,
   uploadError,
   onUploadFile,
+  onUploadFileQuiet,
   onSelectDocument,
   onSelectSession,
   onStartNewSession,
@@ -111,7 +117,24 @@ export default function MyLibrary({
   const [editingFolder, setEditingFolder]     = useState<Folder | null>(null);
 
   // Drilldown — when set we're viewing the contents of a Folder or a Course.
-  const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
+  // F-037 — persist the drilled-in folder so a refresh stays in the
+  // same folder instead of jumping back to the lane root.
+  const [activeFolderId, _setActiveFolderIdRaw] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem('studyagent_active_folder');
+      const n = raw == null ? null : Number(raw);
+      return Number.isFinite(n) && n != null ? (n as number) : null;
+    } catch {
+      return null;
+    }
+  });
+  const setActiveFolderId = (id: number | null) => {
+    try {
+      if (id == null) localStorage.removeItem('studyagent_active_folder');
+      else localStorage.setItem('studyagent_active_folder', String(id));
+    } catch { /* quota / private mode */ }
+    _setActiveFolderIdRaw(id);
+  };
 
   // F-019 — "All Files" search view. Local state (no router change) so the
   // user can click the Files-lane search icon, see every doc as a row, and
@@ -245,7 +268,20 @@ export default function MyLibrary({
           type="file"
           accept={ACCEPTED_FILE_TYPES}
           className="hidden"
-          onChange={onUploadFile}
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            // F-037 — quiet path: upload into the active folder (if any)
+            // without opening the workspace. Falls back to the legacy
+            // event-style handler for callers that haven't migrated.
+            if (onUploadFileQuiet) {
+              await onUploadFileQuiet(f, activeFolderId);
+            } else {
+              const synthetic = { target: e.target, currentTarget: e.currentTarget } as unknown as React.ChangeEvent<HTMLInputElement>;
+              onUploadFile(synthetic);
+            }
+          }}
           disabled={isUploading}
         />
       </label>
@@ -413,7 +449,22 @@ export default function MyLibrary({
             <label className="mt-1 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg cursor-pointer">
               <Upload className="w-4 h-4" />
               Upload a document
-              <input type="file" accept={ACCEPTED_FILE_TYPES} className="hidden" onChange={onUploadFile} />
+              <input
+                type="file"
+                accept={ACCEPTED_FILE_TYPES}
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!f) return;
+                  if (onUploadFileQuiet) {
+                    await onUploadFileQuiet(f, activeFolderId);
+                  } else {
+                    const synthetic = { target: e.target, currentTarget: e.currentTarget } as unknown as React.ChangeEvent<HTMLInputElement>;
+                    onUploadFile(synthetic);
+                  }
+                }}
+              />
             </label>
           </div>
         ) : (
