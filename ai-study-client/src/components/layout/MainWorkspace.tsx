@@ -1,4 +1,4 @@
-import React, { useState, useRef, type Dispatch, type SetStateAction } from 'react';
+import React, { useEffect, useState, useRef, type Dispatch, type SetStateAction } from 'react';
 import { FileText, MessageSquare } from 'lucide-react';
 import PdfViewer from '../../features/documents/components/PdfViewer';
 import CodeViewer from '../../features/documents/components/CodeViewer';
@@ -66,7 +66,17 @@ interface MainWorkspaceProps {
  */
 const MainWorkspace: React.FC<MainWorkspaceProps> = ({ doc, chat, onSaveMemory }) => {
   const { textSelection, setTextSelection, activeThread, setActiveThread } = useAppStore();
+  const setInSession = useAppStore(s => s.setInSession);
   const { isPhone, isTablet } = useBreakpoint();
+
+  // F-033 — flag the global app sidebar to collapse for the duration of
+  // this PDF / code / standalone-chat workspace. AppLayout reads `inSession`
+  // and switches to a thin rail with an expand chevron on desktop; mobile
+  // already drawer-only. The cleanup restores the inline sidebar.
+  useEffect(() => {
+    setInSession(true);
+    return () => setInSession(false);
+  }, [setInSession]);
 
   // ── Local layout state ───────────────────────────────────────────────────
   const [scale, setScale]           = useState(1.0);

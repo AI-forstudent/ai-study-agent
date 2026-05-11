@@ -39,6 +39,10 @@ class ChatRequest(BaseModel):
     # Optional course scoping. When set on a new thread, the syllabus
     # extraction for that course is injected into the system prompt.
     course_id:   int | None  = None
+    # Optional lecture scoping (F-033). When set on a new thread, the
+    # lecture's cached unified_summary is injected as a "## LECTURE CONTEXT"
+    # block so the assistant answers within that specific lecture's framing.
+    lecture_id:  int | None  = None
 
 
 class MessageOut(BaseModel):
@@ -96,6 +100,7 @@ def chat(
             document_id=None,
             persona_id=payload.persona_id,
             course_id=payload.course_id,
+            lecture_id=payload.lecture_id,
             selected_text="",
             emoji="💬",
         )
@@ -129,14 +134,17 @@ def chat(
     is_first_exchange = len(history) == 1 and thread.parent_thread_id is None
 
     # ── 4. Resolve system prompt ────────────────────────────────────────────
-    # Course scoping flows from the thread (set on creation) — payload.course_id
-    # is only meaningful for the very first message in a new thread.
+    # Course / lecture scoping flow from the thread (set on creation) —
+    # payload.course_id / payload.lecture_id are only meaningful for the
+    # very first message in a new thread.
     effective_persona_id = payload.persona_id or thread.persona_id
-    effective_course_id  = thread.course_id or payload.course_id
+    effective_course_id  = thread.course_id   or payload.course_id
+    effective_lecture_id = thread.lecture_id  or payload.lecture_id
     system_prompt = resolve_system_prompt(
         effective_persona_id,
         db,
         course_id=effective_course_id,
+        lecture_id=effective_lecture_id,
     )
 
     # ── 5. Resolve alias for DB audit trail ────────────────────────────────

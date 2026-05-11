@@ -1,23 +1,33 @@
 import { useEffect, useState, cloneElement, isValidElement, type ReactElement } from 'react';
-import { Menu, X, Sparkles } from 'lucide-react';
+import { Menu, X, Sparkles, ChevronRight } from 'lucide-react';
 import ToastContainer from '../ui/ToastContainer';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { useAppStore } from '../../store/useAppStore';
 
 interface AppLayoutProps {
   /** Sidebar component. On phone/tablet it renders inside a slide-in drawer
-   *  and is passed an extra `onClose` prop so nav clicks dismiss the drawer. */
+   *  and is passed an extra `onClose` prop so nav clicks dismiss the drawer.
+   *  On desktop while `inSession=true` (F-033), the sidebar collapses to a
+   *  thin rail and slides out as a drawer on chevron click — the same
+   *  pattern as mobile but available on desktop too. */
   sidebar: React.ReactNode;
   children: React.ReactNode;
 }
 
 export default function AppLayout({ sidebar, children }: AppLayoutProps) {
   const { isMobile } = useBreakpoint();
+  const inSession = useAppStore(s => s.inSession);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Close drawer on viewport switch back to desktop, or on Escape.
+  // ── Drawer open/close lifecycle ────────────────────────────────────────
+  // Mobile uses a drawer always (no inline sidebar). Desktop uses a drawer
+  // ONLY when inSession=true; otherwise the sidebar is inline. We treat
+  // "drawer mode" as a derived flag so the desktop close-on-viewport-switch
+  // effect still cleans up on resize between modes.
+  const drawerMode = isMobile || inSession;
   useEffect(() => {
-    if (!isMobile && drawerOpen) setDrawerOpen(false);
-  }, [isMobile, drawerOpen]);
+    if (!drawerMode && drawerOpen) setDrawerOpen(false);
+  }, [drawerMode, drawerOpen]);
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawerOpen(false); };
@@ -41,13 +51,33 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden bg-white font-sans">
-      {/* Desktop sidebar — inline, always visible */}
-      <div className="hidden lg:flex shrink-0">
-        {sidebar}
-      </div>
+      {/* Desktop sidebar — inline only when not in a session */}
+      {!isMobile && !inSession && (
+        <div className="hidden lg:flex shrink-0">
+          {sidebar}
+        </div>
+      )}
 
-      {/* Mobile/Tablet drawer — slides in from the start side */}
-      {isMobile && (
+      {/* Desktop in-session collapsed rail — a thin column with an expand chevron.
+          Mobile keeps using the hamburger top-bar; we don't show the rail there. */}
+      {!isMobile && inSession && (
+        <div className="hidden lg:flex flex-col items-center gap-2 w-12 border-e border-[#E8E8E6] bg-[#F7F7F5] shrink-0 py-3">
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="p-2 rounded-md text-[#37352F] hover:bg-[#EFEFED]"
+            title="Open menu"
+            aria-label="Open menu"
+          >
+            <ChevronRight className="w-4 h-4 rtl:rotate-180" />
+          </button>
+          <div className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center" title="StudyAgent">
+            <Sparkles className="w-3.5 h-3.5 text-white" />
+          </div>
+        </div>
+      )}
+
+      {/* Drawer (mobile always, desktop in-session) — slides in from the start side */}
+      {drawerMode && (
         <>
           {/* Backdrop */}
           <div
@@ -78,7 +108,7 @@ export default function AppLayout({ sidebar, children }: AppLayoutProps) {
       )}
 
       <main className="flex-1 overflow-hidden flex flex-col min-w-0">
-        {/* Mobile/Tablet top bar with hamburger */}
+        {/* Mobile/Tablet top bar with hamburger — desktop in-session uses the rail instead */}
         {isMobile && (
           <header className="flex items-center gap-2 px-3 py-2 border-b border-[#E8E8E6] bg-white shrink-0">
             <button

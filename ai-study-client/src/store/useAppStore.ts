@@ -94,6 +94,18 @@ interface AppState {
   // ── Resume prompt (shown once per app load if a session was persisted) ──────
   showResumePrompt: boolean;
   dismissResumePrompt: () => void;
+
+  // ── In-session state (F-033 — collapses the app sidebar on desktop) ─────────
+  /**
+   * True while the user is "inside a session" — a PDF workspace, code workspace,
+   * standalone chat, or lecture session. AppLayout reads this to collapse the
+   * desktop sidebar to a thin rail (same drawer pattern that's been mobile-only).
+   * Owned by the view that enters the session (set true on mount, false on
+   * unmount); a global flag avoids prop-drilling through MainWorkspace +
+   * LectureSessionView + future session-style components.
+   */
+  inSession: boolean;
+  setInSession: (v: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -267,4 +279,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── Resume prompt ───────────────────────────────────────────────────────────
   showResumePrompt:    _savedSession !== null,
   dismissResumePrompt: () => set({ showResumePrompt: false }),
+
+  // ── In-session collapse flag ─────────────────────────────────────────────
+  inSession: false,
+  setInSession: (v) => set({ inSession: v }),
 }));
