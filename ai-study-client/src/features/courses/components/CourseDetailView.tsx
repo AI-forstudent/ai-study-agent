@@ -13,7 +13,7 @@ import type { Course } from '../../../types/course';
 import type { Folder } from '../../documents/hooks/useFolders';
 import type { Persona } from '../../../types/persona';
 
-type CourseTab = 'folders' | 'lectures' | 'syllabus' | 'exams' | 'settings';
+type CourseTab = 'content' | 'syllabus' | 'exams' | 'settings';
 
 interface Doc {
   id:        number;
@@ -66,7 +66,7 @@ export default function CourseDetailView({
   onCreateFolder,
   onOpenLecture,
 }: CourseDetailViewProps) {
-  const [tab, setTab] = useState<CourseTab>('folders');
+  const [tab, setTab] = useState<CourseTab>('content');
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const accent = course.color ?? '#6366F1';
   const isOwner = course.role === 'owner';
@@ -131,27 +131,15 @@ export default function CourseDetailView({
       {/* ── Tabs — scroll horizontally if they overflow ───────────────── */}
       <div className="flex border-b border-[#E8E8E6] mb-5 overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
         <button
-          onClick={() => setTab('folders')}
+          onClick={() => setTab('content')}
           className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
-            tab === 'folders'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-[#787774] hover:text-[#37352F]'
-          }`}
-        >
-          <FolderOpen className="w-3.5 h-3.5" />
-          Folders
-          <span className="text-[10px] text-[#C4C4C4]">({courseFolders.length})</span>
-        </button>
-        <button
-          onClick={() => setTab('lectures')}
-          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors duration-150 whitespace-nowrap shrink-0 ${
-            tab === 'lectures'
+            tab === 'content'
               ? 'border-indigo-600 text-indigo-600'
               : 'border-transparent text-[#787774] hover:text-[#37352F]'
           }`}
         >
           <Mic className="w-3.5 h-3.5" />
-          Lectures
+          Lectures & Files
         </button>
         <button
           onClick={() => setTab('syllabus')}
@@ -191,47 +179,57 @@ export default function CourseDetailView({
       </div>
 
       {/* ── Tab body ─────────────────────────────────────────────────── */}
-      {tab === 'folders' && (
-        <div className="space-y-4">
-          {isOwner && onCreateFolder && (
-            <div className="flex justify-end">
-              <button
-                onClick={() => setFolderModalOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg"
-              >
-                <Plus className="w-4 h-4" />
-                Add folder
-              </button>
-            </div>
-          )}
-          {courseFolders.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-16 text-[#787774]">
-              <FolderOpen className="w-8 h-8 opacity-30" />
-              <p className="text-sm">This course has no folders yet.</p>
-              <p className="text-xs text-[#C4C4C4]">
-                {isOwner
-                  ? 'Use “Add folder” above, or assign an existing folder from My Library.'
-                  : 'The course owner has not added any folders yet.'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {courseFolders.map(folder => (
-                <FolderCard
-                  key={folder.id}
-                  folder={folder}
-                  docCount={userDocs.filter(d => d.folder_id === folder.id).length}
-                  personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
-                  onOpen={onOpenFolderInLibrary}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* F-036.1 — merged "Lectures & Files" tab: lecture cards on top,
+                   course folders below, all in the same view. */}
+      {tab === 'content' && (
+        <div className="space-y-6">
+          <CourseLecturesTab courseId={course.id} isOwner={isOwner} onOpenLecture={onOpenLecture} />
 
-      {tab === 'lectures' && (
-        <CourseLecturesTab courseId={course.id} isOwner={isOwner} onOpenLecture={onOpenLecture} />
+          <div className="space-y-3 pt-2 border-t border-[#E8E8E6]">
+            <div className="flex items-center justify-between gap-3 pt-3">
+              <div>
+                <h2 className="text-base font-semibold text-[#37352F]">
+                  Folders <span className="text-sm font-normal text-[#C4C4C4]">({courseFolders.length})</span>
+                </h2>
+                <p className="text-xs text-[#787774] mt-0.5">
+                  Files grouped into folders. Click a folder to open it in My Library.
+                </p>
+              </div>
+              {isOwner && onCreateFolder && (
+                <button
+                  onClick={() => setFolderModalOpen(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add folder
+                </button>
+              )}
+            </div>
+            {courseFolders.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-10 text-[#787774]">
+                <FolderOpen className="w-7 h-7 opacity-30" />
+                <p className="text-sm">No folders yet.</p>
+                <p className="text-xs text-[#C4C4C4]">
+                  {isOwner
+                    ? 'Use “Add folder” above, or assign an existing folder from My Library.'
+                    : 'The course owner has not added any folders yet.'}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {courseFolders.map(folder => (
+                  <FolderCard
+                    key={folder.id}
+                    folder={folder}
+                    docCount={userDocs.filter(d => d.folder_id === folder.id).length}
+                    personaName={folder.persona_id ? personas.find(p => p.id === folder.persona_id)?.name : undefined}
+                    onOpen={onOpenFolderInLibrary}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {tab === 'syllabus' && (
