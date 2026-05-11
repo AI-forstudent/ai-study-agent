@@ -1,15 +1,14 @@
 """
 app/api/routers/lectures.py
 ───────────────────────────
-Lecture CRUD inside a Course (F-031 Phase 1 + F-033 unified summary).
+Lecture CRUD inside a Course (F-031 + F-033 + F-034 multi-resource).
 
-A Lecture is a learning unit nested under a Course. It holds:
-  • title + lecture_date
-  • lecturer_summary  — authoritative input to the unified-summary skill
-  • student_summaries — peer / classmate summaries (NOT used by the skill)
-  • unified_summary   — AI-generated fusion (cached after generation)
-  • recording_user_document_id (FK → userdocuments, optional, audio file)
-  • notes_user_document_id     (FK → userdocuments, optional, PDF or image)
+A Lecture owns four LISTS of sub-resources, plus a single cached unified
+summary:
+  • lecturer_summaries  — one per lecturer × version
+  • student_summaries   — one per peer / self
+  • recordings          — UserDocument FKs, audio
+  • notes               — UserDocument FKs, PDFs / images
 
 Mounted at /api/v1 — actual paths live under /courses/{course_id}/lectures
 and /lectures/{id}, mirroring the exams router.
@@ -17,15 +16,10 @@ and /lectures/{id}, mirroring the exams router.
 Permissions
 ───────────
 • Read access mirrors course read access (owner / member / public).
-• Mutations (create / update / delete / generate-summary) are owner-only.
+• Mutations (create / update / delete / generate-summary / sub-resource
+  CRUD) are owner-only.
 • Phase-1 multi-tenant scope columns (community_id, organization_id) are
   denormalized from the parent course at insert.
-
-Phase 2 — DEFERRED
-──────────────────
-• POST /lectures/{id}/transcribe — Gemini audio API on the recording.
-  Its output will feed the same unified-summary skill so the generator
-  picks up lecturer additions automatically.
 """
 
 from __future__ import annotations
@@ -36,12 +30,14 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.routers.auth import get_current_user
 from app.core.database import get_db
 from app.models.domain import (
-    Course, CourseMembership, Lecture, Message, Thread, User, UserDocument,
+    Course, CourseLecturer, CourseMembership, Lecture,
+    LectureLecturerSummary, LectureNote, LectureRecording,
+    LectureStudentSummary, Message, Thread, User, UserDocument,
 )
 from app.services.lecture_summary_generator import (
     process_unified_summary_background,
@@ -51,7 +47,7 @@ router = APIRouter(tags=["lectures"])
 log = logging.getLogger(__name__)
 
 
-# ── Schemas ────────────────────────────────────────────────────────────────
+# ── Sub-resource schemas (used inside LectureOut + their own endpoints) ────
 
 class AttachedDocOut(BaseModel):
     """Compact projection of a UserDocument for lecture display."""
@@ -62,44 +58,104 @@ class AttachedDocOut(BaseModel):
     doc_type:  str = "GENERAL"
 
 
+class LectureLecturerSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id:            int
+    lecture_id:    int
+    lecturer_id:   Optional[int]  = None
+    lecturer_name: Optional[str]  = None     # denormalized for the sidebar
+    title:         str
+    content:       Optional[str]  = None
+    created_at:    Optional[str]  = None
+    updated_at:    Optional[str]  = None
+
+
+class LectureLecturerSummaryCreate(BaseModel):
+    title:       Optional[str] = None
+    content:     Optional[str] = None
+    lecturer_id: Optional[int] = None        # null → auto-resolve (single lecturer or syllabus head)
+
+
+class LectureLecturerSummaryUpdate(BaseModel):
+    title:       Optional[str] = None
+    content:     Optional[str] = None
+    lecturer_id: Optional[int] = None
+
+
+class LectureStudentSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id:         int
+    lecture_id: int
+    title:      str
+    content:    Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class LectureStudentSummaryCreate(BaseModel):
+    title:   Optional[str] = None
+    content: Optional[str] = None
+
+
+class LectureStudentSummaryUpdate(BaseModel):
+    title:   Optional[str] = None
+    content: Optional[str] = None
+
+
+class LectureAttachmentOut(BaseModel):
+    """Shared shape for LectureRecording / LectureNote rows in API output."""
+    model_config = ConfigDict(from_attributes=True)
+    id:               int
+    lecture_id:       int
+    user_document_id: Optional[int] = None
+    title:            str
+    file_path:        Optional[str] = None
+    doc_type:         str = "GENERAL"
+    created_at:       Optional[str] = None
+
+
+class LectureAttachmentCreate(BaseModel):
+    user_document_id: int                    # required — must reference a doc the caller owns
+    title:            Optional[str] = None
+
+
+class LectureAttachmentUpdate(BaseModel):
+    user_document_id: Optional[int] = None
+    title:            Optional[str] = None
+
+
+# ── Top-level Lecture schemas ─────────────────────────────────────────────
+
 class LectureCreateRequest(BaseModel):
-    title:                       str
-    lecture_date:                Optional[date] = None
-    lecturer_summary:            Optional[str]  = None
-    student_summaries:           Optional[str]  = None
-    recording_user_document_id:  Optional[int]  = None
-    notes_user_document_id:      Optional[int]  = None
+    title:        str
+    lecture_date: Optional[date] = None
 
 
 class LectureUpdateRequest(BaseModel):
-    """Partial update — only fields the user actually changes are sent.
-
-    `recording_user_document_id` / `notes_user_document_id` accept `None` to
-    *detach* a previously-attached file. Pydantic distinguishes "field not
-    present" from "explicit clear" via `model_fields_set` (used below).
-    """
-    title:                       Optional[str]  = None
-    lecture_date:                Optional[date] = None
-    lecturer_summary:            Optional[str]  = None
-    student_summaries:           Optional[str]  = None
-    recording_user_document_id:  Optional[int]  = None
-    notes_user_document_id:      Optional[int]  = None
+    title:        Optional[str]  = None
+    lecture_date: Optional[date] = None
 
 
 class LectureOut(BaseModel):
+    """Full nested lecture shape used by both the list and detail endpoints.
+
+    Embeds the four sub-resource lists so the frontend can render the
+    accordion sidebar from a single GET. List view stays cheap because
+    sub-resource tables are small per-lecture (~10 rows max).
+    """
     model_config = ConfigDict(from_attributes=True)
     id:                          int
     course_id:                   int
     title:                       str
     lecture_date:                Optional[date] = None
-    lecturer_summary:            Optional[str]  = None
-    student_summaries:           Optional[str]  = None
     unified_summary:             Optional[str]  = None
     unified_summary_processing:  bool           = False
     unified_summary_error:       Optional[str]  = None
-    unified_summary_generated_at: Optional[str] = None      # ISO string
-    recording:                   Optional[AttachedDocOut] = None
-    notes:                       Optional[AttachedDocOut] = None
+    unified_summary_generated_at: Optional[str] = None
+    lecturer_summaries:          List[LectureLecturerSummaryOut] = []
+    student_summaries:           List[LectureStudentSummaryOut]  = []
+    recordings:                  List[LectureAttachmentOut]      = []
+    notes:                       List[LectureAttachmentOut]      = []
     created_at:                  Optional[str]  = None
     updated_at:                  Optional[str]  = None
 
@@ -138,7 +194,6 @@ def _ensure_course_readable(course_id: int, user: User, db: Session) -> Course:
 
 
 def _validate_user_doc(doc_id: Optional[int], user: User, db: Session) -> Optional[UserDocument]:
-    """A lecture can only attach files the caller actually owns."""
     if doc_id is None:
         return None
     ud = (
@@ -154,15 +209,60 @@ def _validate_user_doc(doc_id: Optional[int], user: User, db: Session) -> Option
     return ud
 
 
-def _serialize_doc(ud: Optional[UserDocument]) -> Optional[AttachedDocOut]:
-    if not ud:
-        return None
-    bd = ud.base_document
-    return AttachedDocOut(
-        id=ud.id,
-        title=ud.custom_title,
+def _load_lecture_with_children(lecture_id: int, db: Session) -> Optional[Lecture]:
+    """Single-query eager load so LectureOut is filled without an N+1."""
+    return (
+        db.query(Lecture)
+        .options(
+            selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.lecturer),
+            selectinload(Lecture.student_summaries),
+            selectinload(Lecture.recordings).selectinload(LectureRecording.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
+        )
+        .filter(Lecture.id == lecture_id)
+        .first()
+    )
+
+
+# ── Serializers ───────────────────────────────────────────────────────────
+
+def _serialize_lecturer_summary(s: LectureLecturerSummary) -> LectureLecturerSummaryOut:
+    return LectureLecturerSummaryOut(
+        id=s.id,
+        lecture_id=s.lecture_id,
+        lecturer_id=s.lecturer_id,
+        lecturer_name=s.lecturer.name if s.lecturer else None,
+        title=s.title or "סיכום מרצה",
+        content=s.content,
+        created_at=s.created_at.isoformat() if s.created_at else None,
+        updated_at=s.updated_at.isoformat() if s.updated_at else None,
+    )
+
+
+def _serialize_student_summary(s: LectureStudentSummary) -> LectureStudentSummaryOut:
+    return LectureStudentSummaryOut(
+        id=s.id,
+        lecture_id=s.lecture_id,
+        title=s.title or "סיכום תלמיד",
+        content=s.content,
+        created_at=s.created_at.isoformat() if s.created_at else None,
+        updated_at=s.updated_at.isoformat() if s.updated_at else None,
+    )
+
+
+def _serialize_attachment(att) -> LectureAttachmentOut:
+    """Shared serializer for LectureRecording and LectureNote — same shape."""
+    ud = att.user_doc
+    bd = ud.base_document if ud else None
+    default_title = "הקלטה" if isinstance(att, LectureRecording) else "הערות"
+    return LectureAttachmentOut(
+        id=att.id,
+        lecture_id=att.lecture_id,
+        user_document_id=att.user_document_id,
+        title=att.title or default_title,
         file_path=bd.file_path if bd else None,
         doc_type=bd.doc_type if bd else "GENERAL",
+        created_at=att.created_at.isoformat() if att.created_at else None,
     )
 
 
@@ -172,8 +272,6 @@ def _serialize(lec: Lecture) -> LectureOut:
         course_id=lec.course_id,
         title=lec.title,
         lecture_date=lec.lecture_date,
-        lecturer_summary=lec.lecturer_summary,
-        student_summaries=lec.student_summaries,
         unified_summary=lec.unified_summary,
         unified_summary_processing=bool(lec.unified_summary_processing),
         unified_summary_error=lec.unified_summary_error,
@@ -181,14 +279,27 @@ def _serialize(lec: Lecture) -> LectureOut:
             lec.unified_summary_generated_at.isoformat()
             if lec.unified_summary_generated_at else None
         ),
-        recording=_serialize_doc(lec.recording_doc),
-        notes=_serialize_doc(lec.notes_doc),
+        lecturer_summaries=[_serialize_lecturer_summary(s) for s in (lec.lecturer_summaries or [])],
+        student_summaries=[_serialize_student_summary(s) for s in (lec.student_summaries or [])],
+        recordings=[_serialize_attachment(r) for r in (lec.recordings or [])],
+        notes=[_serialize_attachment(n) for n in (lec.notes or [])],
         created_at=lec.created_at.isoformat() if lec.created_at else None,
         updated_at=lec.updated_at.isoformat() if lec.updated_at else None,
     )
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────
+def _load_attachment_for_response(model_cls, row_id: int, db: Session):
+    return (
+        db.query(model_cls)
+        .options(selectinload(model_cls.user_doc).selectinload(UserDocument.base_document))
+        .filter(model_cls.id == row_id)
+        .first()
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lecture top-level CRUD
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/courses/{course_id}/lectures", response_model=List[LectureOut])
 def list_course_lectures(
@@ -196,15 +307,16 @@ def list_course_lectures(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all lectures in a course (any reader). Newest first.
-
-    Sort key: `lecture_date DESC NULLS LAST, created_at DESC`. A lecture with
-    no date set falls below dated ones rather than disappearing to the top
-    of the list — the user's mental model is "most recent class first."
-    """
+    """List all lectures in a course (any reader). Newest first."""
     _ensure_course_readable(course_id, current_user, db)
     lectures = (
         db.query(Lecture)
+        .options(
+            selectinload(Lecture.lecturer_summaries).selectinload(LectureLecturerSummary.lecturer),
+            selectinload(Lecture.student_summaries),
+            selectinload(Lecture.recordings).selectinload(LectureRecording.user_doc).selectinload(UserDocument.base_document),
+            selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
+        )
         .filter(Lecture.course_id == course_id)
         .all()
     )
@@ -225,11 +337,9 @@ def create_lecture(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new Lecture under a course (owner-only)."""
+    """Create a new Lecture under a course (owner-only). Sub-resources are
+    added through their dedicated endpoints below."""
     course = _ensure_course_owner(course_id, current_user, db)
-
-    _validate_user_doc(payload.recording_user_document_id, current_user, db)
-    _validate_user_doc(payload.notes_user_document_id,     current_user, db)
 
     if not payload.title.strip():
         raise HTTPException(status_code=422, detail="Title cannot be empty")
@@ -240,15 +350,10 @@ def create_lecture(
         organization_id=course.organization_id,
         title=payload.title.strip(),
         lecture_date=payload.lecture_date,
-        lecturer_summary=payload.lecturer_summary,
-        student_summaries=payload.student_summaries,
-        recording_user_document_id=payload.recording_user_document_id,
-        notes_user_document_id=payload.notes_user_document_id,
     )
     db.add(lec)
     db.commit()
-    db.refresh(lec)
-    return _serialize(lec)
+    return _serialize(_load_lecture_with_children(lec.id, db))
 
 
 @router.get("/lectures/{lecture_id}", response_model=LectureOut)
@@ -257,7 +362,7 @@ def get_lecture(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    lec = _load_lecture_with_children(lecture_id, db)
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
     _ensure_course_readable(lec.course_id, current_user, db)
@@ -271,39 +376,22 @@ def update_lecture(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Partial update. Owner-only.
-
-    Pydantic distinguishes "field absent" from "field present with value
-    null" via `model_fields_set`. We use that to tell "leave alone" apart
-    from "explicit clear" for the attachment FKs and `lecture_date`.
-    """
+    """Partial update of the top-level fields (title / date)."""
     lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
     _ensure_course_owner(lec.course_id, current_user, db)
 
     sent = payload.model_fields_set
-
     if "title" in sent and payload.title is not None:
         if not payload.title.strip():
             raise HTTPException(status_code=422, detail="Title cannot be empty")
         lec.title = payload.title.strip()
     if "lecture_date" in sent:
         lec.lecture_date = payload.lecture_date
-    if "lecturer_summary" in sent:
-        lec.lecturer_summary = payload.lecturer_summary
-    if "student_summaries" in sent:
-        lec.student_summaries = payload.student_summaries
-    if "recording_user_document_id" in sent:
-        _validate_user_doc(payload.recording_user_document_id, current_user, db)
-        lec.recording_user_document_id = payload.recording_user_document_id
-    if "notes_user_document_id" in sent:
-        _validate_user_doc(payload.notes_user_document_id, current_user, db)
-        lec.notes_user_document_id = payload.notes_user_document_id
 
     db.commit()
-    db.refresh(lec)
-    return _serialize(lec)
+    return _serialize(_load_lecture_with_children(lec.id, db))
 
 
 @router.delete("/lectures/{lecture_id}", status_code=204)
@@ -312,9 +400,9 @@ def delete_lecture(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a lecture (owner-only). Attachments are *not* deleted from the
-    library — only the lecture row goes away. The user can re-link the same
-    UserDocument to a different lecture if they want."""
+    """Delete a lecture (owner-only). Sub-resource rows cascade. The
+    UserDocuments behind recordings / notes are NOT deleted from the
+    library — only the lecture's join rows."""
     lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
@@ -323,7 +411,19 @@ def delete_lecture(
     db.commit()
 
 
-# ── Unified summary (F-033) ────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Unified summary (F-033 — body now carries lecturer_summary_id)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class UnifiedSummaryRequest(BaseModel):
+    """Body for POST /lectures/{id}/unified-summary.
+
+    `lecturer_summary_id` lets the caller pick which lecturer summary
+    feeds the skill. When None and exactly one lecturer summary exists,
+    that one is picked automatically. When None and multiple exist, the
+    request is rejected with 422 (the UI is expected to surface a picker)."""
+    lecturer_summary_id: Optional[int] = None
+
 
 @router.post(
     "/lectures/{lecture_id}/unified-summary",
@@ -332,23 +432,18 @@ def delete_lecture(
 )
 def generate_unified_summary(
     lecture_id: int,
+    payload: UnifiedSummaryRequest,
     background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Kick off unified-summary generation for a lecture (owner-only).
+    """Kick off unified-summary generation (owner-only, async).
 
     Returns 202 immediately with the row flipped to processing=True. The
-    actual LLM call runs in a BackgroundTask because typical generations
-    take 30-90s and would otherwise hit nginx's 60s timeout. The frontend
-    polls `GET /lectures/{id}` while `unified_summary_processing` is true.
-
-    Pre-flight: rejects with 422 if neither `lecturer_summary` nor a future
-    `recording_transcript` is present — same precondition the skill itself
-    enforces internally, but failing fast spares the user a slow round-trip
-    just to learn the inputs are insufficient.
+    actual LLM call runs in a BackgroundTask; the frontend polls
+    `GET /lectures/{id}` while `unified_summary_processing` is true.
     """
-    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    lec = _load_lecture_with_children(lecture_id, db)
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
     _ensure_course_owner(lec.course_id, current_user, db)
@@ -359,32 +454,457 @@ def generate_unified_summary(
             detail="Generation already in flight for this lecture.",
         )
 
-    # Fast precondition check — mirrors what the skill checks. Phase 2 will
-    # add a recording_transcript fallback; until then lecturer_summary is
-    # the only path that satisfies "at least one source non-empty".
-    if not (lec.lecturer_summary or "").strip():
+    summaries = list(lec.lecturer_summaries or [])
+    if not summaries:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "כדי לייצר סיכום מאוחד, יש למלא את שדה 'סיכום מרצה' לפחות. "
-                "תמלול הקלטה יתווסף בשלב הבא."
-            ),
+            detail="צריך לפחות סיכום מרצה אחד לפני יצירת הסיכום המאוחד.",
         )
 
-    # Flip the processing flag synchronously so the response carries the
-    # right state, and so a second click from the same client gets a 409.
+    chosen_id: Optional[int] = payload.lecturer_summary_id
+    if chosen_id is None:
+        if len(summaries) == 1:
+            chosen_id = summaries[0].id
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="יש כמה סיכומי מרצה — בחר איזה מהם ישמש כקלט.",
+            )
+    chosen = next((s for s in summaries if s.id == chosen_id), None)
+    if not chosen or not (chosen.content or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="הסיכום הנבחר ריק או לא נמצא.",
+        )
+
     lec.unified_summary_processing = True
     lec.unified_summary_error = None
     db.commit()
-    db.refresh(lec)
 
     background.add_task(
-        process_unified_summary_background, lec.id, current_user.id,
+        process_unified_summary_background, lec.id, current_user.id, chosen.id,
     )
-    return _serialize(lec)
+    return _serialize(_load_lecture_with_children(lec.id, db))
 
 
-# ── Lecture-scoped chat threads (F-033) ────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Lecturer-summary sub-resource CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _resolve_default_lecturer(course_id: int, db: Session) -> Optional[CourseLecturer]:
+    """Pick a sane default lecturer for a new lecturer-summary row.
+
+    Priority:
+      1. The only lecturer in the course (if exactly one exists).
+      2. A 'manager-y' role (course_manager / manager / professor / head).
+      3. Otherwise None — the caller picks explicitly.
+    """
+    lecturers = (
+        db.query(CourseLecturer)
+        .filter(CourseLecturer.course_id == course_id)
+        .order_by(CourseLecturer.id.asc())
+        .all()
+    )
+    if not lecturers:
+        return None
+    if len(lecturers) == 1:
+        return lecturers[0]
+    for cl in lecturers:
+        if cl.role and cl.role.lower() in ("course_manager", "manager", "professor", "head"):
+            return cl
+    return lecturers[0]
+
+
+@router.post(
+    "/lectures/{lecture_id}/lecturer-summaries",
+    response_model=LectureLecturerSummaryOut,
+    status_code=201,
+)
+def create_lecturer_summary(
+    lecture_id: int,
+    payload: LectureLecturerSummaryCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    if not lec:
+        raise HTTPException(status_code=404, detail="Lecture not found")
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    lecturer_id = payload.lecturer_id
+    if lecturer_id is None:
+        default = _resolve_default_lecturer(lec.course_id, db)
+        lecturer_id = default.id if default else None
+    else:
+        # Validate the lecturer belongs to this course.
+        cl = (
+            db.query(CourseLecturer)
+            .filter(CourseLecturer.id == lecturer_id, CourseLecturer.course_id == lec.course_id)
+            .first()
+        )
+        if not cl:
+            raise HTTPException(status_code=404, detail="Lecturer not in this course")
+
+    row = LectureLecturerSummary(
+        lecture_id=lec.id,
+        lecturer_id=lecturer_id,
+        title=(payload.title or "סיכום מרצה").strip() or "סיכום מרצה",
+        content=payload.content,
+    )
+    db.add(row)
+    db.commit()
+    row = (
+        db.query(LectureLecturerSummary)
+        .options(selectinload(LectureLecturerSummary.lecturer))
+        .filter(LectureLecturerSummary.id == row.id)
+        .first()
+    )
+    return _serialize_lecturer_summary(row)
+
+
+@router.put(
+    "/lectures/{lecture_id}/lecturer-summaries/{summary_id}",
+    response_model=LectureLecturerSummaryOut,
+)
+def update_lecturer_summary(
+    lecture_id: int,
+    summary_id: int,
+    payload: LectureLecturerSummaryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureLecturerSummary)
+        .filter(
+            LectureLecturerSummary.id == summary_id,
+            LectureLecturerSummary.lecture_id == lecture_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Lecturer summary not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    sent = payload.model_fields_set
+    if "title" in sent and payload.title is not None:
+        row.title = payload.title.strip() or row.title
+    if "content" in sent:
+        row.content = payload.content
+    if "lecturer_id" in sent:
+        if payload.lecturer_id is not None:
+            cl = (
+                db.query(CourseLecturer)
+                .filter(CourseLecturer.id == payload.lecturer_id, CourseLecturer.course_id == lec.course_id)
+                .first()
+            )
+            if not cl:
+                raise HTTPException(status_code=404, detail="Lecturer not in this course")
+        row.lecturer_id = payload.lecturer_id
+
+    db.commit()
+    row = (
+        db.query(LectureLecturerSummary)
+        .options(selectinload(LectureLecturerSummary.lecturer))
+        .filter(LectureLecturerSummary.id == row.id)
+        .first()
+    )
+    return _serialize_lecturer_summary(row)
+
+
+@router.delete(
+    "/lectures/{lecture_id}/lecturer-summaries/{summary_id}",
+    status_code=204,
+)
+def delete_lecturer_summary(
+    lecture_id: int,
+    summary_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureLecturerSummary)
+        .filter(
+            LectureLecturerSummary.id == summary_id,
+            LectureLecturerSummary.lecture_id == lecture_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Lecturer summary not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+    db.delete(row)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Student-summary sub-resource CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/lectures/{lecture_id}/student-summaries",
+    response_model=LectureStudentSummaryOut,
+    status_code=201,
+)
+def create_student_summary(
+    lecture_id: int,
+    payload: LectureStudentSummaryCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    if not lec:
+        raise HTTPException(status_code=404, detail="Lecture not found")
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    row = LectureStudentSummary(
+        lecture_id=lec.id,
+        title=(payload.title or "סיכום תלמיד").strip() or "סיכום תלמיד",
+        content=payload.content,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_student_summary(row)
+
+
+@router.put(
+    "/lectures/{lecture_id}/student-summaries/{summary_id}",
+    response_model=LectureStudentSummaryOut,
+)
+def update_student_summary(
+    lecture_id: int,
+    summary_id: int,
+    payload: LectureStudentSummaryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureStudentSummary)
+        .filter(
+            LectureStudentSummary.id == summary_id,
+            LectureStudentSummary.lecture_id == lecture_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Student summary not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    sent = payload.model_fields_set
+    if "title" in sent and payload.title is not None:
+        row.title = payload.title.strip() or row.title
+    if "content" in sent:
+        row.content = payload.content
+
+    db.commit()
+    db.refresh(row)
+    return _serialize_student_summary(row)
+
+
+@router.delete(
+    "/lectures/{lecture_id}/student-summaries/{summary_id}",
+    status_code=204,
+)
+def delete_student_summary(
+    lecture_id: int,
+    summary_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureStudentSummary)
+        .filter(
+            LectureStudentSummary.id == summary_id,
+            LectureStudentSummary.lecture_id == lecture_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Student summary not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+    db.delete(row)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Recording sub-resource CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/lectures/{lecture_id}/recordings",
+    response_model=LectureAttachmentOut,
+    status_code=201,
+)
+def create_recording(
+    lecture_id: int,
+    payload: LectureAttachmentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    if not lec:
+        raise HTTPException(status_code=404, detail="Lecture not found")
+    _ensure_course_owner(lec.course_id, current_user, db)
+    ud = _validate_user_doc(payload.user_document_id, current_user, db)
+
+    row = LectureRecording(
+        lecture_id=lec.id,
+        user_document_id=ud.id if ud else None,
+        title=(payload.title or (ud.custom_title if ud else None) or "הקלטה").strip() or "הקלטה",
+    )
+    db.add(row)
+    db.commit()
+    return _serialize_attachment(_load_attachment_for_response(LectureRecording, row.id, db))
+
+
+@router.put(
+    "/lectures/{lecture_id}/recordings/{rec_id}",
+    response_model=LectureAttachmentOut,
+)
+def update_recording(
+    lecture_id: int,
+    rec_id: int,
+    payload: LectureAttachmentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureRecording)
+        .filter(LectureRecording.id == rec_id, LectureRecording.lecture_id == lecture_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    sent = payload.model_fields_set
+    if "title" in sent and payload.title is not None:
+        row.title = payload.title.strip() or row.title
+    if "user_document_id" in sent:
+        ud = _validate_user_doc(payload.user_document_id, current_user, db)
+        row.user_document_id = ud.id if ud else None
+
+    db.commit()
+    return _serialize_attachment(_load_attachment_for_response(LectureRecording, row.id, db))
+
+
+@router.delete(
+    "/lectures/{lecture_id}/recordings/{rec_id}",
+    status_code=204,
+)
+def delete_recording(
+    lecture_id: int,
+    rec_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureRecording)
+        .filter(LectureRecording.id == rec_id, LectureRecording.lecture_id == lecture_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+    db.delete(row)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Notes sub-resource CRUD
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/lectures/{lecture_id}/notes",
+    response_model=LectureAttachmentOut,
+    status_code=201,
+)
+def create_note(
+    lecture_id: int,
+    payload: LectureAttachmentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    if not lec:
+        raise HTTPException(status_code=404, detail="Lecture not found")
+    _ensure_course_owner(lec.course_id, current_user, db)
+    ud = _validate_user_doc(payload.user_document_id, current_user, db)
+
+    row = LectureNote(
+        lecture_id=lec.id,
+        user_document_id=ud.id if ud else None,
+        title=(payload.title or (ud.custom_title if ud else None) or "הערות").strip() or "הערות",
+    )
+    db.add(row)
+    db.commit()
+    return _serialize_attachment(_load_attachment_for_response(LectureNote, row.id, db))
+
+
+@router.put(
+    "/lectures/{lecture_id}/notes/{note_id}",
+    response_model=LectureAttachmentOut,
+)
+def update_note(
+    lecture_id: int,
+    note_id: int,
+    payload: LectureAttachmentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureNote)
+        .filter(LectureNote.id == note_id, LectureNote.lecture_id == lecture_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+
+    sent = payload.model_fields_set
+    if "title" in sent and payload.title is not None:
+        row.title = payload.title.strip() or row.title
+    if "user_document_id" in sent:
+        ud = _validate_user_doc(payload.user_document_id, current_user, db)
+        row.user_document_id = ud.id if ud else None
+
+    db.commit()
+    return _serialize_attachment(_load_attachment_for_response(LectureNote, row.id, db))
+
+
+@router.delete(
+    "/lectures/{lecture_id}/notes/{note_id}",
+    status_code=204,
+)
+def delete_note(
+    lecture_id: int,
+    note_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(LectureNote)
+        .filter(LectureNote.id == note_id, LectureNote.lecture_id == lecture_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Note not found")
+    lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    _ensure_course_owner(lec.course_id, current_user, db)
+    db.delete(row)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lecture-scoped chat threads (F-033)
+# ══════════════════════════════════════════════════════════════════════════════
 
 class LectureThreadMessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -413,11 +933,7 @@ def list_lecture_threads(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List the caller's chat threads pinned to this lecture, newest first.
-
-    Read access requires the same permission as reading the lecture itself
-    (i.e. course-readable). Cross-user threads are filtered by `user_id`.
-    """
+    """List the caller's chat threads pinned to this lecture, newest first."""
     lec = db.query(Lecture).filter(Lecture.id == lecture_id).first()
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
@@ -428,7 +944,7 @@ def list_lecture_threads(
         .filter(
             Thread.lecture_id == lecture_id,
             Thread.user_id == current_user.id,
-            Thread.parent_thread_id.is_(None),     # roots only
+            Thread.parent_thread_id.is_(None),
         )
         .order_by(Thread.created_at.desc())
         .all()

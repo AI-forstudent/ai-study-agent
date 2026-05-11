@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, Calendar, Mic, FileText, Image as ImageIcon, Trash2, Upload,
+  ArrowLeft, Calendar, Mic, FileText, Image as ImageIcon, Trash2,
   Loader2, Save, Pencil, AlertTriangle, Download, Sparkles, RefreshCw,
-  Send, MessageSquare, X, Plus,
+  Send, MessageSquare, X, Plus, ChevronDown, ChevronRight, BookOpen,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
@@ -15,22 +15,59 @@ import { LECTURE_RECORDING_TYPES, LECTURE_NOTES_TYPES } from '../../../utils/fil
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** Backend shape from `GET /api/v1/lectures/{id}` (F-033). */
+/** GET /api/v1/lectures/{id} response (F-034 multi-resource). */
 export interface Lecture {
-  id:                number;
-  course_id:         number;
-  title:             string;
-  lecture_date:      string | null;
-  lecturer_summary:  string | null;
-  student_summaries: string | null;
-  unified_summary:                string | null;
-  unified_summary_processing:     boolean;
-  unified_summary_error:          string | null;
-  unified_summary_generated_at:   string | null;
-  recording: { id: number; title: string; file_path: string | null; doc_type: string } | null;
-  notes:     { id: number; title: string; file_path: string | null; doc_type: string } | null;
+  id:                            number;
+  course_id:                     number;
+  title:                         string;
+  lecture_date:                  string | null;
+  unified_summary:               string | null;
+  unified_summary_processing:    boolean;
+  unified_summary_error:         string | null;
+  unified_summary_generated_at:  string | null;
+  lecturer_summaries:            LectureLecturerSummary[];
+  student_summaries:             LectureStudentSummary[];
+  recordings:                    LectureAttachment[];
+  notes:                         LectureAttachment[];
+  created_at:                    string | null;
+  updated_at:                    string | null;
+}
+
+export interface LectureLecturerSummary {
+  id:            number;
+  lecture_id:    number;
+  lecturer_id:   number | null;
+  lecturer_name: string | null;
+  title:         string;
+  content:       string | null;
+  created_at:    string | null;
+  updated_at:    string | null;
+}
+
+export interface LectureStudentSummary {
+  id:         number;
+  lecture_id: number;
+  title:      string;
+  content:    string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface LectureAttachment {
+  id:               number;
+  lecture_id:       number;
+  user_document_id: number | null;
+  title:            string;
+  file_path:        string | null;
+  doc_type:         string;
+  created_at:       string | null;
+}
+
+interface CourseLecturer {
+  id:    number;
+  name:  string;
+  email: string | null;
+  role:  string;
 }
 
 interface LectureThreadMessage {
@@ -41,11 +78,10 @@ interface LectureThread {
   created_at?: string | null; messages: LectureThreadMessage[];
 }
 
-type TabKey = 'unified' | 'lecturer' | 'student' | 'recording' | 'notes';
-
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const UPLOADS_BASE = (import.meta.env.VITE_AI_API_URL ?? '').replace(/\/$/, '');
+const STANDALONE_CHAT_API = `${UPLOADS_BASE}/api/v1/chat/`;
 
 function attachmentUrl(filePath: string | null | undefined): string | null {
   if (!filePath) return null;
@@ -53,21 +89,29 @@ function attachmentUrl(filePath: string | null | undefined): string | null {
   return `${UPLOADS_BASE}/${clean}`;
 }
 
-const TABS: { key: TabKey; label: string; icon: any }[] = [
-  { key: 'unified',   label: 'סיכום מאוחד',    icon: Sparkles },
-  { key: 'lecturer',  label: 'סיכום מרצה',     icon: Pencil   },
-  { key: 'student',   label: 'סיכומי תלמידים', icon: FileText },
-  { key: 'recording', label: 'הקלטה',          icon: Mic      },
-  { key: 'notes',     label: 'הערות',          icon: FileText },
-];
+// ── Selection model ─────────────────────────────────────────────────────────
+// The sidebar shows five categories; clicking a sub-item sets the selection
+// to one of these tagged-union variants. The main pane uses the variant to
+// pick the right renderer.
 
-const STANDALONE_CHAT_API = `${UPLOADS_BASE}/api/v1/chat/`;
+type Selection =
+  | { kind: 'unified' }
+  | { kind: 'lecturer'; id: number }
+  | { kind: 'student'; id: number }
+  | { kind: 'recording'; id: number }
+  | { kind: 'note'; id: number };
 
-// ── Markdown renderer used for the Unified Summary tab ──────────────────────
-// Document-style: full markdown surface (headings, lists, tables, code blocks,
-// KaTeX) with comfortable typography. Mirrors ChatPanel's `assistantMdComponents`
-// for consistent feel, but lives next to its consumer so cross-feature edits
-// don't ripple.
+function pickDefaultSelection(lec: Lecture): Selection {
+  if (lec.unified_summary?.trim())     return { kind: 'unified' };
+  if (lec.lecturer_summaries.length)   return { kind: 'lecturer',  id: lec.lecturer_summaries[0].id };
+  if (lec.student_summaries.length)    return { kind: 'student',   id: lec.student_summaries[0].id };
+  if (lec.recordings.length)           return { kind: 'recording', id: lec.recordings[0].id };
+  if (lec.notes.length)                return { kind: 'note',      id: lec.notes[0].id };
+  return { kind: 'unified' };
+}
+
+// ── Markdown renderer ──────────────────────────────────────────────────────
+
 const summaryMdComponents = {
   p:      ({ node, ...props }: any) => <p dir="auto" {...props} />,
   li:     ({ node, ...props }: any) => <li dir="auto" {...props} />,
@@ -81,20 +125,9 @@ const summaryMdComponents = {
   ),
 };
 
-// ── Default tab selection per the user spec ─────────────────────────────────
-// Priority: unified → lecturer → student → recording → notes. First non-empty
-// wins. This is intentionally biased toward summaries (which carry the
-// pedagogical signal) before raw materials.
-function pickDefaultTab(lec: Lecture): TabKey {
-  if (lec.unified_summary?.trim())   return 'unified';
-  if (lec.lecturer_summary?.trim())  return 'lecturer';
-  if (lec.student_summaries?.trim()) return 'student';
-  if (lec.recording)                 return 'recording';
-  if (lec.notes)                     return 'notes';
-  return 'unified';
-}
-
-// ── Component ───────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// Component
+// ══════════════════════════════════════════════════════════════════════════
 
 interface LectureSessionViewProps {
   lecture:  Lecture;
@@ -108,32 +141,38 @@ interface LectureSessionViewProps {
 export default function LectureSessionView({
   lecture, isOwner, onBack, onChange, onDelete, onRename,
 }: LectureSessionViewProps) {
-  // ── Tab state ─────────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<TabKey>(() => pickDefaultTab(lecture));
+  // ── Selection ────────────────────────────────────────────────────────────
+  const [selection, setSelection] = useState<Selection>(() => pickDefaultSelection(lecture));
+  const lectureIdRef = useRef(lecture.id);
+  useEffect(() => {
+    if (lectureIdRef.current !== lecture.id) {
+      lectureIdRef.current = lecture.id;
+      setSelection(pickDefaultSelection(lecture));
+    }
+  }, [lecture]);
 
-  // ── Editable summary fields ───────────────────────────────────────────────
-  // Local state for the textareas so we can show a dirty-state Save button
-  // without firing a PUT on every keystroke. Reset when the lecture prop
-  // changes from outside (e.g. after a successful save).
-  const [lecturerDraft, setLecturerDraft] = useState(lecture.lecturer_summary ?? '');
-  const [studentDraft,  setStudentDraft]  = useState(lecture.student_summaries ?? '');
-  useEffect(() => { setLecturerDraft(lecture.lecturer_summary  ?? ''); }, [lecture.id, lecture.lecturer_summary]);
-  useEffect(() => { setStudentDraft(lecture.student_summaries ?? ''); }, [lecture.id, lecture.student_summaries]);
-  const lecturerDirty = lecturerDraft !== (lecture.lecturer_summary ?? '');
-  const studentDirty  = studentDraft  !== (lecture.student_summaries ?? '');
+  // ── Course lecturers (for the picker) ────────────────────────────────────
+  const [courseLecturers, setCourseLecturers] = useState<CourseLecturer[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.listCourseLecturers(lecture.course_id).then(res => {
+      if (cancelled) return;
+      setCourseLecturers(res.data ?? []);
+    }).catch(() => { /* not critical */ });
+    return () => { cancelled = true; };
+  }, [lecture.course_id]);
 
-  const [savingField, setSavingField] = useState<'lecturer' | 'student' | null>(null);
-  const [savingFile, setSavingFile]   = useState<'recording' | 'notes' | null>(null);
-  const [error, setError]             = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // ── Modals ───────────────────────────────────────────────────────────────
+  const [lecturerModal, setLecturerModal] = useState<{ editing: LectureLecturerSummary | null } | null>(null);
+  const [studentModal,  setStudentModal]  = useState<{ editing: LectureStudentSummary | null }  | null>(null);
+  const [generatePickerOpen, setGeneratePickerOpen] = useState(false);
   const recordingInputRef = useRef<HTMLInputElement>(null);
   const notesInputRef     = useRef<HTMLInputElement>(null);
 
-  // ── Unified-summary polling ───────────────────────────────────────────────
-  // While the row is in `unified_summary_processing=true`, poll every 5s so
-  // the user sees the result appear without a manual refresh. Stops as soon
-  // as the flag flips back to false.
+  // ── Unified-summary polling ─────────────────────────────────────────────
   useEffect(() => {
     if (!lecture.unified_summary_processing) return;
     let cancelled = false;
@@ -141,55 +180,50 @@ export default function LectureSessionView({
       try {
         const res = await api.getLecture(lecture.id);
         if (!cancelled) onChange(res.data);
-      } catch {
-        // Ignore transient failures; the next tick retries.
-      }
+      } catch { /* transient — next tick retries */ }
     };
     const t = setInterval(poll, 5000);
     return () => { cancelled = true; clearInterval(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lecture.id, lecture.unified_summary_processing]);
 
-  // ── Field saves ──────────────────────────────────────────────────────────
-  async function saveLecturerSummary() {
-    if (!lecturerDirty || savingField) return;
-    setSavingField('lecturer'); setError(null);
-    try {
-      const res = await api.updateLecture(lecture.id, { lecturer_summary: lecturerDraft });
-      onChange(res.data);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Failed to save lecturer summary.');
-    } finally {
-      setSavingField(null);
-    }
-  }
-  async function saveStudentSummaries() {
-    if (!studentDirty || savingField) return;
-    setSavingField('student'); setError(null);
-    try {
-      const res = await api.updateLecture(lecture.id, { student_summaries: studentDraft });
-      onChange(res.data);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Failed to save student summaries.');
-    } finally {
-      setSavingField(null);
-    }
-  }
+  // ── In-session sidebar collapse ─────────────────────────────────────────
+  const setInSession = useAppStore(s => s.setInSession);
+  useEffect(() => {
+    setInSession(true);
+    return () => setInSession(false);
+  }, [setInSession]);
 
-  // ── Unified-summary generation ───────────────────────────────────────────
-  async function generateUnified() {
+  // ── Generate unified summary ────────────────────────────────────────────
+  async function startGeneration(lecturerSummaryId: number | null) {
     setError(null);
     try {
-      const res = await api.generateLectureUnifiedSummary(lecture.id);
+      const res = await api.generateLectureUnifiedSummary(lecture.id, lecturerSummaryId);
       onChange(res.data);
+      setSelection({ kind: 'unified' });
     } catch (err: any) {
       setError(err?.response?.data?.detail ?? 'Failed to start generation.');
     }
   }
 
-  // ── File attach / detach ─────────────────────────────────────────────────
-  async function handleAttachFile(file: File, kind: 'recording' | 'notes') {
-    setSavingFile(kind); setError(null);
+  function handleGenerateClick() {
+    if (!isOwner) return;
+    if (lecture.lecturer_summaries.length === 0) {
+      setError('צריך לפחות סיכום מרצה אחד לפני יצירת הסיכום המאוחד.');
+      return;
+    }
+    if (lecture.lecturer_summaries.length === 1) {
+      void startGeneration(lecture.lecturer_summaries[0].id);
+      return;
+    }
+    setGeneratePickerOpen(true);
+  }
+
+  // ── File upload pipeline ─────────────────────────────────────────────────
+  const [uploading, setUploading] = useState<'recording' | 'note' | null>(null);
+  async function handleFileUpload(file: File, kind: 'recording' | 'note') {
+    setUploading(kind);
+    setError(null);
     try {
       let userDocId: number;
       try {
@@ -197,51 +231,83 @@ export default function LectureSessionView({
         userDocId = upRes.data.id;
       } catch (err: any) {
         const detail = err?.response?.data?.detail;
-        const existing =
-          err?.response?.status === 409 && typeof detail === 'object'
-            ? detail?.existing_user_document_id
-            : undefined;
+        const existing = err?.response?.status === 409 && typeof detail === 'object'
+          ? detail?.existing_user_document_id : undefined;
         if (typeof existing === 'number') userDocId = existing;
         else throw err;
       }
-      const fieldName = kind === 'recording'
-        ? 'recording_user_document_id' : 'notes_user_document_id';
-      const res = await api.updateLecture(lecture.id, { [fieldName]: userDocId } as any);
-      onChange(res.data);
+      if (kind === 'recording') {
+        const res = await api.createLectureRecording(lecture.id, {
+          user_document_id: userDocId,
+          title: file.name,
+        });
+        onChange({ ...lecture, recordings: [...lecture.recordings, res.data] });
+        setSelection({ kind: 'recording', id: res.data.id });
+      } else {
+        const res = await api.createLectureNote(lecture.id, {
+          user_document_id: userDocId,
+          title: file.name,
+        });
+        onChange({ ...lecture, notes: [...lecture.notes, res.data] });
+        setSelection({ kind: 'note', id: res.data.id });
+      }
     } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Failed to attach file.');
+      setError(err?.response?.data?.detail ?? 'Failed to upload file.');
     } finally {
-      setSavingFile(null);
+      setUploading(null);
     }
   }
 
-  async function handleDetach(kind: 'recording' | 'notes') {
-    setSavingFile(kind); setError(null);
+  // ── Selected item lookup ────────────────────────────────────────────────
+  const selectedItem = useMemo(() => {
+    if (selection.kind === 'lecturer')  return lecture.lecturer_summaries.find(s => s.id === selection.id) ?? null;
+    if (selection.kind === 'student')   return lecture.student_summaries.find(s => s.id === selection.id)  ?? null;
+    if (selection.kind === 'recording') return lecture.recordings.find(r => r.id === selection.id)         ?? null;
+    if (selection.kind === 'note')      return lecture.notes.find(n => n.id === selection.id)              ?? null;
+    return null;
+  }, [selection, lecture]);
+
+  // ── Delete handlers ─────────────────────────────────────────────────────
+  async function deleteLecturerSummary(id: number) {
     try {
-      const fieldName = kind === 'recording'
-        ? 'recording_user_document_id' : 'notes_user_document_id';
-      const res = await api.updateLecture(lecture.id, { [fieldName]: null } as any);
-      onChange(res.data);
+      await api.deleteLectureLecturerSummary(lecture.id, id);
+      onChange({ ...lecture, lecturer_summaries: lecture.lecturer_summaries.filter(s => s.id !== id) });
+      if (selection.kind === 'lecturer' && selection.id === id) setSelection(pickDefaultSelection(lecture));
     } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Failed to detach file.');
-    } finally {
-      setSavingFile(null);
+      setError(err?.response?.data?.detail ?? 'Failed to delete summary.');
     }
   }
-
-  // ── In-session sidebar collapse ──────────────────────────────────────────
-  // Treat the lecture viewer as a "session" — same UX as the doc workspace:
-  // the global app sidebar collapses on entry and restores on unmount.
-  // (AppLayout reads `inSession` from the store.)
-  const setInSession = useAppStore(s => s.setInSession);
-  useEffect(() => {
-    setInSession(true);
-    return () => setInSession(false);
-  }, [setInSession]);
+  async function deleteStudentSummary(id: number) {
+    try {
+      await api.deleteLectureStudentSummary(lecture.id, id);
+      onChange({ ...lecture, student_summaries: lecture.student_summaries.filter(s => s.id !== id) });
+      if (selection.kind === 'student' && selection.id === id) setSelection(pickDefaultSelection(lecture));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? 'Failed to delete summary.');
+    }
+  }
+  async function deleteRecording(id: number) {
+    try {
+      await api.deleteLectureRecording(lecture.id, id);
+      onChange({ ...lecture, recordings: lecture.recordings.filter(r => r.id !== id) });
+      if (selection.kind === 'recording' && selection.id === id) setSelection(pickDefaultSelection(lecture));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? 'Failed to delete recording.');
+    }
+  }
+  async function deleteNote(id: number) {
+    try {
+      await api.deleteLectureNote(lecture.id, id);
+      onChange({ ...lecture, notes: lecture.notes.filter(n => n.id !== id) });
+      if (selection.kind === 'note' && selection.id === id) setSelection(pickDefaultSelection(lecture));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? 'Failed to delete note.');
+    }
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* ── Top breadcrumb + actions ─────────────────────────────────────── */}
+      {/* Top breadcrumb + actions */}
       <div className="flex flex-col gap-3 px-1 pb-3 sm:flex-row sm:items-center sm:justify-between border-b border-[#E8E8E6]">
         <div className="flex items-center gap-2 min-w-0">
           <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-[#787774] hover:text-[#37352F] shrink-0">
@@ -276,122 +342,78 @@ export default function LectureSessionView({
         )}
       </div>
 
-      {/* ── Tab bar ──────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1 overflow-x-auto px-1 py-2 border-b border-[#E8E8E6]">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          const isUnified = t.key === 'unified';
-          return (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={[
-                'flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap shrink-0 transition-colors',
-                active
-                  ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                  : 'text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] border border-transparent',
-              ].join(' ')}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {t.label}
-              {isUnified && (
-                <span className="ms-1 text-[10px] font-medium text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded">
-                  AI · כולל הכל
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
       {error && (
         <div className="flex items-start gap-2 mx-1 mt-3 p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-700">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{error}</span>
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError(null)}><X className="w-3 h-3" /></button>
         </div>
       )}
 
-      {/* ── Split: content tab on the left, chat on the right ───────────── */}
+      {/* Two-column split: main pane on the left, right column has sidebar + chat */}
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-4 mt-3 px-1">
-        {/* Left / main pane */}
+        {/* ── Main pane ───────────────────────────────────────────────── */}
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {tab === 'unified' && (
+          {selection.kind === 'unified' && (
             <UnifiedSummaryPane
               lecture={lecture}
               isOwner={isOwner}
-              onGenerate={generateUnified}
+              onGenerateClick={handleGenerateClick}
             />
           )}
-
-          {tab === 'lecturer' && (
-            <SummaryTextareaPane
-              title="סיכום מרצה"
-              description="הסיכום הרשמי של המרצה. זה המקור האותנטי שמזין את הסיכום המאוחד."
-              value={lecturerDraft}
-              setValue={setLecturerDraft}
-              dirty={lecturerDirty}
-              saving={savingField === 'lecturer'}
-              readOnly={!isOwner}
-              onSave={saveLecturerSummary}
-            />
-          )}
-
-          {tab === 'student' && (
-            <SummaryTextareaPane
-              title="סיכומי תלמידים"
-              description="סיכומים שלי או של עמיתים. אינם נכללים בייצור הסיכום המאוחד."
-              value={studentDraft}
-              setValue={setStudentDraft}
-              dirty={studentDirty}
-              saving={savingField === 'student'}
-              readOnly={!isOwner}
-              onSave={saveStudentSummaries}
-            />
-          )}
-
-          {tab === 'recording' && (
-            <AttachmentPane
-              kind="recording"
-              icon={Mic}
-              title="Recording"
-              description="Audio capture of the lecture."
-              attachment={lecture.recording}
+          {selection.kind === 'lecturer' && selectedItem && (
+            <LecturerSummaryPane
+              lecture={lecture}
+              summary={selectedItem as LectureLecturerSummary}
               isOwner={isOwner}
-              isSaving={savingFile === 'recording'}
-              onPick={() => recordingInputRef.current?.click()}
-              onDetach={() => handleDetach('recording')}
-              renderPreview={(url) => <audio controls src={url} className="w-full mt-4" />}
+              onEdit={() => setLecturerModal({ editing: selectedItem as LectureLecturerSummary })}
+              onChange={onChange}
+              onError={setError}
             />
           )}
-
-          {tab === 'notes' && (
-            <AttachmentPane
-              kind="notes"
-              icon={lecture.notes?.doc_type === 'IMAGE' ? ImageIcon : FileText}
-              title="Notes"
-              description="PDF or photo of handwritten notes."
-              attachment={lecture.notes}
+          {selection.kind === 'student' && selectedItem && (
+            <StudentSummaryPane
+              lecture={lecture}
+              summary={selectedItem as LectureStudentSummary}
               isOwner={isOwner}
-              isSaving={savingFile === 'notes'}
-              onPick={() => notesInputRef.current?.click()}
-              onDetach={() => handleDetach('notes')}
-              renderPreview={(url) => (
-                lecture.notes?.doc_type === 'IMAGE'
-                  ? <img src={url} alt="Notes" className="w-full max-h-[70vh] object-contain mt-4 rounded-lg border border-[#E8E8E6]" />
-                  : <iframe src={url} className="w-full mt-4 rounded-lg border border-[#E8E8E6]" style={{ height: '70vh' }} />
-              )}
+              onEdit={() => setStudentModal({ editing: selectedItem as LectureStudentSummary })}
+              onChange={onChange}
+              onError={setError}
             />
           )}
+          {selection.kind === 'recording' && selectedItem && (
+            <AttachmentPane kind="recording" attachment={selectedItem as LectureAttachment} />
+          )}
+          {selection.kind === 'note' && selectedItem && (
+            <AttachmentPane kind="note" attachment={selectedItem as LectureAttachment} />
+          )}
+          {selection.kind !== 'unified' && !selectedItem && <EmptyMainPane />}
         </div>
 
-        {/* Right / chat pane */}
-        <div className="lg:w-[380px] xl:w-[420px] shrink-0 min-h-[320px] lg:min-h-0">
+        {/* ── Right column: accordion sidebar (top) + chat pane (bottom) ── */}
+        <div className="lg:w-[320px] xl:w-[360px] shrink-0 flex flex-col min-h-0 gap-4">
+          <LectureAccordion
+            lecture={lecture}
+            isOwner={isOwner}
+            selection={selection}
+            setSelection={setSelection}
+            onAddLecturerSummary={() => setLecturerModal({ editing: null })}
+            onEditLecturerSummary={s => setLecturerModal({ editing: s })}
+            onDeleteLecturerSummary={deleteLecturerSummary}
+            onAddStudentSummary={() => setStudentModal({ editing: null })}
+            onEditStudentSummary={s => setStudentModal({ editing: s })}
+            onDeleteStudentSummary={deleteStudentSummary}
+            onUploadRecording={() => recordingInputRef.current?.click()}
+            onDeleteRecording={deleteRecording}
+            onUploadNote={() => notesInputRef.current?.click()}
+            onDeleteNote={deleteNote}
+            uploading={uploading}
+          />
           <LectureChatPane lectureId={lecture.id} courseId={lecture.course_id} />
         </div>
       </div>
 
-      {/* ── Hidden file inputs ───────────────────────────────────────────── */}
+      {/* Hidden file inputs */}
       <input
         ref={recordingInputRef}
         type="file"
@@ -400,7 +422,7 @@ export default function LectureSessionView({
         onChange={e => {
           const f = e.target.files?.[0];
           e.target.value = '';
-          if (f) void handleAttachFile(f, 'recording');
+          if (f) void handleFileUpload(f, 'recording');
         }}
       />
       <input
@@ -411,57 +433,371 @@ export default function LectureSessionView({
         onChange={e => {
           const f = e.target.files?.[0];
           e.target.value = '';
-          if (f) void handleAttachFile(f, 'notes');
+          if (f) void handleFileUpload(f, 'note');
         }}
       />
 
-      {/* ── Delete confirm ───────────────────────────────────────────────── */}
+      {/* Modals */}
+      {lecturerModal && isOwner && (
+        <LecturerSummaryModal
+          lectureId={lecture.id}
+          editing={lecturerModal.editing}
+          courseLecturers={courseLecturers}
+          onClose={() => setLecturerModal(null)}
+          onSaved={updated => {
+            const exists = lecture.lecturer_summaries.some(s => s.id === updated.id);
+            const next = exists
+              ? lecture.lecturer_summaries.map(s => s.id === updated.id ? updated : s)
+              : [...lecture.lecturer_summaries, updated];
+            onChange({ ...lecture, lecturer_summaries: next });
+            setLecturerModal(null);
+            setSelection({ kind: 'lecturer', id: updated.id });
+          }}
+        />
+      )}
+      {studentModal && isOwner && (
+        <StudentSummaryModal
+          lectureId={lecture.id}
+          editing={studentModal.editing}
+          onClose={() => setStudentModal(null)}
+          onSaved={updated => {
+            const exists = lecture.student_summaries.some(s => s.id === updated.id);
+            const next = exists
+              ? lecture.student_summaries.map(s => s.id === updated.id ? updated : s)
+              : [...lecture.student_summaries, updated];
+            onChange({ ...lecture, student_summaries: next });
+            setStudentModal(null);
+            setSelection({ kind: 'student', id: updated.id });
+          }}
+        />
+      )}
+      {generatePickerOpen && (
+        <GeneratePicker
+          summaries={lecture.lecturer_summaries}
+          onCancel={() => setGeneratePickerOpen(false)}
+          onPick={async id => {
+            setGeneratePickerOpen(false);
+            await startGeneration(id);
+          }}
+        />
+      )}
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setConfirmDelete(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 border border-red-200">
-            <div className="flex items-center gap-2 mb-3">
-              <AlertTriangle className="w-4 h-4 text-red-600" />
-              <h3 className="text-sm font-semibold text-red-700">Delete this lecture?</h3>
-            </div>
-            <p className="text-xs text-[#787774] mb-4 leading-relaxed">
-              The recording and notes files stay in your library — only the lecture row is removed.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => { await onDelete(); setConfirmDelete(false); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-red-600 hover:bg-red-700 rounded-lg"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete
-              </button>
-            </div>
-          </div>
+        <ConfirmDeleteLecture
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={async () => { await onDelete(); setConfirmDelete(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Accordion sidebar
+// ══════════════════════════════════════════════════════════════════════════
+
+interface AccordionProps {
+  lecture: Lecture;
+  isOwner: boolean;
+  selection: Selection;
+  setSelection: (s: Selection) => void;
+  onAddLecturerSummary: () => void;
+  onEditLecturerSummary: (s: LectureLecturerSummary) => void;
+  onDeleteLecturerSummary: (id: number) => Promise<void>;
+  onAddStudentSummary: () => void;
+  onEditStudentSummary: (s: LectureStudentSummary) => void;
+  onDeleteStudentSummary: (id: number) => Promise<void>;
+  onUploadRecording: () => void;
+  onDeleteRecording: (id: number) => Promise<void>;
+  onUploadNote: () => void;
+  onDeleteNote: (id: number) => Promise<void>;
+  uploading: 'recording' | 'note' | null;
+}
+
+function LectureAccordion({
+  lecture, isOwner, selection, setSelection,
+  onAddLecturerSummary, onEditLecturerSummary, onDeleteLecturerSummary,
+  onAddStudentSummary,  onEditStudentSummary,  onDeleteStudentSummary,
+  onUploadRecording, onDeleteRecording, onUploadNote, onDeleteNote, uploading,
+}: AccordionProps) {
+  // Section-open state. Defaults: open all sections that have content;
+  // "lecturer" stays open by default so the user sees the picker on first use.
+  const [open, setOpen] = useState({
+    lecturer:  true,
+    student:   lecture.student_summaries.length > 0,
+    recording: lecture.recordings.length > 0,
+    note:      lecture.notes.length > 0,
+  });
+
+  // Group lecturer summaries by lecturer (per the user spec — multiple
+  // lecturers, multiple versions per lecturer).
+  const lecturerGroups = useMemo(() => {
+    const groups = new Map<number | 'none', { name: string; items: LectureLecturerSummary[] }>();
+    for (const s of lecture.lecturer_summaries) {
+      const key = s.lecturer_id ?? 'none';
+      if (!groups.has(key)) {
+        groups.set(key, { name: s.lecturer_name ?? 'ללא מרצה', items: [] });
+      }
+      groups.get(key)!.items.push(s);
+    }
+    return Array.from(groups.entries()).map(([k, v]) => ({ key: k, ...v }));
+  }, [lecture.lecturer_summaries]);
+
+  const initialExpandedLecturers = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const g of lecturerGroups) out[String(g.key)] = true;
+    return out;
+  }, [lecturerGroups]);
+  const [expandedLecturers, setExpandedLecturers] = useState<Record<string, boolean>>(initialExpandedLecturers);
+  useEffect(() => {
+    setExpandedLecturers(prev => ({ ...initialExpandedLecturers, ...prev }));
+  }, [initialExpandedLecturers]);
+
+  return (
+    <div className="bg-white border border-[#E8E8E6] rounded-xl flex-1 min-h-0 overflow-y-auto p-2 text-sm">
+      <UnifiedRow
+        lecture={lecture}
+        active={selection.kind === 'unified'}
+        onClick={() => setSelection({ kind: 'unified' })}
+      />
+
+      <SectionHeader
+        icon={Pencil}
+        label="סיכומי מרצה"
+        count={lecture.lecturer_summaries.length}
+        isOpen={open.lecturer}
+        onToggle={() => setOpen(o => ({ ...o, lecturer: !o.lecturer }))}
+        onAdd={isOwner ? onAddLecturerSummary : undefined}
+      />
+      {open.lecturer && (
+        <div className="ps-2">
+          {lecturerGroups.length === 0 ? (
+            <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי מרצה.</p>
+          ) : (
+            lecturerGroups.map(g => (
+              <div key={String(g.key)} className="mb-1">
+                <button
+                  onClick={() => setExpandedLecturers(p => ({ ...p, [String(g.key)]: !p[String(g.key)] }))}
+                  className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[#37352F] hover:bg-[#F7F7F5] rounded"
+                >
+                  {expandedLecturers[String(g.key)]
+                    ? <ChevronDown  className="w-3 h-3 rtl:rotate-180 shrink-0" />
+                    : <ChevronRight className="w-3 h-3 rtl:rotate-180 shrink-0" />}
+                  <span className="truncate flex-1 text-start">{g.name}</span>
+                  <span className="text-[#C4C4C4]">({g.items.length})</span>
+                </button>
+                {expandedLecturers[String(g.key)] && g.items.map(s => (
+                  <ItemRow
+                    key={s.id}
+                    label={s.title}
+                    active={selection.kind === 'lecturer' && selection.id === s.id}
+                    onClick={() => setSelection({ kind: 'lecturer', id: s.id })}
+                    onEdit={isOwner ? () => onEditLecturerSummary(s) : undefined}
+                    onDelete={isOwner ? () => onDeleteLecturerSummary(s.id) : undefined}
+                  />
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      <SectionHeader
+        icon={FileText}
+        label="סיכומי תלמידים"
+        count={lecture.student_summaries.length}
+        isOpen={open.student}
+        onToggle={() => setOpen(o => ({ ...o, student: !o.student }))}
+        onAdd={isOwner ? onAddStudentSummary : undefined}
+      />
+      {open.student && (
+        <div className="ps-2">
+          {lecture.student_summaries.length === 0 ? (
+            <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי תלמידים.</p>
+          ) : (
+            lecture.student_summaries.map(s => (
+              <ItemRow
+                key={s.id}
+                label={s.title}
+                active={selection.kind === 'student' && selection.id === s.id}
+                onClick={() => setSelection({ kind: 'student', id: s.id })}
+                onEdit={isOwner ? () => onEditStudentSummary(s) : undefined}
+                onDelete={isOwner ? () => onDeleteStudentSummary(s.id) : undefined}
+              />
+            ))
+          )}
+        </div>
+      )}
+
+      <SectionHeader
+        icon={Mic}
+        label="הקלטות"
+        count={lecture.recordings.length}
+        isOpen={open.recording}
+        onToggle={() => setOpen(o => ({ ...o, recording: !o.recording }))}
+        onAdd={isOwner ? onUploadRecording : undefined}
+        adding={uploading === 'recording'}
+      />
+      {open.recording && (
+        <div className="ps-2">
+          {lecture.recordings.length === 0 ? (
+            <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הקלטות.</p>
+          ) : (
+            lecture.recordings.map(r => (
+              <ItemRow
+                key={r.id}
+                label={r.title}
+                active={selection.kind === 'recording' && selection.id === r.id}
+                onClick={() => setSelection({ kind: 'recording', id: r.id })}
+                onDelete={isOwner ? () => onDeleteRecording(r.id) : undefined}
+              />
+            ))
+          )}
+        </div>
+      )}
+
+      <SectionHeader
+        icon={FileText}
+        label="הערות"
+        count={lecture.notes.length}
+        isOpen={open.note}
+        onToggle={() => setOpen(o => ({ ...o, note: !o.note }))}
+        onAdd={isOwner ? onUploadNote : undefined}
+        adding={uploading === 'note'}
+      />
+      {open.note && (
+        <div className="ps-2 pb-2">
+          {lecture.notes.length === 0 ? (
+            <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הערות.</p>
+          ) : (
+            lecture.notes.map(n => (
+              <ItemRow
+                key={n.id}
+                label={n.title}
+                active={selection.kind === 'note' && selection.id === n.id}
+                onClick={() => setSelection({ kind: 'note', id: n.id })}
+                onDelete={isOwner ? () => onDeleteNote(n.id) : undefined}
+              />
+            ))
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// ── Unified-summary pane ────────────────────────────────────────────────────
-
-interface UnifiedSummaryPaneProps {
-  lecture: Lecture;
-  isOwner: boolean;
-  onGenerate: () => Promise<void>;
+function UnifiedRow({ lecture, active, onClick }: { lecture: Lecture; active: boolean; onClick: () => void }) {
+  const hasContent = Boolean(lecture.unified_summary?.trim());
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'w-full flex items-center gap-2 px-2 py-2 rounded-lg text-start transition-colors',
+        active ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'hover:bg-[#F7F7F5] text-[#37352F] border border-transparent',
+      ].join(' ')}
+    >
+      <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+      <span className="flex-1 truncate text-sm font-medium">סיכום מאוחד</span>
+      <span className="text-[10px] font-medium text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded shrink-0">
+        AI · כולל הכל
+      </span>
+      {lecture.unified_summary_processing && (
+        <Loader2 className="w-3 h-3 animate-spin text-indigo-600 shrink-0" />
+      )}
+      {!hasContent && !lecture.unified_summary_processing && (
+        <span className="w-1.5 h-1.5 rounded-full bg-[#C4C4C4] shrink-0" title="עוד לא יוצר" />
+      )}
+    </button>
+  );
 }
 
-function UnifiedSummaryPane({ lecture, isOwner, onGenerate }: UnifiedSummaryPaneProps) {
-  const canGenerate = isOwner && Boolean(lecture.lecturer_summary?.trim());
+function SectionHeader({
+  icon: Icon, label, count, isOpen, onToggle, onAdd, adding,
+}: {
+  icon: any; label: string; count: number;
+  isOpen: boolean; onToggle: () => void;
+  onAdd?: () => void; adding?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1 mt-2 px-1">
+      <button
+        onClick={onToggle}
+        className="flex-1 flex items-center gap-1.5 px-1.5 py-1.5 text-xs font-semibold text-[#37352F] hover:bg-[#F7F7F5] rounded"
+      >
+        {isOpen
+          ? <ChevronDown className="w-3 h-3 rtl:rotate-180 shrink-0" />
+          : <ChevronRight className="w-3 h-3 rtl:rotate-180 shrink-0" />}
+        <Icon className="w-3.5 h-3.5 text-[#787774]" />
+        <span className="truncate flex-1 text-start">{label}</span>
+        <span className="text-[#C4C4C4] font-normal">({count})</span>
+      </button>
+      {onAdd && (
+        <button
+          onClick={onAdd}
+          disabled={Boolean(adding)}
+          className="p-1 rounded text-[#787774] hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+          title="Add"
+        >
+          {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ItemRow({
+  label, active, onClick, onEdit, onDelete,
+}: {
+  label: string; active: boolean; onClick: () => void;
+  onEdit?: () => void; onDelete?: () => void;
+}) {
+  return (
+    <div className={[
+      'group flex items-center gap-1 my-0.5 rounded-md',
+      active ? 'bg-indigo-50' : 'hover:bg-[#F7F7F5]',
+    ].join(' ')}>
+      <button
+        onClick={onClick}
+        className={[
+          'flex-1 truncate text-start px-2 py-1.5 text-xs',
+          active ? 'text-indigo-700 font-medium' : 'text-[#37352F]',
+        ].join(' ')}
+      >
+        {label}
+      </button>
+      {onEdit && (
+        <button
+          onClick={onEdit}
+          className="opacity-0 group-hover:opacity-100 p-1 rounded text-[#787774] hover:text-indigo-600"
+          title="Edit"
+        >
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
+      {onDelete && (
+        <button
+          onClick={() => { if (confirm('למחוק?')) void onDelete(); }}
+          className="opacity-0 group-hover:opacity-100 p-1 rounded text-[#787774] hover:text-red-600 me-1"
+          title="Delete"
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Main-pane renderers
+// ══════════════════════════════════════════════════════════════════════════
+
+function UnifiedSummaryPane({
+  lecture, isOwner, onGenerateClick,
+}: {
+  lecture: Lecture; isOwner: boolean; onGenerateClick: () => void;
+}) {
   const hasContent  = Boolean(lecture.unified_summary?.trim());
   const generating  = lecture.unified_summary_processing;
-
+  const canGenerate = isOwner && lecture.lecturer_summaries.length > 0;
   return (
     <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-6">
       <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
@@ -471,8 +807,8 @@ function UnifiedSummaryPane({ lecture, isOwner, onGenerate }: UnifiedSummaryPane
             סיכום מאוחד
           </h3>
           <p className="text-xs text-[#787774] mt-1 leading-relaxed">
-            סיכום מקיף שמיוצר על ידי AI. משלב את סיכום המרצה
-            (ובהמשך גם את תמלול ההקלטה, התרגולים ושיעורי הבית) למסמך לימוד אחד.
+            סיכום מקיף שמיוצר על ידי AI על בסיס סיכום המרצה הנבחר
+            (ובהמשך גם תמלול הקלטה ותרגולים).
           </p>
           {lecture.unified_summary_generated_at && (
             <p className="text-[10px] text-[#C4C4C4] mt-1">
@@ -482,16 +818,14 @@ function UnifiedSummaryPane({ lecture, isOwner, onGenerate }: UnifiedSummaryPane
         </div>
         {isOwner && (
           <button
-            onClick={onGenerate}
+            onClick={onGenerateClick}
             disabled={!canGenerate || generating}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shrink-0"
-            title={canGenerate ? '' : 'יש למלא את שדה סיכום מרצה תחילה'}
+            title={canGenerate ? '' : 'הוסף לפחות סיכום מרצה אחד תחילה'}
           >
             {generating
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              : hasContent
-                ? <RefreshCw className="w-3.5 h-3.5" />
-                : <Sparkles className="w-3.5 h-3.5" />}
+              : hasContent ? <RefreshCw className="w-3.5 h-3.5" /> : <Sparkles className="w-3.5 h-3.5" />}
             {generating ? 'מייצר…' : hasContent ? 'ייצר מחדש' : 'ייצר סיכום'}
           </button>
         )}
@@ -506,10 +840,7 @@ function UnifiedSummaryPane({ lecture, isOwner, onGenerate }: UnifiedSummaryPane
       {generating ? (
         <UnifiedSummaryLoading />
       ) : hasContent ? (
-        <article
-          dir="auto"
-          className="prose prose-sm max-w-none text-[#37352F] leading-relaxed"
-        >
+        <article dir="auto" className="prose prose-sm max-w-none text-[#37352F] leading-relaxed">
           <ReactMarkdown
             remarkPlugins={[remarkMath, remarkGfm]}
             rehypePlugins={[rehypeKatex]}
@@ -520,7 +851,7 @@ function UnifiedSummaryPane({ lecture, isOwner, onGenerate }: UnifiedSummaryPane
         </article>
       ) : (
         <UnifiedSummaryEmptyState
-          hasLecturerSummary={Boolean(lecture.lecturer_summary?.trim())}
+          hasLecturerSummary={lecture.lecturer_summaries.length > 0}
           isOwner={isOwner}
         />
       )}
@@ -538,7 +869,6 @@ function UnifiedSummaryLoading() {
       <div className="h-3 bg-[#EFEFED] rounded-full w-full animate-pulse" />
       <div className="h-3 bg-[#EFEFED] rounded-full w-5/6 animate-pulse" />
       <div className="h-3 bg-[#EFEFED] rounded-full w-4/6 animate-pulse" />
-      <div className="h-3 bg-[#EFEFED] rounded-full w-3/6 animate-pulse" />
     </div>
   );
 }
@@ -552,158 +882,536 @@ function UnifiedSummaryEmptyState({ hasLecturerSummary, isOwner }: { hasLecturer
       <p className="text-sm text-[#37352F] font-medium">לא יוצר עדיין סיכום מאוחד</p>
       <p className="text-xs text-[#787774] max-w-md leading-relaxed">
         {hasLecturerSummary
-          ? (isOwner
-              ? 'לחץ "ייצר סיכום" כדי להפיק סיכום שילובי על בסיס סיכום המרצה.'
-              : 'בעלי הקורס עוד לא ייצרו את הסיכום המאוחד.')
-          : 'יש למלא את שדה "סיכום מרצה" לפחות לפני שאפשר לייצר סיכום מאוחד.'}
+          ? (isOwner ? 'לחץ "ייצר סיכום" כדי להפיק את הסיכום המאוחד.' : 'בעלי הקורס עוד לא ייצרו את הסיכום המאוחד.')
+          : 'יש להוסיף לפחות סיכום מרצה אחד לפני שאפשר לייצר סיכום מאוחד.'}
       </p>
     </div>
   );
 }
 
-// ── Editable summary textarea pane ──────────────────────────────────────────
+function LecturerSummaryPane({
+  lecture, summary, isOwner, onEdit, onChange, onError,
+}: {
+  lecture: Lecture; summary: LectureLecturerSummary; isOwner: boolean;
+  onEdit: () => void;
+  onChange: (l: Lecture) => void;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState(summary.content ?? '');
+  const [saving, setSaving]   = useState(false);
+  useEffect(() => { setDraft(summary.content ?? ''); setEditing(false); }, [summary.id, summary.content]);
 
-interface SummaryTextareaPaneProps {
-  title:       string;
-  description: string;
-  value:       string;
-  setValue:    (v: string) => void;
-  dirty:       boolean;
-  saving:      boolean;
-  readOnly:    boolean;
-  onSave:      () => Promise<void>;
-}
+  const dirty = draft !== (summary.content ?? '');
 
-function SummaryTextareaPane({
-  title, description, value, setValue, dirty, saving, readOnly, onSave,
-}: SummaryTextareaPaneProps) {
+  async function save() {
+    if (!dirty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const res = await api.updateLectureLecturerSummary(lecture.id, summary.id, { content: draft });
+      onChange({
+        ...lecture,
+        lecturer_summaries: lecture.lecturer_summaries.map(s => s.id === res.data.id ? res.data : s),
+      });
+      setEditing(false);
+    } catch (err: any) {
+      onError(err?.response?.data?.detail ?? 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-5">
-      <div className="flex items-center justify-between mb-3 gap-3">
+    <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-6">
+      <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-[#37352F]">{title}</h3>
-          <p className="text-xs text-[#787774] mt-0.5">{description}</p>
+          <p className="text-[11px] text-[#787774]">
+            סיכום מרצה{summary.lecturer_name ? ` · ${summary.lecturer_name}` : ''}
+          </p>
+          <h3 className="text-base font-semibold text-[#37352F]">{summary.title}</h3>
         </div>
-        {!readOnly && dirty && (
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg shrink-0"
-          >
-            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            Save
-          </button>
+        {isOwner && !editing && (
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] border border-[#E8E8E6] rounded-lg">
+              <Pencil className="w-3.5 h-3.5" /> ערוך תוכן
+            </button>
+            <button onClick={onEdit} className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] border border-[#E8E8E6] rounded-lg">
+              ⋯
+            </button>
+          </div>
         )}
       </div>
-      <textarea
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        placeholder="כתוב כאן…"
-        dir="auto"
-        readOnly={readOnly}
-        rows={18}
-        className="w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] placeholder:text-[#C4C4C4] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 resize-y"
-      />
+      {editing ? (
+        <div className="space-y-2">
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            dir="auto"
+            rows={20}
+            className="w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 resize-y"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => { setDraft(summary.content ?? ''); setEditing(false); }}
+              className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]"
+            >
+              בטל
+            </button>
+            <button
+              onClick={save}
+              disabled={!dirty || saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              שמור
+            </button>
+          </div>
+        </div>
+      ) : (summary.content ?? '').trim() ? (
+        <article dir="auto" className="prose prose-sm max-w-none text-[#37352F] leading-relaxed">
+          <ReactMarkdown
+            remarkPlugins={[remarkMath, remarkGfm]}
+            rehypePlugins={[rehypeKatex]}
+            components={summaryMdComponents}
+          >
+            {summary.content!}
+          </ReactMarkdown>
+        </article>
+      ) : (
+        <p className="text-xs text-[#C4C4C4] py-6 text-center">סיכום ריק. {isOwner && 'לחץ "ערוך תוכן" כדי להוסיף.'}</p>
+      )}
     </div>
   );
 }
 
-// ── Attachment pane (recording / notes) ─────────────────────────────────────
+function StudentSummaryPane({
+  lecture, summary, isOwner, onEdit, onChange, onError,
+}: {
+  lecture: Lecture; summary: LectureStudentSummary; isOwner: boolean;
+  onEdit: () => void;
+  onChange: (l: Lecture) => void;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState(summary.content ?? '');
+  const [saving, setSaving]   = useState(false);
+  useEffect(() => { setDraft(summary.content ?? ''); setEditing(false); }, [summary.id, summary.content]);
 
-interface AttachmentPaneProps {
-  kind:        'recording' | 'notes';
-  icon:        any;
-  title:       string;
-  description: string;
-  attachment:  Lecture['recording'];
-  isOwner:     boolean;
-  isSaving:    boolean;
-  onPick:      () => void;
-  onDetach:    () => void;
-  renderPreview?: (url: string) => React.ReactNode;
+  const dirty = draft !== (summary.content ?? '');
+
+  async function save() {
+    if (!dirty) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      const res = await api.updateLectureStudentSummary(lecture.id, summary.id, { content: draft });
+      onChange({
+        ...lecture,
+        student_summaries: lecture.student_summaries.map(s => s.id === res.data.id ? res.data : s),
+      });
+      setEditing(false);
+    } catch (err: any) {
+      onError(err?.response?.data?.detail ?? 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-6">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <p className="text-[11px] text-[#787774]">סיכום תלמיד</p>
+          <h3 className="text-base font-semibold text-[#37352F]">{summary.title}</h3>
+        </div>
+        {isOwner && !editing && (
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] border border-[#E8E8E6] rounded-lg">
+              <Pencil className="w-3.5 h-3.5" /> ערוך תוכן
+            </button>
+            <button onClick={onEdit} className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] border border-[#E8E8E6] rounded-lg">
+              ⋯
+            </button>
+          </div>
+        )}
+      </div>
+      {editing ? (
+        <div className="space-y-2">
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            dir="auto"
+            rows={20}
+            className="w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm text-[#37352F] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 resize-y"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => { setDraft(summary.content ?? ''); setEditing(false); }}
+              className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]"
+            >
+              בטל
+            </button>
+            <button
+              onClick={save}
+              disabled={!dirty || saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              שמור
+            </button>
+          </div>
+        </div>
+      ) : (summary.content ?? '').trim() ? (
+        <article dir="auto" className="prose prose-sm max-w-none text-[#37352F] leading-relaxed">
+          <ReactMarkdown
+            remarkPlugins={[remarkMath, remarkGfm]}
+            rehypePlugins={[rehypeKatex]}
+            components={summaryMdComponents}
+          >
+            {summary.content!}
+          </ReactMarkdown>
+        </article>
+      ) : (
+        <p className="text-xs text-[#C4C4C4] py-6 text-center">סיכום ריק. {isOwner && 'לחץ "ערוך תוכן" כדי להוסיף.'}</p>
+      )}
+    </div>
+  );
 }
 
-function AttachmentPane({
-  kind, icon: Icon, title, description, attachment,
-  isOwner, isSaving, onPick, onDetach, renderPreview,
-}: AttachmentPaneProps) {
-  const url = attachmentUrl(attachment?.file_path);
+function AttachmentPane({ kind, attachment }: { kind: 'recording' | 'note'; attachment: LectureAttachment }) {
+  const url = attachmentUrl(attachment.file_path);
+  const isImage = attachment.doc_type === 'IMAGE';
   return (
-    <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-5">
-      <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
-          <Icon className="w-4 h-4 text-indigo-600" />
+    <div className="bg-white border border-[#E8E8E6] rounded-xl p-4 sm:p-6">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          {kind === 'recording'
+            ? <Mic className="w-4 h-4 text-indigo-600 shrink-0" />
+            : isImage ? <ImageIcon className="w-4 h-4 text-indigo-600 shrink-0" />
+                      : <FileText className="w-4 h-4 text-indigo-600 shrink-0" />}
+          <h3 className="text-base font-semibold text-[#37352F] truncate">{attachment.title}</h3>
         </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-[#37352F]">{title}</h3>
-          <p className="text-xs text-[#787774] mt-0.5">{description}</p>
+        {url && (
+          <a
+            href={url} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 shrink-0"
+          >
+            <Download className="w-3 h-3" /> Download
+          </a>
+        )}
+      </div>
+      {!url ? (
+        <p className="text-xs text-[#C4C4C4] py-6 text-center">קובץ לא זמין.</p>
+      ) : kind === 'recording' ? (
+        <audio controls src={url} className="w-full mt-2" />
+      ) : isImage ? (
+        <img src={url} alt={attachment.title} className="w-full max-h-[70vh] object-contain mt-2 rounded-lg border border-[#E8E8E6]" />
+      ) : (
+        <iframe src={url} className="w-full mt-2 rounded-lg border border-[#E8E8E6]" style={{ height: '70vh' }} />
+      )}
+    </div>
+  );
+}
 
-          {attachment ? (
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-[#37352F] truncate">{attachment.title}</span>
-                {url && (
-                  <a
-                    href={url} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700 shrink-0"
-                  >
-                    <Download className="w-3 h-3" /> open
-                  </a>
-                )}
-              </div>
-              {url && renderPreview?.(url)}
-              {isOwner && (
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    onClick={onPick} disabled={isSaving}
-                    className="text-xs text-[#787774] hover:text-indigo-600 underline-offset-2 hover:underline"
-                  >
-                    Replace…
-                  </button>
-                  <span className="text-[#C4C4C4]">·</span>
-                  <button
-                    onClick={onDetach} disabled={isSaving}
-                    className="text-xs text-[#787774] hover:text-red-600"
-                  >
-                    Remove
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : isOwner ? (
-            <button
-              onClick={onPick} disabled={isSaving}
-              className="mt-3 flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-indigo-600 border border-indigo-200 rounded-lg hover:bg-indigo-50 disabled:opacity-50"
+function EmptyMainPane() {
+  return (
+    <div className="flex flex-col items-center justify-center h-full py-12 text-center">
+      <div className="w-12 h-12 rounded-xl bg-[#F7F7F5] border border-[#E8E8E6] flex items-center justify-center">
+        <BookOpen className="w-5 h-5 text-[#787774]" />
+      </div>
+      <p className="mt-3 text-sm text-[#37352F] font-medium">בחר פריט מהתפריט בצד</p>
+      <p className="mt-1 text-xs text-[#787774] max-w-sm">
+        סיכום מאוחד / סיכומי מרצה / סיכומי תלמידים / הקלטות / הערות.
+      </p>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Modals
+// ══════════════════════════════════════════════════════════════════════════
+
+function LecturerSummaryModal({
+  lectureId, editing, courseLecturers, onClose, onSaved,
+}: {
+  lectureId: number;
+  editing: LectureLecturerSummary | null;
+  courseLecturers: CourseLecturer[];
+  onClose: () => void;
+  onSaved: (saved: LectureLecturerSummary) => void;
+}) {
+  const initialLecturer = editing?.lecturer_id
+    ?? (courseLecturers.length === 1 ? courseLecturers[0].id : null);
+  const [title, setTitle] = useState(editing?.title ?? 'סיכום מרצה');
+  const [content, setContent] = useState(editing?.content ?? '');
+  const [lecturerId, setLecturerId] = useState<number | null>(initialLecturer);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const payload = {
+        title:       title.trim() || 'סיכום מרצה',
+        content,
+        lecturer_id: lecturerId,
+      };
+      const res = editing
+        ? await api.updateLectureLecturerSummary(lectureId, editing.id, payload)
+        : await api.createLectureLecturerSummary(lectureId, payload);
+      onSaved(res.data);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 border border-[#E8E8E6] max-h-[90dvh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-semibold text-[#37352F]">
+            {editing ? 'עריכת סיכום מרצה' : 'סיכום מרצה חדש'}
+          </h3>
+          <button onClick={onClose} className="p-1.5 text-[#787774] hover:bg-[#F7F7F5] rounded">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {err && (
+          <div className="mb-3 p-2 bg-red-50 border border-red-100 rounded text-xs text-red-700">{err}</div>
+        )}
+        <div className="space-y-3">
+          <label className="block">
+            <span className="text-xs text-[#787774] font-medium">מרצה</span>
+            <select
+              value={lecturerId ?? ''}
+              onChange={e => setLecturerId(e.target.value ? Number(e.target.value) : null)}
+              className="mt-1 w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
             >
-              {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-              Upload {kind === 'recording' ? 'recording' : 'notes'}
-            </button>
-          ) : (
-            <p className="mt-2 text-xs text-[#C4C4C4]">No {kind} attached.</p>
-          )}
+              <option value="">{courseLecturers.length === 0 ? 'אין מרצים בקורס' : '-- בחר מרצה --'}</option>
+              {courseLecturers.map(cl => (
+                <option key={cl.id} value={cl.id}>
+                  {cl.name}{cl.role && cl.role !== 'lecturer' ? ` (${cl.role})` : ''}
+                </option>
+              ))}
+            </select>
+            {courseLecturers.length === 0 && (
+              <p className="mt-1 text-[11px] text-amber-700">
+                אין מרצים בקורס. הוסף מרצה מתוך לשונית Syllabus קודם.
+              </p>
+            )}
+          </label>
+          <label className="block">
+            <span className="text-xs text-[#787774] font-medium">כותרת / גרסה</span>
+            <input
+              type="text"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              dir="auto"
+              placeholder="למשל: סיכום ראשי / גרסה מתוקנת / 2026A"
+              className="mt-1 w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-[#787774] font-medium">תוכן (Markdown)</span>
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              dir="auto"
+              rows={14}
+              className="mt-1 w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+            />
+          </label>
+        </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]">
+            בטל
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            שמור
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-// ── Chat pane (lecture-scoped) ──────────────────────────────────────────────
-// A self-contained mini chat panel: list of past threads (collapsible),
-// active thread message list with markdown rendering, and a composer.
-// Talks directly to the standalone /api/v1/chat/ endpoint with course_id and
-// lecture_id pinned on the first message so the new thread carries them
-// server-side; subsequent messages reuse the thread's stored scoping.
+function StudentSummaryModal({
+  lectureId, editing, onClose, onSaved,
+}: {
+  lectureId: number;
+  editing: LectureStudentSummary | null;
+  onClose: () => void;
+  onSaved: (saved: LectureStudentSummary) => void;
+}) {
+  const [title, setTitle] = useState(editing?.title ?? 'סיכום תלמיד');
+  const [content, setContent] = useState(editing?.content ?? '');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const payload = { title: title.trim() || 'סיכום תלמיד', content };
+      const res = editing
+        ? await api.updateLectureStudentSummary(lectureId, editing.id, payload)
+        : await api.createLectureStudentSummary(lectureId, payload);
+      onSaved(res.data);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail ?? 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 border border-[#E8E8E6] max-h-[90dvh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-semibold text-[#37352F]">
+            {editing ? 'עריכת סיכום תלמיד' : 'סיכום תלמיד חדש'}
+          </h3>
+          <button onClick={onClose} className="p-1.5 text-[#787774] hover:bg-[#F7F7F5] rounded">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {err && (
+          <div className="mb-3 p-2 bg-red-50 border border-red-100 rounded text-xs text-red-700">{err}</div>
+        )}
+        <div className="space-y-3">
+          <label className="block">
+            <span className="text-xs text-[#787774] font-medium">כותרת</span>
+            <input
+              type="text"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              dir="auto"
+              placeholder="למשל: יעל / לפני המבחן / גרסה 1"
+              className="mt-1 w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-[#787774] font-medium">תוכן (Markdown)</span>
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              dir="auto"
+              rows={14}
+              className="mt-1 w-full border border-[#E8E8E6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+            />
+          </label>
+        </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]">
+            בטל
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            שמור
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GeneratePicker({
+  summaries, onCancel, onPick,
+}: {
+  summaries: LectureLecturerSummary[];
+  onCancel: () => void;
+  onPick: (id: number) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md p-5 border border-[#E8E8E6]">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-semibold text-[#37352F]">בחר סיכום מרצה לקלט</h3>
+          <button onClick={onCancel} className="p-1.5 text-[#787774] hover:bg-[#F7F7F5] rounded">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-xs text-[#787774] mb-3">
+          הסקיל יקבל את התוכן של הסיכום הנבחר כקלט הראשי.
+        </p>
+        <ul className="space-y-1 max-h-[50vh] overflow-y-auto">
+          {summaries.map(s => (
+            <li key={s.id}>
+              <button
+                onClick={() => onPick(s.id)}
+                className="w-full text-start px-3 py-2 rounded-lg border border-[#E8E8E6] hover:border-indigo-300 hover:bg-indigo-50"
+              >
+                <div className="text-sm font-medium text-[#37352F]">{s.title}</div>
+                {s.lecturer_name && (
+                  <div className="text-[11px] text-[#787774] mt-0.5">{s.lecturer_name}</div>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDeleteLecture({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => Promise<void> }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 border border-red-200">
+        <div className="flex items-center gap-2 mb-3">
+          <AlertTriangle className="w-4 h-4 text-red-600" />
+          <h3 className="text-sm font-semibold text-red-700">Delete this lecture?</h3>
+        </div>
+        <p className="text-xs text-[#787774] mb-4 leading-relaxed">
+          כל הסיכומים, ההקלטות וההערות שצורפו ימחקו. הקבצים עצמם נשארים בספריה.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 text-sm text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5] rounded-lg border border-[#E8E8E6]"
+          >
+            בטל
+          </button>
+          <button
+            onClick={onConfirm}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-red-600 hover:bg-red-700 rounded-lg"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> מחק
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Chat pane (lecture-scoped) — unchanged from F-033
+// ══════════════════════════════════════════════════════════════════════════
 
 function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId: number }) {
-  const [threads, setThreads]           = useState<LectureThread[]>([]);
-  const [activeId, setActiveId]         = useState<number | null>(null);
-  const [input, setInput]               = useState('');
-  const [sending, setSending]           = useState(false);
+  const [threads, setThreads]   = useState<LectureThread[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [input, setInput]       = useState('');
+  const [sending, setSending]   = useState(false);
   const [showThreadList, setShowThreadList] = useState(false);
-  const [error, setError]               = useState<string | null>(null);
+  const [error, setError]       = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
-  // Initial load — pick the most recent existing thread as active if any.
   useEffect(() => {
     let cancelled = false;
     api.listLectureThreads(lectureId).then(res => {
@@ -711,9 +1419,7 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
       const data: LectureThread[] = res.data ?? [];
       setThreads(data);
       setActiveId(data[0]?.id ?? null);
-    }).catch(() => {
-      // Empty pane on failure; user can still start a fresh chat.
-    });
+    }).catch(() => { /* pane stays empty on failure */ });
     return () => { cancelled = true; };
   }, [lectureId]);
 
@@ -722,7 +1428,6 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
     [threads, activeId],
   );
 
-  // Auto-scroll to bottom whenever the active thread grows.
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -733,13 +1438,10 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
     const text = input.trim();
     if (!text || sending) return;
     setError(null); setSending(true);
-
     const optimisticUser: LectureThreadMessage = { id: Date.now(), role: 'user', content: text };
     if (activeThread) {
       const next = { ...activeThread, messages: [...activeThread.messages, optimisticUser] };
       setThreads(prev => prev.map(t => t.id === activeThread.id ? next : t));
-    } else {
-      // Will append when we get the new thread id back.
     }
     setInput('');
 
@@ -750,8 +1452,6 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
       persona_id:  null,
       model_tier:  selectedModelTier,
       ai_provider: selectedAIProvider,
-      // Course + lecture scoping only matters on the FIRST message; server
-      // stores them on the thread row and ignores them on subsequent turns.
       course_id:   activeThread ? null : courseId,
       lecture_id:  activeThread ? null : lectureId,
     };
@@ -772,10 +1472,7 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
         throw new Error(err.detail ?? `Chat API error ${res.status}`);
       }
       const data: { thread_id: number; reply: { id: number; role: string; content: string } } = await res.json();
-      const assistant: LectureThreadMessage = {
-        id: data.reply.id, role: 'assistant', content: data.reply.content,
-      };
-
+      const assistant: LectureThreadMessage = { id: data.reply.id, role: 'assistant', content: data.reply.content };
       if (activeThread && activeThread.id === data.thread_id) {
         setThreads(prev => prev.map(t =>
           t.id === data.thread_id
@@ -783,7 +1480,6 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
             : t,
         ));
       } else {
-        // New thread — prepend and switch to it.
         const newThread: LectureThread = {
           id: data.thread_id, title: null, session_title: null, emoji: '💬',
           created_at: new Date().toISOString(),
@@ -794,7 +1490,6 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
       }
     } catch (err: any) {
       setError(err?.message ?? 'Failed to send message.');
-      // Roll back optimistic user message on error.
       if (activeThread) {
         setThreads(prev => prev.map(t =>
           t.id === activeThread.id
@@ -807,15 +1502,8 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
     }
   }
 
-  function startNewThread() {
-    setActiveId(null);
-    setShowThreadList(false);
-    setInput('');
-  }
-
   return (
-    <div className="bg-white border border-[#E8E8E6] rounded-xl flex flex-col h-full min-h-[420px] lg:min-h-0">
-      {/* Header */}
+    <div className="bg-white border border-[#E8E8E6] rounded-xl flex flex-col h-[420px] lg:h-[360px] min-h-0">
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[#E8E8E6]">
         <div className="flex items-center gap-2 min-w-0">
           <MessageSquare className="w-4 h-4 text-indigo-600 shrink-0" />
@@ -832,7 +1520,7 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
             <MessageSquare className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={startNewThread}
+            onClick={() => { setActiveId(null); setShowThreadList(false); setInput(''); }}
             className="p-1.5 rounded-md text-[#787774] hover:text-[#37352F] hover:bg-[#F7F7F5]"
             title="New chat"
           >
@@ -841,9 +1529,8 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
         </div>
       </div>
 
-      {/* Threads dropdown */}
       {showThreadList && (
-        <div className="border-b border-[#E8E8E6] bg-[#FAFAF9] max-h-48 overflow-y-auto">
+        <div className="border-b border-[#E8E8E6] bg-[#FAFAF9] max-h-32 overflow-y-auto">
           {threads.length === 0 ? (
             <p className="px-3 py-3 text-xs text-[#787774]">No previous chats yet.</p>
           ) : (
@@ -852,10 +1539,8 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
                 <li key={t.id}>
                   <button
                     onClick={() => { setActiveId(t.id); setShowThreadList(false); }}
-                    className={[
-                      'w-full text-start px-3 py-2 text-xs hover:bg-white',
-                      t.id === activeId ? 'bg-white text-indigo-700' : 'text-[#37352F]',
-                    ].join(' ')}
+                    className={['w-full text-start px-3 py-2 text-xs hover:bg-white',
+                      t.id === activeId ? 'bg-white text-indigo-700' : 'text-[#37352F]'].join(' ')}
                   >
                     <span className="truncate block">
                       {t.emoji ?? '💬'} {t.session_title || t.title || t.messages[0]?.content?.slice(0, 60) || 'Untitled'}
@@ -868,14 +1553,11 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
         </div>
       )}
 
-      {/* Messages */}
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {!activeThread || activeThread.messages.length === 0 ? (
           <EmptyChatHint />
         ) : (
-          activeThread.messages.map(m => (
-            <ChatBubble key={m.id} role={m.role} content={m.content} />
-          ))
+          activeThread.messages.map(m => <ChatBubble key={m.id} role={m.role} content={m.content} />)
         )}
         {sending && (
           <div className="flex items-center gap-2 text-xs text-[#787774]">
@@ -892,7 +1574,6 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
         </div>
       )}
 
-      {/* Composer */}
       <div className="border-t border-[#E8E8E6] p-2">
         <div className="flex items-end gap-2">
           <textarea
@@ -924,14 +1605,13 @@ function LectureChatPane({ lectureId, courseId }: { lectureId: number; courseId:
 
 function EmptyChatHint() {
   return (
-    <div className="flex flex-col items-center gap-2 py-8 text-center">
+    <div className="flex flex-col items-center gap-2 py-6 text-center">
       <div className="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center">
         <MessageSquare className="w-4 h-4 text-indigo-600" />
       </div>
       <p className="text-xs text-[#37352F] font-medium">שיחה ממוקדת בהרצאה</p>
       <p className="text-[11px] text-[#787774] max-w-[260px] leading-relaxed">
-        השאלות שלך יענו על בסיס תכני ההרצאה הזו והקורס. כל שיחה חדשה
-        מתחילה עם הקשר נקי.
+        השאלות שלך יענו על בסיס תכני ההרצאה הזו והקורס.
       </p>
     </div>
   );

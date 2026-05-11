@@ -43,10 +43,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import SessionLocal
-from app.models.domain import Chunk, Course, Lecture, UserDocument
+from app.models.domain import (
+    Chunk, Course, Lecture, LectureLecturerSummary, LectureNote, UserDocument,
+)
 from app.services.llm_providers import call_llm_with_usage
 from app.services.usage_logger import write_usage_event
 
@@ -186,20 +188,8 @@ def _build_user_prompt(
 
 # ── Notes / chunks helpers ─────────────────────────────────────────────────
 
-def _extract_notes_text(lec: Lecture, db: Session) -> str:
-    """Return the best available text representation of the notes attachment.
-
-    PDF notes already went through the CAS chunk pipeline at upload time —
-    we concatenate the chunk texts in order. Image notes have no extracted
-    text (Phase 2 may add OCR) so we return "".
-    """
-    if not lec.notes_user_document_id:
-        return ""
-    ud: Optional[UserDocument] = (
-        db.query(UserDocument)
-        .filter(UserDocument.id == lec.notes_user_document_id)
-        .first()
-    )
+def _extract_user_doc_text(ud: Optional[UserDocument], db: Session) -> str:
+    """Return text content for a single UserDocument (PDF chunks; "" for images)."""
     if not ud or not ud.base_document:
         return ""
     bd = ud.base_document
@@ -215,33 +205,68 @@ def _extract_notes_text(lec: Lecture, db: Session) -> str:
     return "\n\n".join(c.text for c in chunks if c.text)
 
 
+def _collect_notes_text(lec: Lecture, db: Session) -> str:
+    """F-034 — concatenate text from every LectureNote attachment.
+
+    Each note's text is prefixed with its title so the skill can tell
+    different note sources apart (e.g. "PDF סרוק" vs. "תמונה מהמחברת")."""
+    pieces: list[str] = []
+    for note in (lec.notes or []):
+        if not note.user_doc:
+            continue
+        text = _extract_user_doc_text(note.user_doc, db)
+        if not text.strip():
+            continue
+        header = note.title or "הערות"
+        pieces.append(f"### {header}\n{text}")
+    return "\n\n".join(pieces)
+
+
 # ── Synchronous generator ──────────────────────────────────────────────────
 
 def generate_unified_summary_sync(
-    lec:        Lecture,
-    course:     Course,
-    db:         Session,
+    lec:                  Lecture,
+    course:               Course,
+    db:                   Session,
     *,
-    user_id:    Optional[int] = None,
-    model_tier: str = "pro",
+    lecturer_summary_id:  Optional[int] = None,
+    user_id:              Optional[int] = None,
+    model_tier:           str = "pro",
 ) -> str:
     """Run the skill once and return the markdown. Writes a UsageEvent.
 
-    Raises `UnifiedSummaryInputError` if the spec's input precondition fails
-    (no lecturer_summary and no recording transcript). The Phase-1 reality
-    is "no transcript yet" — so in practice the only way to satisfy this is
-    a non-empty lecturer_summary.
+    `lecturer_summary_id` selects WHICH of the lecture's lecturer-summary
+    rows feeds the skill as the `manual_summary` placeholder. If None,
+    falls back to the only existing summary; raises if there are several.
+
+    Notes_text is now a concatenation of every LectureNote attachment's
+    extracted text (PDFs). Image attachments are skipped until OCR ships.
     """
-    lecturer_summary     = (lec.lecturer_summary or "").strip()
-    recording_transcript = ""   # Phase 2 will populate this from a transcript field
-    notes_text           = _extract_notes_text(lec, db)
-    exercises_text       = ""   # no data model concept yet
-    homework_text        = ""   # no data model concept yet
+    # ── Resolve the chosen lecturer summary ────────────────────────────────
+    summaries: list[LectureLecturerSummary] = list(lec.lecturer_summaries or [])
+    if not summaries:
+        raise UnifiedSummaryInputError(
+            "צריך לפחות סיכום מרצה אחד לפני יצירת הסיכום המאוחד."
+        )
+    chosen: Optional[LectureLecturerSummary] = None
+    if lecturer_summary_id is not None:
+        chosen = next((s for s in summaries if s.id == lecturer_summary_id), None)
+    elif len(summaries) == 1:
+        chosen = summaries[0]
+    if chosen is None:
+        raise UnifiedSummaryInputError(
+            "יש כמה סיכומי מרצה — בחר איזה מהם ישמש כקלט."
+        )
+
+    lecturer_summary     = (chosen.content or "").strip()
+    recording_transcript = ""           # Phase 2 will fill from transcribed audio
+    notes_text           = _collect_notes_text(lec, db)
+    exercises_text       = ""           # no data model concept yet
+    homework_text        = ""           # no data model concept yet
 
     if not lecturer_summary and not recording_transcript:
         raise UnifiedSummaryInputError(
-            "כדי לייצר סיכום מאוחד, יש למלא את שדה 'סיכום מרצה' או "
-            "להעלות הקלטת הרצאה (Phase 2)."
+            "הסיכום הנבחר ריק. מלא את תוכן הסיכום לפני יצירת הסיכום המאוחד."
         )
 
     user_prompt = _build_user_prompt(
@@ -261,7 +286,6 @@ def generate_unified_summary_sync(
         history      = [{"role": "user", "content": user_prompt}],
     )
 
-    # Best-effort usage logging. Failure here never blocks the summary.
     if user_id is not None:
         write_usage_event(db, user_id, "lecture_unified_summary", reply,
                           model_alias="ATLAS")
@@ -275,8 +299,9 @@ def generate_unified_summary_sync(
 # ── Async background entrypoint ────────────────────────────────────────────
 
 def process_unified_summary_background(
-    lecture_id: int,
-    user_id:    int,
+    lecture_id:          int,
+    user_id:             int,
+    lecturer_summary_id: Optional[int] = None,
 ) -> None:
     """FastAPI BackgroundTask entrypoint.
 
@@ -286,11 +311,22 @@ def process_unified_summary_background(
     `unified_summary_error` (failure). Last-good `unified_summary` is
     preserved on failure so the user never loses a working summary because
     a regenerate crashed.
+
+    `lecturer_summary_id` (F-034) selects which lecturer summary feeds the
+    skill — picked by the caller on the request side and passed through.
     """
     db = SessionLocal()
     try:
+        # Eager-load the children the generator needs so this BG task makes
+        # the same query the request side would, in one go.
         lec: Optional[Lecture] = (
-            db.query(Lecture).filter(Lecture.id == lecture_id).first()
+            db.query(Lecture)
+            .options(
+                selectinload(Lecture.lecturer_summaries),
+                selectinload(Lecture.notes).selectinload(LectureNote.user_doc).selectinload(UserDocument.base_document),
+            )
+            .filter(Lecture.id == lecture_id)
+            .first()
         )
         if not lec:
             log.warning("[lecture_summary] lecture %s gone before BG task ran", lecture_id)
@@ -300,27 +336,28 @@ def process_unified_summary_background(
             db.query(Course).filter(Course.id == lec.course_id).first()
         )
         if not course:
-            # Should be impossible (CASCADE wipes lectures with their course),
-            # but guard so the row doesn't get stuck in processing forever.
             lec.unified_summary_processing = False
             lec.unified_summary_error = "Course missing — cannot generate."
             db.commit()
             return
 
         try:
-            text = generate_unified_summary_sync(lec, course, db, user_id=user_id)
+            text = generate_unified_summary_sync(
+                lec, course, db,
+                lecturer_summary_id=lecturer_summary_id,
+                user_id=user_id,
+            )
             lec.unified_summary              = text
             lec.unified_summary_error        = None
             lec.unified_summary_generated_at = datetime.now(timezone.utc)
         except UnifiedSummaryInputError as exc:
             lec.unified_summary_error = str(exc)
-        except Exception as exc:
+        except Exception:
             log.exception("[lecture_summary] generation failed for lecture %s", lecture_id)
             lec.unified_summary_error = (
                 "ייצור הסיכום נכשל. נסה שוב בעוד רגע, או בדוק שהשרת זמין."
             )
         finally:
-            # Always release the processing flag, success or fail.
             lec.unified_summary_processing = False
             db.commit()
     finally:

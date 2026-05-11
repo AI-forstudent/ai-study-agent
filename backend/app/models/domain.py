@@ -570,23 +570,23 @@ exam_lecturers = Table(
 
 class Lecture(Base):
     """
-    A learning unit inside a Course (F-031 Phase 1 + F-033 unified summary).
+    A learning unit inside a Course (F-031 Phase 1 + F-033 + F-034 multi).
 
-    Three classes of summary content, kept separate by design:
+    A Lecture owns four LISTS of sub-resources (F-034) plus a single cached
+    unified summary:
 
-    • lecturer_summary   — the lecturer's / official lecture notes. The
-                           unified-summary skill treats this as the
-                           AUTHORITATIVE structural backbone.
-    • student_summaries  — peer / student-written summaries the user pastes
-                           in alongside the lecturer's. The skill IGNORES
-                           this column on purpose — student summaries are
-                           not authoritative input to the AI synthesis.
-    • unified_summary    — AI-generated fusion of lecturer_summary +
-                           (eventually) recording_transcript + notes +
-                           exercises + homework, cached after generation.
+    • lecturer_summaries  — many; each owned by a CourseLecturer (nullable).
+                            The unified-summary skill consumes ONE of these
+                            per generation (chosen by the caller).
+    • student_summaries   — many; user-titled summaries from peers / self.
+                            The skill IGNORES these.
+    • recordings          — many; UserDocument FKs, audio files.
+    • notes               — many; UserDocument FKs, PDFs or images.
 
-    Phase 2 (deferred) will populate a `recording_transcript` field via
-    Gemini audio transcription and feed it into the same generator.
+    The single columns that used to hold these (lecturer_summary,
+    student_summaries, recording_user_document_id, notes_user_document_id)
+    were dropped in migration v7u8t9s0r1q2 after backfilling existing rows
+    into the new tables.
     """
     __tablename__ = "lectures"
 
@@ -614,13 +614,6 @@ class Lecture(Base):
     )
     title                       = Column(String,  nullable=False)
     lecture_date                = Column(Date,    nullable=True)
-    # Renamed from `manual_summary` in migration u6t7s8r9q0p1. This column
-    # is the AUTHORITATIVE input to the unified-summary skill.
-    lecturer_summary            = Column(Text,    nullable=True)
-    # Student-written summaries. Single free-text field — caller is expected
-    # to format multiple summaries with their own headers if they want.
-    # NOT consumed by the unified-summary skill.
-    student_summaries           = Column(Text,    nullable=True)
     # ── Unified summary cache (F-033) ─────────────────────────────────────
     # `unified_summary` holds the markdown the skill returned. The processing
     # flag toggles while a BackgroundTask is in flight. On failure the error
@@ -631,24 +624,137 @@ class Lecture(Base):
     unified_summary_processing  = Column(Boolean, nullable=False, server_default="false")
     unified_summary_error       = Column(Text,    nullable=True)
     unified_summary_generated_at = Column(DateTime(timezone=True), nullable=True)
-    # Both attachments are optional. SET NULL on delete so the user can
-    # garbage-collect a UserDocument without losing the lecture row.
-    recording_user_document_id  = Column(
-        Integer,
-        ForeignKey("userdocuments.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    notes_user_document_id      = Column(
-        Integer,
-        ForeignKey("userdocuments.id", ondelete="SET NULL"),
-        nullable=True,
-    )
     created_at                  = Column(DateTime(timezone=True), server_default=func.now())
     updated_at                  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    course        = relationship("Course",       back_populates="lectures")
-    recording_doc = relationship("UserDocument", foreign_keys=[recording_user_document_id])
-    notes_doc     = relationship("UserDocument", foreign_keys=[notes_user_document_id])
+    course                = relationship("Course", back_populates="lectures")
+    # F-034 collections — eager-loaded by serializers so a single GET returns
+    # the full nested shape the frontend's accordion sidebar needs.
+    lecturer_summaries    = relationship(
+        "LectureLecturerSummary", back_populates="lecture",
+        cascade="all, delete-orphan",
+        order_by="LectureLecturerSummary.created_at",
+    )
+    student_summaries     = relationship(
+        "LectureStudentSummary", back_populates="lecture",
+        cascade="all, delete-orphan",
+        order_by="LectureStudentSummary.created_at",
+    )
+    recordings            = relationship(
+        "LectureRecording", back_populates="lecture",
+        cascade="all, delete-orphan",
+        order_by="LectureRecording.created_at",
+    )
+    notes                 = relationship(
+        "LectureNote", back_populates="lecture",
+        cascade="all, delete-orphan",
+        order_by="LectureNote.created_at",
+    )
+
+
+# ── F-034 sub-resources ────────────────────────────────────────────────────
+
+class LectureLecturerSummary(Base):
+    """One lecturer-authored summary inside a Lecture (F-034).
+
+    `lecturer_id` points at the course's roster of lecturers (built by the
+    syllabus extractor) and may be NULL when the course has none yet. ON
+    DELETE SET NULL so removing a lecturer from the course roster doesn't
+    blow away their summaries. The unified-summary skill picks ONE of these
+    per generation (caller-chosen)."""
+    __tablename__ = "lecture_lecturer_summaries"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    lecture_id  = Column(
+        Integer,
+        ForeignKey("lectures.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    lecturer_id = Column(
+        Integer,
+        ForeignKey("course_lecturers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    title       = Column(String, nullable=False, server_default="סיכום מרצה")
+    content     = Column(Text,   nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    lecture  = relationship("Lecture",        back_populates="lecturer_summaries")
+    lecturer = relationship("CourseLecturer")
+
+
+class LectureStudentSummary(Base):
+    """A student-/peer-authored summary inside a Lecture (F-034). Title is
+    free text so the user can label each one. The unified-summary skill
+    IGNORES these — they're for the student's own reference only."""
+    __tablename__ = "lecture_student_summaries"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    lecture_id  = Column(
+        Integer,
+        ForeignKey("lectures.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title       = Column(String, nullable=False, server_default="סיכום תלמיד")
+    content     = Column(Text,   nullable=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    lecture = relationship("Lecture", back_populates="student_summaries")
+
+
+class LectureRecording(Base):
+    """An audio recording attached to a Lecture (F-034). The file lives in
+    `userdocuments` (CAS-deduped); this row is the per-lecture join row
+    plus a display title. ON DELETE SET NULL on the FK so cleaning up the
+    library doesn't delete the recording row's metadata."""
+    __tablename__ = "lecture_recordings"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    lecture_id       = Column(
+        Integer,
+        ForeignKey("lectures.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_document_id = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title            = Column(String, nullable=False, server_default="הקלטה")
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+    lecture  = relationship("Lecture",      back_populates="recordings")
+    user_doc = relationship("UserDocument", foreign_keys=[user_document_id])
+
+
+class LectureNote(Base):
+    """A notes attachment on a Lecture (F-034). PDF or image. Same shape as
+    LectureRecording — only the accept-list at upload time differs."""
+    __tablename__ = "lecture_notes"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    lecture_id       = Column(
+        Integer,
+        ForeignKey("lectures.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_document_id = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title            = Column(String, nullable=False, server_default="הערות")
+    created_at       = Column(DateTime(timezone=True), server_default=func.now())
+
+    lecture  = relationship("Lecture",      back_populates="notes")
+    user_doc = relationship("UserDocument", foreign_keys=[user_document_id])
 
 
 class Exam(Base):

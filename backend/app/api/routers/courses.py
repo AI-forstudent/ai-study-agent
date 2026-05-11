@@ -740,3 +740,140 @@ def detach_course_syllabus(
     db.commit()
     db.refresh(course)
     return _serialize_syllabus(course)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Course lecturers — manual CRUD (F-034)
+# ══════════════════════════════════════════════════════════════════════════════
+# The syllabus extractor populates `course_lecturers` from the PDF. F-034 adds
+# a manual path so the course owner can add a lecturer who isn't in the
+# syllabus (guest lectures, TAs, anything ad-hoc) before attaching a
+# lecturer summary to a lecture.
+
+class CourseLecturerCreate(BaseModel):
+    name:  str
+    email: Optional[str] = None
+    role:  Optional[str] = "lecturer"
+
+
+class CourseLecturerUpdate(BaseModel):
+    name:  Optional[str] = None
+    email: Optional[str] = None
+    role:  Optional[str] = None
+
+
+@router.get("/{course_id}/lecturers", response_model=List[LecturerOut])
+def list_course_lecturers(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all CourseLecturer rows for a course.
+
+    Read access matches GET /{course_id}: owner, member, or any logged-in
+    user for a public course. Used by the "pick a lecturer" dropdown in
+    the lecture session view.
+    """
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.owner_id != current_user.id:
+        membership = (
+            db.query(CourseMembership)
+            .filter(
+                CourseMembership.user_id == current_user.id,
+                CourseMembership.course_id == course_id,
+            )
+            .first()
+        )
+        if not membership and course.visibility != "public":
+            raise HTTPException(status_code=404, detail="Course not found")
+
+    rows = (
+        db.query(CourseLecturer)
+        .filter(CourseLecturer.course_id == course_id)
+        .order_by(CourseLecturer.id.asc())
+        .all()
+    )
+    return [LecturerOut(id=l.id, name=l.name, email=l.email, role=l.role) for l in rows]
+
+
+@router.post("/{course_id}/lecturers", response_model=LecturerOut, status_code=201)
+def add_course_lecturer(
+    course_id: int,
+    payload: CourseLecturerCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add a lecturer to a course manually (owner-only)."""
+    course = _get_owned_course_or_404(course_id, current_user, db)
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Lecturer name is required.")
+    row = CourseLecturer(
+        course_id=course.id,
+        name=name,
+        email=(payload.email or "").strip() or None,
+        role=(payload.role or "lecturer").strip() or "lecturer",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return LecturerOut(id=row.id, name=row.name, email=row.email, role=row.role)
+
+
+@router.put("/{course_id}/lecturers/{lecturer_id}", response_model=LecturerOut)
+def update_course_lecturer(
+    course_id: int,
+    lecturer_id: int,
+    payload: CourseLecturerUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edit a course lecturer's name / email / role (owner-only)."""
+    _get_owned_course_or_404(course_id, current_user, db)
+    row = (
+        db.query(CourseLecturer)
+        .filter(CourseLecturer.id == lecturer_id, CourseLecturer.course_id == course_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Lecturer not found")
+
+    sent = payload.model_fields_set
+    if "name" in sent and payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty.")
+        row.name = name
+    if "email" in sent:
+        row.email = (payload.email or "").strip() or None
+    if "role" in sent and payload.role is not None:
+        row.role = payload.role.strip() or "lecturer"
+
+    db.commit()
+    db.refresh(row)
+    return LecturerOut(id=row.id, name=row.name, email=row.email, role=row.role)
+
+
+@router.delete("/{course_id}/lecturers/{lecturer_id}", status_code=204)
+def delete_course_lecturer(
+    course_id: int,
+    lecturer_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a lecturer from a course (owner-only).
+
+    Lecturer-summary rows referencing this lecturer get their `lecturer_id`
+    nulled (the FK is ON DELETE SET NULL) — the summary content stays."""
+    _get_owned_course_or_404(course_id, current_user, db)
+    row = (
+        db.query(CourseLecturer)
+        .filter(CourseLecturer.id == lecturer_id, CourseLecturer.course_id == course_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Lecturer not found")
+    db.delete(row)
+    db.commit()

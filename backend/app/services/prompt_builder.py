@@ -19,7 +19,7 @@ Priority for the persona base prompt:
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain import Course, Lecture, Persona, SessionMemory
 from app.services.syllabus_extractor import build_syllabus_system_block
@@ -122,15 +122,25 @@ _LECTURE_BLOCK_CHAR_LIMIT = 8_000
 def _lecture_block(lecture_id: int | None, db: Session) -> str:
     if not lecture_id:
         return ""
-    lec: Lecture | None = db.query(Lecture).filter(Lecture.id == lecture_id).first()
+    lec: Lecture | None = (
+        db.query(Lecture)
+        .options(selectinload(Lecture.lecturer_summaries))
+        .filter(Lecture.id == lecture_id)
+        .first()
+    )
     if not lec:
         return ""
 
     # Prefer the AI-generated unified summary (it already integrates the
-    # lecturer's notes, recording transcript, and exercises). Fall back to
-    # the raw lecturer_summary if the unified version hasn't been generated
-    # yet — better grounding than nothing.
-    body = (lec.unified_summary or lec.lecturer_summary or "").strip()
+    # chosen lecturer summary plus notes / recording transcript). Fall back
+    # to the first lecturer-summary row's content if no unified has been
+    # generated yet — better grounding than nothing.
+    body = (lec.unified_summary or "").strip()
+    if not body:
+        for s in (lec.lecturer_summaries or []):
+            if s.content and s.content.strip():
+                body = s.content.strip()
+                break
     if not body:
         return ""
 

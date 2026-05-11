@@ -281,46 +281,115 @@ export const api = {
 
   deleteExam: (examId: number) => apiClient.delete(`/api/v1/exams/${examId}`),
 
-  // ── Lectures (F-031 + F-033) ─────────────────────────────────────────────
+  // ── Lectures (F-031 + F-033 + F-034 multi-resource) ──────────────────────
+  // Top-level lecture carries title + lecture_date only. Summaries /
+  // recordings / notes are managed through their own sub-resource endpoints
+  // below; the GET /lectures/{id} response embeds them as lists.
   listCourseLectures: (courseId: number) =>
     apiClient.get(`/api/v1/courses/${courseId}/lectures`),
 
   createCourseLecture: (courseId: number, payload: {
-    title:                       string;
-    lecture_date?:               string | null;     // ISO yyyy-mm-dd
-    lecturer_summary?:           string | null;
-    student_summaries?:          string | null;
-    recording_user_document_id?: number | null;
-    notes_user_document_id?:     number | null;
+    title:         string;
+    lecture_date?: string | null;     // ISO yyyy-mm-dd
   }) => apiClient.post(`/api/v1/courses/${courseId}/lectures`, payload),
 
   getLecture: (id: number) => apiClient.get(`/api/v1/lectures/${id}`),
 
-  // Partial update — only send the fields you actually want to change.
-  // Pass `null` for an attachment FK to detach without setting a new one.
   updateLecture: (id: number, payload: {
-    title?:                       string;
-    lecture_date?:                string | null;
-    lecturer_summary?:            string | null;
-    student_summaries?:           string | null;
-    recording_user_document_id?:  number | null;
-    notes_user_document_id?:      number | null;
+    title?:        string;
+    lecture_date?: string | null;
   }) => apiClient.put(`/api/v1/lectures/${id}`, payload),
 
   deleteLecture: (id: number) => apiClient.delete(`/api/v1/lectures/${id}`),
 
-  // F-033 — kick off (async) unified-summary generation. Returns the row
-  // immediately with `unified_summary_processing=true`; the frontend polls
-  // GET /lectures/{id} until processing flips back to false. Backend runs a
-  // BackgroundTask through the locked skill prompt.
-  generateLectureUnifiedSummary: (id: number) =>
-    apiClient.post(`/api/v1/lectures/${id}/unified-summary`),
+  // F-033 unified summary; F-034 picks WHICH lecturer summary feeds the AI.
+  // When `lecturerSummaryId` is omitted and exactly one lecturer summary
+  // exists, the backend picks that one; otherwise it 422s and the UI is
+  // expected to surface a picker.
+  generateLectureUnifiedSummary: (id: number, lecturerSummaryId?: number | null) =>
+    apiClient.post(`/api/v1/lectures/${id}/unified-summary`, {
+      lecturer_summary_id: lecturerSummaryId ?? null,
+    }),
 
-  // F-033 — the user's chat threads pinned to this lecture. Each carries
-  // its full message list so the right pane can render the active thread
-  // immediately without a follow-up fetch.
   listLectureThreads: (id: number) =>
     apiClient.get(`/api/v1/lectures/${id}/threads`),
+
+  // ── F-034 sub-resources: lecturer summaries ──────────────────────────────
+  createLectureLecturerSummary: (lectureId: number, payload: {
+    title?:       string | null;
+    content?:     string | null;
+    lecturer_id?: number | null;      // null → auto-resolve (single lecturer / syllabus head)
+  }) => apiClient.post(`/api/v1/lectures/${lectureId}/lecturer-summaries`, payload),
+
+  updateLectureLecturerSummary: (lectureId: number, summaryId: number, payload: {
+    title?:       string;
+    content?:     string | null;
+    lecturer_id?: number | null;
+  }) => apiClient.put(`/api/v1/lectures/${lectureId}/lecturer-summaries/${summaryId}`, payload),
+
+  deleteLectureLecturerSummary: (lectureId: number, summaryId: number) =>
+    apiClient.delete(`/api/v1/lectures/${lectureId}/lecturer-summaries/${summaryId}`),
+
+  // ── F-034 sub-resources: student summaries ───────────────────────────────
+  createLectureStudentSummary: (lectureId: number, payload: {
+    title?:   string | null;
+    content?: string | null;
+  }) => apiClient.post(`/api/v1/lectures/${lectureId}/student-summaries`, payload),
+
+  updateLectureStudentSummary: (lectureId: number, summaryId: number, payload: {
+    title?:   string;
+    content?: string | null;
+  }) => apiClient.put(`/api/v1/lectures/${lectureId}/student-summaries/${summaryId}`, payload),
+
+  deleteLectureStudentSummary: (lectureId: number, summaryId: number) =>
+    apiClient.delete(`/api/v1/lectures/${lectureId}/student-summaries/${summaryId}`),
+
+  // ── F-034 sub-resources: recordings ──────────────────────────────────────
+  createLectureRecording: (lectureId: number, payload: {
+    user_document_id: number;
+    title?:           string | null;
+  }) => apiClient.post(`/api/v1/lectures/${lectureId}/recordings`, payload),
+
+  updateLectureRecording: (lectureId: number, recId: number, payload: {
+    user_document_id?: number | null;
+    title?:            string;
+  }) => apiClient.put(`/api/v1/lectures/${lectureId}/recordings/${recId}`, payload),
+
+  deleteLectureRecording: (lectureId: number, recId: number) =>
+    apiClient.delete(`/api/v1/lectures/${lectureId}/recordings/${recId}`),
+
+  // ── F-034 sub-resources: notes ───────────────────────────────────────────
+  createLectureNote: (lectureId: number, payload: {
+    user_document_id: number;
+    title?:           string | null;
+  }) => apiClient.post(`/api/v1/lectures/${lectureId}/notes`, payload),
+
+  updateLectureNote: (lectureId: number, noteId: number, payload: {
+    user_document_id?: number | null;
+    title?:            string;
+  }) => apiClient.put(`/api/v1/lectures/${lectureId}/notes/${noteId}`, payload),
+
+  deleteLectureNote: (lectureId: number, noteId: number) =>
+    apiClient.delete(`/api/v1/lectures/${lectureId}/notes/${noteId}`),
+
+  // ── F-034 — course-level lecturers CRUD ──────────────────────────────────
+  listCourseLecturers: (courseId: number) =>
+    apiClient.get(`/api/v1/courses/${courseId}/lecturers`),
+
+  addCourseLecturer: (courseId: number, payload: {
+    name:   string;
+    email?: string | null;
+    role?:  string | null;
+  }) => apiClient.post(`/api/v1/courses/${courseId}/lecturers`, payload),
+
+  updateCourseLecturer: (courseId: number, lecturerId: number, payload: {
+    name?:  string;
+    email?: string | null;
+    role?:  string | null;
+  }) => apiClient.put(`/api/v1/courses/${courseId}/lecturers/${lecturerId}`, payload),
+
+  deleteCourseLecturer: (courseId: number, lecturerId: number) =>
+    apiClient.delete(`/api/v1/courses/${courseId}/lecturers/${lecturerId}`),
 
   // ── Usage / billing (F-005 Phase 4) ──────────────────────────────────────
   // Aggregated usage for the authenticated user. Drives the Settings
