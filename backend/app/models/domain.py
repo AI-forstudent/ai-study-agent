@@ -624,10 +624,23 @@ class Lecture(Base):
     unified_summary_processing  = Column(Boolean, nullable=False, server_default="false")
     unified_summary_error       = Column(Text,    nullable=True)
     unified_summary_generated_at = Column(DateTime(timezone=True), nullable=True)
+    # F-036: the markdown is also rendered to a PDF and uploaded through
+    # the CAS pipeline so the user can open it in MainWorkspace just like
+    # any other library document. NULL until the first generation succeeds.
+    unified_summary_document_id = Column(
+        Integer,
+        ForeignKey("userdocuments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at                  = Column(DateTime(timezone=True), server_default=func.now())
     updated_at                  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     course                = relationship("Course", back_populates="lectures")
+    # F-036: the AI-generated PDF for the unified summary.
+    unified_summary_doc   = relationship(
+        "UserDocument", foreign_keys=[unified_summary_document_id],
+    )
     # F-034 collections — eager-loaded by serializers so a single GET returns
     # the full nested shape the frontend's accordion sidebar needs.
     lecturer_summaries    = relationship(

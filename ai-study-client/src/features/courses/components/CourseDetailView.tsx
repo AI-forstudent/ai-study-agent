@@ -42,6 +42,9 @@ interface CourseDetailViewProps {
     name: string; color: string | null; is_starred: boolean;
     persona_id: string | null; course_id: number | null;
   }) => Promise<Folder>;
+  /** F-036: open a lecture in MainWorkspace as a real session. Bubbles
+   *  up from CourseLecturesTab. */
+  onOpenLecture?: (lecture: any) => void;
 }
 
 /**
@@ -61,6 +64,7 @@ export default function CourseDetailView({
   onStartCourseChat,
   onOpenFolderInLibrary,
   onCreateFolder,
+  onOpenLecture,
 }: CourseDetailViewProps) {
   const [tab, setTab] = useState<CourseTab>('folders');
   const [folderModalOpen, setFolderModalOpen] = useState(false);
@@ -227,7 +231,7 @@ export default function CourseDetailView({
       )}
 
       {tab === 'lectures' && (
-        <CourseLecturesTab courseId={course.id} isOwner={isOwner} />
+        <CourseLecturesTab courseId={course.id} isOwner={isOwner} onOpenLecture={onOpenLecture} />
       )}
 
       {tab === 'syllabus' && (

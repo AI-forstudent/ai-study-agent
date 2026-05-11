@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { Send, Bot, User as UserIcon, MessageSquare, GitBranch, Network, FileText, Sparkles, Loader2, Wand2, BookOpen, Settings2, AlignLeft, Zap, Copy, Check, Paperclip, ChevronDown, ChevronRight, Mic as MicIcon, Image as ImageIconLR, ArrowLeft } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -192,7 +192,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   onSwitchPersona,
   onAttachFile,
 }) => {
-  const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary'>('tree');
+  const [activeTab, setActiveTab] = useState<'tree' | 'chat' | 'summary' | 'lecture'>('tree');
+  // F-036 — when a lecture session is active, surface a "Lecture" tab
+  // with the unified summary + lecturer / student / recording / notes
+  // accordion. Clicking an item swaps the active document.
+  const activeLecture     = useAppStore(s => s.activeLecture);
+  const setActiveLecture  = useAppStore(s => s.setActiveLecture);
   const [isAttaching, setIsAttaching] = useState(false);
   const attachInputRef = useRef<HTMLInputElement>(null);
 
@@ -409,8 +414,16 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       />
 
       {/* ── Tabs (only when there are multiple tabs to choose between) ──── */}
-      {documentId !== null && (
-        <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0">
+      {(documentId !== null || activeLecture) && (
+        <div className="flex bg-[#F7F7F5] border-b border-[#E8E8E6] shrink-0 overflow-x-auto">
+          {activeLecture && (
+            <button
+              onClick={() => setActiveTab('lecture')}
+              className={`${tabBase} ${activeTab === 'lecture' ? tabActive : tabInactive}`}
+            >
+              <BookOpen className="w-3.5 h-3.5" /> Lecture
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('tree')}
             className={`${tabBase} ${activeTab === 'tree' ? tabActive : tabInactive}`}
@@ -430,6 +443,15 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             <FileText className="w-3.5 h-3.5" /> Summary
           </button>
         </div>
+      )}
+
+      {/* ── Lecture tab (F-036) ────────────────────────────────────────── */}
+      {activeTab === 'lecture' && activeLecture && (
+        <LectureAccordionPane
+          lecture={activeLecture}
+          activeDocumentId={documentId}
+          onClose={() => setActiveLecture(null)}
+        />
       )}
 
       {/* ── Thread tree tab ────────────────────────────────────────────── */}
@@ -734,3 +756,287 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
 };
 
 export default ChatPanel;
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// F-036 — Lecture accordion pane
+// ══════════════════════════════════════════════════════════════════════════
+// Lives inside the ChatPanel "Lecture" tab. Lists the lecture's summaries /
+// recordings / notes and lets the user swap the active document. Audio
+// recordings + image notes render inline (they don't fit PdfViewer). PDF
+// items (unified, lecturer, student, notes-PDF) dispatch a document switch
+// to App.tsx via the pendingDocumentSwitch store value.
+
+const UPLOADS_BASE_FOR_LECTURE = (import.meta.env.VITE_AI_API_URL ?? '').replace(/\/$/, '');
+function lectureAttachmentUrl(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  const clean = filePath.replace(/^\/+/, '');
+  return `${UPLOADS_BASE_FOR_LECTURE}/${clean}`;
+}
+
+interface LectureAccordionPaneProps {
+  lecture: any;
+  activeDocumentId: number | null;
+  onClose: () => void;
+}
+
+function LectureAccordionPane({ lecture, activeDocumentId, onClose }: LectureAccordionPaneProps) {
+  const setPendingDocumentSwitch = useAppStore(s => s.setPendingDocumentSwitch);
+  const [open, setOpen] = useState({
+    lecturer:  true,
+    student:   (lecture.student_summaries?.length ?? 0) > 0,
+    recording: (lecture.recordings?.length ?? 0) > 0,
+    note:      (lecture.notes?.length ?? 0) > 0,
+  });
+  // Inline previews for audio + image (no main-pane swap; render in-place).
+  const [inlineAudio, setInlineAudio] = useState<{ id: number; title: string; url: string } | null>(null);
+  const [inlineImage, setInlineImage] = useState<{ id: number; title: string; url: string } | null>(null);
+
+  const lecturerGroups = useMemo(() => {
+    const groups = new Map<number | 'none', { name: string; items: any[] }>();
+    for (const s of (lecture.lecturer_summaries ?? [])) {
+      const key = s.lecturer_id ?? 'none';
+      if (!groups.has(key)) groups.set(key, { name: s.lecturer_name ?? 'ללא מרצה', items: [] });
+      groups.get(key)!.items.push(s);
+    }
+    return Array.from(groups.entries()).map(([k, v]) => ({ key: k, ...v }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lecture.lecturer_summaries]);
+
+  function switchToDoc(userDocId: number | null | undefined) {
+    if (!userDocId) return;
+    setInlineAudio(null);
+    setInlineImage(null);
+    setPendingDocumentSwitch(userDocId);
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-y-auto bg-white p-3 gap-2 text-sm">
+      {/* Header */}
+      <div className="flex items-center gap-2 pb-2 border-b border-[#E8E8E6]">
+        <button
+          onClick={onClose}
+          className="p-1 rounded-md text-[#787774] hover:bg-[#F7F7F5]"
+          title="Close lecture context"
+          aria-label="Close lecture context"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+        </button>
+        <div className="min-w-0">
+          <p className="text-[10px] text-[#787774]">Lecture</p>
+          <h3 className="text-sm font-semibold text-[#37352F] truncate" dir="auto">{lecture.title}</h3>
+        </div>
+      </div>
+
+      {/* Inline previews (audio / image) */}
+      {inlineAudio && (
+        <div className="mt-1 p-2 bg-[#F7F7F5] rounded-lg">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] text-[#787774] truncate" dir="auto">{inlineAudio.title}</span>
+            <button onClick={() => setInlineAudio(null)} className="text-[10px] text-[#787774] hover:text-red-600">סגור</button>
+          </div>
+          <audio controls src={inlineAudio.url} className="w-full" />
+        </div>
+      )}
+      {inlineImage && (
+        <div className="mt-1 p-2 bg-[#F7F7F5] rounded-lg">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] text-[#787774] truncate" dir="auto">{inlineImage.title}</span>
+            <button onClick={() => setInlineImage(null)} className="text-[10px] text-[#787774] hover:text-red-600">סגור</button>
+          </div>
+          <img src={inlineImage.url} alt={inlineImage.title} className="w-full rounded-md border border-[#E8E8E6]" />
+        </div>
+      )}
+
+      {/* Unified summary row */}
+      <button
+        onClick={() => switchToDoc(lecture.unified_summary_document_id)}
+        disabled={!lecture.unified_summary_document_id}
+        className={[
+          'w-full flex items-center gap-2 px-2 py-2 rounded-lg text-start',
+          lecture.unified_summary_document_id === activeDocumentId
+            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+            : 'hover:bg-[#F7F7F5] text-[#37352F] border border-transparent',
+          lecture.unified_summary_document_id ? '' : 'opacity-50 cursor-not-allowed',
+        ].join(' ')}
+      >
+        <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+        <span className="flex-1 truncate text-sm font-medium">סיכום מאוחד</span>
+        <span className="text-[10px] font-medium text-indigo-500 bg-indigo-100 px-1.5 py-0.5 rounded shrink-0">AI</span>
+        {lecture.unified_summary_processing && (
+          <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
+        )}
+        {!lecture.unified_summary_document_id && !lecture.unified_summary_processing && (
+          <span className="w-1.5 h-1.5 rounded-full bg-[#C4C4C4]" title="עוד לא יוצר" />
+        )}
+      </button>
+
+      {/* Lecturer summaries */}
+      <LectureSection
+        label="סיכומי מרצה"
+        count={lecture.lecturer_summaries?.length ?? 0}
+        isOpen={open.lecturer}
+        onToggle={() => setOpen(o => ({ ...o, lecturer: !o.lecturer }))}
+      >
+        {lecturerGroups.length === 0 ? (
+          <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי מרצה.</p>
+        ) : lecturerGroups.map(g => (
+          <div key={String(g.key)} className="mb-1">
+            <p className="px-2 py-1 text-[11px] font-medium text-[#37352F]">{g.name} ({g.items.length})</p>
+            {g.items.map((s: any) => (
+              <LectureItem
+                key={s.id}
+                label={s.title}
+                active={s.user_document_id === activeDocumentId}
+                onClick={() => switchToDoc(s.user_document_id)}
+                disabled={!s.user_document_id}
+              />
+            ))}
+          </div>
+        ))}
+      </LectureSection>
+
+      {/* Student summaries */}
+      <LectureSection
+        label="סיכומי תלמידים"
+        count={lecture.student_summaries?.length ?? 0}
+        isOpen={open.student}
+        onToggle={() => setOpen(o => ({ ...o, student: !o.student }))}
+      >
+        {(lecture.student_summaries ?? []).length === 0 ? (
+          <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימים סיכומי תלמידים.</p>
+        ) : (lecture.student_summaries ?? []).map((s: any) => (
+          <LectureItem
+            key={s.id}
+            label={s.title}
+            active={s.user_document_id === activeDocumentId}
+            onClick={() => switchToDoc(s.user_document_id)}
+            disabled={!s.user_document_id}
+          />
+        ))}
+      </LectureSection>
+
+      {/* Recordings (audio — inline player) */}
+      <LectureSection
+        label="הקלטות"
+        count={lecture.recordings?.length ?? 0}
+        isOpen={open.recording}
+        onToggle={() => setOpen(o => ({ ...o, recording: !o.recording }))}
+      >
+        {(lecture.recordings ?? []).length === 0 ? (
+          <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הקלטות.</p>
+        ) : (lecture.recordings ?? []).map((r: any) => {
+          const url = lectureAttachmentUrl(r.file_path);
+          return (
+            <button
+              key={r.id}
+              onClick={() => {
+                if (!url) return;
+                setInlineImage(null);
+                setInlineAudio({ id: r.id, title: r.title, url });
+              }}
+              disabled={!url}
+              className={[
+                'group w-full flex items-center gap-1.5 my-0.5 rounded-md text-start',
+                inlineAudio?.id === r.id ? 'bg-indigo-50' : 'hover:bg-[#F7F7F5]',
+                url ? '' : 'opacity-50 cursor-not-allowed',
+              ].join(' ')}
+            >
+              <MicIcon className="w-3 h-3 text-[#787774] shrink-0 ms-2" />
+              <span className={[
+                'flex-1 truncate px-1 py-1.5 text-xs',
+                inlineAudio?.id === r.id ? 'text-indigo-700 font-medium' : 'text-[#37352F]',
+              ].join(' ')}>{r.title}</span>
+            </button>
+          );
+        })}
+      </LectureSection>
+
+      {/* Notes (PDF → main pane swap; image → inline preview) */}
+      <LectureSection
+        label="הערות"
+        count={lecture.notes?.length ?? 0}
+        isOpen={open.note}
+        onToggle={() => setOpen(o => ({ ...o, note: !o.note }))}
+      >
+        {(lecture.notes ?? []).length === 0 ? (
+          <p className="text-xs text-[#C4C4C4] px-2 py-1">לא קיימות הערות.</p>
+        ) : (lecture.notes ?? []).map((n: any) => {
+          const isImage = n.doc_type === 'IMAGE';
+          const url = lectureAttachmentUrl(n.file_path);
+          return (
+            <button
+              key={n.id}
+              onClick={() => {
+                if (isImage) {
+                  if (!url) return;
+                  setInlineAudio(null);
+                  setInlineImage({ id: n.id, title: n.title, url });
+                } else {
+                  switchToDoc(n.user_document_id);
+                }
+              }}
+              disabled={!n.user_document_id && !url}
+              className={[
+                'group w-full flex items-center gap-1.5 my-0.5 rounded-md text-start',
+                (isImage ? inlineImage?.id === n.id : n.user_document_id === activeDocumentId)
+                  ? 'bg-indigo-50' : 'hover:bg-[#F7F7F5]',
+              ].join(' ')}
+            >
+              {isImage
+                ? <ImageIconLR className="w-3 h-3 text-[#787774] shrink-0 ms-2" />
+                : <FileText className="w-3 h-3 text-[#787774] shrink-0 ms-2" />}
+              <span className={[
+                'flex-1 truncate px-1 py-1.5 text-xs',
+                (isImage ? inlineImage?.id === n.id : n.user_document_id === activeDocumentId)
+                  ? 'text-indigo-700 font-medium' : 'text-[#37352F]',
+              ].join(' ')}>{n.title}</span>
+            </button>
+          );
+        })}
+      </LectureSection>
+    </div>
+  );
+}
+
+function LectureSection({
+  label, count, isOpen, onToggle, children,
+}: {
+  label: string; count: number; isOpen: boolean; onToggle: () => void; children: React.ReactNode;
+}) {
+  return (
+    <div className="mt-1">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-1.5 px-1.5 py-1.5 text-xs font-semibold text-[#37352F] hover:bg-[#F7F7F5] rounded"
+      >
+        {isOpen
+          ? <ChevronDown className="w-3 h-3 rtl:rotate-180 shrink-0" />
+          : <ChevronRight className="w-3 h-3 rtl:rotate-180 shrink-0" />}
+        <span className="truncate flex-1 text-start">{label}</span>
+        <span className="text-[#C4C4C4] font-normal">({count})</span>
+      </button>
+      {isOpen && <div className="ps-2">{children}</div>}
+    </div>
+  );
+}
+
+function LectureItem({
+  label, active, onClick, disabled,
+}: {
+  label: string; active: boolean; onClick: () => void; disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        'w-full text-start px-2 py-1.5 text-xs my-0.5 rounded-md',
+        active ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-[#37352F] hover:bg-[#F7F7F5]',
+        disabled ? 'opacity-50 cursor-not-allowed' : '',
+      ].join(' ')}
+    >
+      <span className="truncate block" dir="auto">{label}</span>
+    </button>
+  );
+}

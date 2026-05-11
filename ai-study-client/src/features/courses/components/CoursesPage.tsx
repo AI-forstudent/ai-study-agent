@@ -35,6 +35,9 @@ interface CoursesPageProps {
     name: string; color: string | null; is_starred: boolean;
     persona_id: string | null; course_id: number | null;
   }) => Promise<Folder>;
+  /** F-036: open a lecture in MainWorkspace as a real session. Forwarded
+   *  to CourseDetailView → CourseLecturesTab. */
+  onOpenLecture?: (lecture: any) => void;
 }
 
 /**
@@ -56,6 +59,7 @@ export default function CoursesPage({
   onStartCourseChat,
   onOpenFolderInLibrary,
   onCreateFolder,
+  onOpenLecture,
 }: CoursesPageProps) {
   const [activeTab,       setActiveTab]       = useState<CoursesTab>('my');
   const [activeCourseId,  setActiveCourseId]  = useState<number | null>(null);
@@ -152,6 +156,7 @@ export default function CoursesPage({
           onStartCourseChat={onStartCourseChat}
           onOpenFolderInLibrary={onOpenFolderInLibrary}
           onCreateFolder={onCreateFolder}
+          onOpenLecture={onOpenLecture}
         />
         <CourseModal
           isOpen={courseModalOpen}
