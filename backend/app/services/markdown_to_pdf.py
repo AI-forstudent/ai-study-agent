@@ -58,20 +58,20 @@ _HTML_SHELL = """<!doctype html>
     margin: 24mm 22mm 24mm 22mm;
     @top-center {{
       content: "{title}";
-      font-family: "Noto Sans Hebrew", "DejaVu Sans", "Liberation Sans", sans-serif;
+      font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
       font-size: 9pt;
       color: #6b7280;
     }}
     @bottom-right {{
       content: counter(page) " / " counter(pages);
-      font-family: "Noto Sans Hebrew", "DejaVu Sans", "Liberation Sans", sans-serif;
+      font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
       font-size: 9pt;
       color: #9ca3af;
     }}
   }}
   html {{ font-size: 11pt; }}
   body {{
-    font-family: "Noto Sans Hebrew", "DejaVu Sans", "Liberation Sans", sans-serif;
+    font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
     line-height: 1.55;
     color: #111827;
   }}
