@@ -10,6 +10,15 @@ services:
       POSTGRES_DB: app_db
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Lets `backend` wait for Postgres to actually accept connections instead
+    # of just for the container to exist — prevents the backend from burning
+    # its restart budget on boot when the DB is still warming up.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d app_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # === 2. Unified Backend (FastAPI — port 8001) ===
   backend:
@@ -17,7 +26,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile.backend
     container_name: ai_study_backend
-    restart: "on-failure:3"
+    # `unless-stopped`, not `on-failure:3`: a transient crash (OOM, slow DB on
+    # reboot, a brief network blip) used to exhaust the 3-retry budget and
+    # leave the backend dead until someone manually intervened — that is the
+    # "the site is down and never recovers" failure mode. Now Docker keeps
+    # trying, and only stays down if explicitly stopped.
+    restart: unless-stopped
     command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/app_db
@@ -32,7 +46,8 @@ services:
     volumes:
       - ./backend/uploads:/app/uploads
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   # === 3. Frontend (React + Nginx) ===
   frontend:
@@ -40,7 +55,9 @@ services:
       context: ./ai-study-client
       dockerfile: Dockerfile.frontend
     container_name: ai_study_frontend
-    restart: "on-failure:3"
+    # Same reasoning as backend — `on-failure:3` could permanently kill the
+    # only container that serves :80/:443, taking the whole site offline.
+    restart: unless-stopped
     environment:
       - DOMAIN=${DOMAIN}
     depends_on:
