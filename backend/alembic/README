@@ -1,1 +1,21 @@
-Generic single-database configuration.
+Alembic — database migrations for AI Study Partner.
+
+Generic single-database configuration. The single SQLAlchemy `Base` lives at
+`backend/app/models/domain.py` (the source of truth for all ORM models — see
+`SYSTEM_ARCHITECTURE.md` §5).
+
+Common commands (run from the project root, inside the backend container):
+
+  # Apply all pending migrations
+  docker exec -it ai_study_backend uv run alembic upgrade head
+
+  # Generate a new migration after editing `domain.py`
+  docker exec -it ai_study_backend uv run alembic revision --autogenerate -m "describe change"
+
+  # Inspect current head
+  docker exec -it ai_study_backend uv run alembic current
+
+Conventions:
+  - Never edit a previously-applied migration; create a new revision.
+  - Every model change requires a new migration with a descriptive name.
+  - See `backend/CLAUDE.md` for the full backend conventions.

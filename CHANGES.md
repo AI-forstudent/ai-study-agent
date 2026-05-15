@@ -2,6 +2,30 @@
 
 ---
 
+## 2026-05-15 — README refresh across the repo
+
+**Scope:** Documentation only. No code, no migrations, no behaviour change.
+
+### Why
+
+The three READMEs had drifted from reality:
+
+- Root `README.md` predated Courses, Exams, Lectures, Personal Hub, multi-provider LLM (OpenAI / Anthropic), Google Sign-In, the Drive-style library, Phase-1 multi-tenancy, and the responsive pass. It also still mentioned "Hybrid Cloud + (planned) Local AI" — a path abandoned in ADR 1.
+- `ai-study-client/README.md` was the stock Vite + TS template — zero project context.
+- `backend/alembic/README` was the Alembic-init one-liner.
+
+### What changed
+
+| File | What changed |
+|---|---|
+| [`README.md`](README.md) | Rewritten. Removed defunct "local AI" framing. Expanded Key Features (courses, exams, lectures, Personal Hub, multi-provider LLM, CAS, Google Sign-In, responsive). Updated Tech Stack: added `openai` + `anthropic` + `google-auth` + `pdfplumber` + `python-bidi`; clarified that LangChain usage is limited to `langchain-google-genai` + `langchain-text-splitters` (not a full LangChain pipeline). Added a Common Commands cheat-sheet. Added pointers to `docs/active_tracker.md`, `docs/vision.md`, and `docs/plans/multi_tenancy.md`. Added optional env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `ALLOWED_ORIGINS`). |
+| [`ai-study-client/README.md`](ai-study-client/README.md) | Replaced Vite template with a real frontend README — stack, quick-start, env vars (`VITE_AI_API_URL`, `VITE_GOOGLE_OAUTH_CLIENT_ID`), scripts, DDD directory layout, conventions, testing, and production-build notes. Links to root README, `SYSTEM_ARCHITECTURE.md` §6, and `ai-study-client/CLAUDE.md`. |
+| [`backend/alembic/README`](backend/alembic/README) | Expanded the Alembic-init one-liner with a `domain.py` pointer and the three common commands (upgrade head, autogenerate, current). |
+
+No code touched. No CLAUDE.md changes — local directives were already current.
+
+---
+
 ## 2026-05-06 (next day) — Granular exam metadata (T-020)
 
 **Scope:** Backend migration + extraction prompt + form refactor. Splits the overloaded `Exam.semester` field into three independent columns per the user's original "concatenation bug" call-out.
