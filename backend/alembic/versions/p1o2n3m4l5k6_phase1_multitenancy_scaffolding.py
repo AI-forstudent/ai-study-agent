@@ -247,12 +247,12 @@ def upgrade() -> None:
         BEGIN
             SELECT id INTO lior_id FROM users
              WHERE email = 'lior.livovsky213@gmail.com';
+
             IF lior_id IS NULL THEN
-                RAISE EXCEPTION
-                    'Super-user bootstrap failed — no user row with email '
-                    'lior.livovsky213@gmail.com. Create the account first, '
-                    'then re-run the migration.';
+                RAISE NOTICE 'Super-user bootstrap skipped — user lior.livovsky213@gmail.com not found.';
+                RETURN; -- <== זו שורת הקסם שהוספנו! היא עוצרת את ההמשך
             END IF;
+
             INSERT INTO role_assignments
                 (user_id, role, scope_type, scope_id, granted_by,
                  granted_via, granted_at)

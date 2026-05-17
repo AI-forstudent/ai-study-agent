@@ -61,7 +61,7 @@ class ChatResponse(BaseModel):
 
 # ── Route ──────────────────────────────────────────────────────────────────
 
-@router.post("/", response_model=ChatResponse)
+@router.post("", response_model=ChatResponse)
 def chat(
     payload: ChatRequest,
     background: BackgroundTasks,
